@@ -203,12 +203,14 @@ pub struct ConstrGraph {
 pub fn build_graphs_from_splits(
     def: &TensorDef,
     splits_by_term: &[Vec<Split>],
-) -> Vec<ConstrGraph>;
+) -> Result<Vec<ConstrGraph>, GraphError>;
 ```
 
 Expected behavior:
 
 - `splits_by_term` is aligned with `def.terms`
+- alignment mismatches and the `u64` provenance bitset term limit return
+  `GraphError`
 - each inner split list has already been canonicalized by `canon`
 - graphs are bucketed by the explicit `SplitInterface`
 - left and right terms are interned separately
@@ -218,6 +220,7 @@ Expected behavior:
 - duplicate derivations from the same source term do not double-count
 - zero-coefficient edges are omitted
 - graphs with fewer than two useful edges are omitted
+- output graph order is unspecified
 
 The caller is responsible for invoking this function once for the left-owner
 stream and once for the right-owner stream, then chaining the resulting graph
@@ -382,8 +385,8 @@ for each candidate TensorDef from start_from:
       push right_owner into the right-owner stream for this term
 
   graphs =
-    graph::build_graphs_from_splits(def, left_owner_splits_by_term)
-    + graph::build_graphs_from_splits(def, right_owner_splits_by_term)
+    graph::build_graphs_from_splits(def, left_owner_splits_by_term)?
+    + graph::build_graphs_from_splits(def, right_owner_splits_by_term)?
 
   for each graph:
     for each biclique in biclique::enumerate_bicliques(graph):
@@ -400,7 +403,8 @@ This is the central module boundary decision:
 
 - `canon_split` returns a fallible tuple of owner orientations
 - `rewrite` unpacks that tuple into two `Vec<Vec<Split>>` streams
-- `graph` consumes one canonicalized stream at a time
+- `graph` consumes one canonicalized stream at a time and returns
+  `Result<Vec<ConstrGraph>, GraphError>`
 - `graph` never knows why a stream exists
 
 ## Testing Strategy
@@ -443,6 +447,8 @@ This architecture is accepted when:
 - each non-`rewrite` stage exposes a narrow, independently testable API
 - `canon_split` returns `Result<(Split, Split), CanonError>`
 - `rewrite` unpacks canonical split tuples into two graph-building streams
-- `graph` consumes `&[Vec<Split>]` and contains no owner-orientation logic
+- `graph` consumes `&[Vec<Split>]`, returns
+  `Result<Vec<ConstrGraph>, GraphError>`, and contains no owner-orientation
+  logic
 - the public library API supports JSON-backed candidate generation, decision
   validation, rewrite construction, and rewrite application
