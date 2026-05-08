@@ -197,13 +197,14 @@ The left-owner orientation is built as:
    - assign contracted dummy ids using low allocation
    - assign left-private dummy ids using low allocation
    - produce an owner term and the contracted rename map
-3. choose the minimum owner term, carrying its contracted rename map
-4. enumerate symmetry and ordering candidates for the right term
-5. rename right contracted dummy ids through the chosen contracted map
-6. assign right-private dummy ids using high allocation
-7. choose the minimum right follower term
-8. remap `split.interface.contracted` through the owner contracted map
-9. return a `Split` with the canonical left owner, canonical right follower,
+3. choose the minimum owner term index
+4. fetch the owner term and contracted rename map from aligned vectors
+5. enumerate symmetry and ordering candidates for the right term
+6. rename right contracted dummy ids through the chosen contracted map
+7. assign right-private dummy ids using high allocation
+8. choose the minimum right follower term index
+9. remap `split.interface.contracted` through the owner contracted map
+10. return a `Split` with the canonical left owner, canonical right follower,
    and remapped interface
 
 ### Right-Owner Orientation
@@ -378,15 +379,7 @@ contracted ids live in `SplitInterface::contracted`. A normal
 ### Canonical Selection Helpers
 
 ```rust
-fn choose_min_term<I>(candidates: I) -> Result<Term, CanonError>
-where
-    I: IntoIterator<Item = Term>;
-
-fn choose_min_owner<I>(
-    candidates: I,
-) -> Result<(Term, HashMap<IndexId, IndexId>), CanonError>
-where
-    I: IntoIterator<Item = Result<(Term, HashMap<IndexId, IndexId>), CanonError>>;
+fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError>;
 
 fn compare_terms(left: &Term, right: &Term) -> Ordering;
 
@@ -397,10 +390,13 @@ Responsibilities:
 
 - return `EmptyCanonicalCandidates` if there are no candidates
 - compare candidates by `compare_terms`
+- return the index of the minimum candidate
 - use `compare_term_structure` to detect equal canonical structures with
   conflicting coefficients
 - detect coefficient conflicts for equal canonical structure
-- carry the selected owner contracted map when selecting an owner term
+- callers that need sidecar data, such as contracted rename maps, should keep
+  that data in vectors aligned with the candidate term vector and fetch it by
+  the returned index
 
 ### Split Rename Helpers
 
