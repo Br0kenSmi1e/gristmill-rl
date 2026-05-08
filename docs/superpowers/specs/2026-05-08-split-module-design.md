@@ -93,21 +93,27 @@ changed later without affecting callers.
 ## Side Normalization
 
 `split` should choose one deterministic side ordering for each unordered
-bipartition before building public `Vec<Index>` interface values.
+bipartition before building the public `Split`.
+
+The side ordering is not arbitrary. It exists so later `graph` construction
+sees consistent left and right roles for structurally equivalent split
+interfaces. Therefore normalization should compare the sides by their external
+index membership, not by raw factor-subset bitsets.
 
 Recommended normalization:
 
-1. represent each factor subset as an internal `FactorSubset` bitset
-2. for a candidate `left`, compute `right = full ^ left`
-3. emit the split only when `left < right`
-4. build public subterms and interface vectors from those factor subsets
+1. enumerate each unordered factor bipartition once, for example with an
+   internal `left < right` `FactorSubset` filter
+2. compute `left_external_bits` and `right_external_bits` as internal bitsets
+   over `def.ext_indices`
+3. compare those external-index bitsets deterministically
+4. if the left external bitset is greater than the right external bitset, swap
+   the left and right factor subsets
+5. build public subterms and interface vectors from the normalized subsets
 
-This directly uses the factor-subset representation to avoid emitting both
-`(left, right)` and `(right, left)`. It also avoids computing interface data
-before deciding whether a candidate is the representative.
-
-The comparison is purely a deterministic representative choice. Later stages
-should not assign semantic meaning to split output position.
+The final left/right choice is based on external-index membership. The
+`FactorSubset` ordering is only a way to avoid visiting the same unordered
+bipartition twice.
 
 ## Subterm Construction
 
@@ -246,13 +252,17 @@ for each nonempty proper left subset:
   right = full ^ left
   if left >= right:
     continue
+  if external_bits(left) > external_bits(right):
+    swap(left, right)
   out.push(make_split(term, def, info, left, right))
 
 return out
 ```
 
-This keeps side normalization in one place: the `left < right` filter in
-`enumerate_splits`.
+This keeps duplicate elimination and side normalization separate:
+
+- `left < right` chooses one factor-subset representative
+- external-index bitset comparison chooses the public left/right orientation
 
 ## Example
 
@@ -340,8 +350,10 @@ Initial tests should cover:
 - private sum indices remain on the side that uses them
 - `left_external`, `right_external`, and `contracted` preserve `Index.range`
 - interface vectors are sorted by `IndexId`
-- side normalization emits only the `left < right` representative under
+- duplicate elimination emits only the `left < right` representative under
   internal `FactorSubset` ordering
+- side normalization swaps subsets when external-index bitset ordering says to
+  swap
 
 ## Acceptance Criteria
 
