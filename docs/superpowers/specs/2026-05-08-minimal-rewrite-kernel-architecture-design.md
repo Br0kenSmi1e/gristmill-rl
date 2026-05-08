@@ -139,14 +139,17 @@ pub fn canon_term(
     term: &Term,
     symmetry: &TensorSymmetryMap,
     pool: &IndexPool,
-) -> Term;
+) -> Result<Term, CanonError>;
 
 pub fn canon_split(
     split: &Split,
     symmetry: &TensorSymmetryMap,
     pool: &IndexPool,
-) -> (Split, Split);
+) -> Result<(Split, Split), CanonError>;
 ```
+
+`CanonError` is the canon-stage error boundary. Its concrete variants are
+specified in the detailed `canon` module design.
 
 Expected behavior:
 
@@ -155,6 +158,8 @@ Expected behavior:
 - tied factors are ordered deterministically
 - dummy sum indices are renamed through the supplied index pool
 - canonicalization should be deterministic across input term order
+- malformed symmetry metadata or exhausted dummy-index pools return
+  `CanonError` rather than panicking
 
 `canon_split` owns all split-orientation logic. It returns:
 
@@ -372,7 +377,7 @@ for each candidate TensorDef from start_from:
 
   for each term in def.terms:
     for raw_split in split::enumerate_splits(term, def):
-      (left_owner, right_owner) = canon::canon_split(raw_split, symmetry, pool)
+      (left_owner, right_owner) = canon::canon_split(raw_split, symmetry, pool)?
       push left_owner into the left-owner stream for this term
       push right_owner into the right-owner stream for this term
 
@@ -393,7 +398,7 @@ return None
 
 This is the central module boundary decision:
 
-- `canon_split` returns a tuple of owner orientations
+- `canon_split` returns a fallible tuple of owner orientations
 - `rewrite` unpacks that tuple into two `Vec<Vec<Split>>` streams
 - `graph` consumes one canonicalized stream at a time
 - `graph` never knows why a stream exists
@@ -436,7 +441,7 @@ This architecture is accepted when:
 - the new crate is decomposed into the seven modules listed above
 - `repr` can read and write the old JSON schema
 - each non-`rewrite` stage exposes a narrow, independently testable API
-- `canon_split` returns `(Split, Split)`
+- `canon_split` returns `Result<(Split, Split), CanonError>`
 - `rewrite` unpacks canonical split tuples into two graph-building streams
 - `graph` consumes `&[Vec<Split>]` and contains no owner-orientation logic
 - the public library API supports JSON-backed candidate generation, decision
