@@ -80,7 +80,7 @@ orientations.
 ## Internal Subset Representation
 
 The implementation may use bitsets internally to represent factor subsets and
-external-index membership, but no bitset type is public API.
+index membership, but no bitset type is public API.
 
 If an internal `FactorSubset` type is useful, it should stay private to the
 module.
@@ -97,19 +97,17 @@ bipartition before building public `Vec<Index>` interface values.
 
 Recommended normalization:
 
-1. compute `left_external` and `right_external` membership as internal bitsets
-   over `def.ext_indices`
-2. compare those internal external bitsets with a deterministic integer/order
-   comparison
-3. if the left external bitset is greater than the right external bitset, swap
-   the left and right factor subsets
-4. build public subterms and interface vectors from the normalized subsets
+1. represent each factor subset as an internal `FactorSubset` bitset
+2. for a candidate `left`, compute `right = full ^ left`
+3. emit the split only when `left < right`
+4. build public subterms and interface vectors from those factor subsets
 
-This keeps the normalization cheap and avoids building then swapping public
-vectors.
+This directly uses the factor-subset representation to avoid emitting both
+`(left, right)` and `(right, left)`. It also avoids computing interface data
+before deciding whether a candidate is the representative.
 
-The exact comparison only needs to be deterministic. Later stages should not
-assign semantic meaning to split output position.
+The comparison is purely a deterministic representative choice. Later stages
+should not assign semantic meaning to split output position.
 
 ## Subterm Construction
 
@@ -243,8 +241,8 @@ Initial tests should cover:
 - private sum indices remain on the side that uses them
 - `left_external`, `right_external`, and `contracted` preserve `Index.range`
 - interface vectors are sorted by `IndexId`
-- side normalization swaps subsets when the internal external-bitset ordering
-  says to swap
+- side normalization emits only the `left < right` representative under
+  internal `FactorSubset` ordering
 
 ## Acceptance Criteria
 
