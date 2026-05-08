@@ -342,7 +342,6 @@ The initial stale-decision policy is intentionally narrow. `apply_rewrite`
 should verify:
 
 - `def_index` exists in the current computation
-- intermediate tensor IDs match the current fresh IDs
 
 It does not prove that the target definition is unchanged since action-space
 generation. Stronger stale-state protection can be designed later if needed.

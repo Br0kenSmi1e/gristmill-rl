@@ -87,10 +87,6 @@ pub enum RewriteError {
     },
     EmptyMask { side: MaskSide },
     DefinitionIndexOutOfRange { index: usize, len: usize },
-    StaleTensorIds {
-        expected: (TensorId, TensorId),
-        actual: (TensorId, TensorId),
-    },
 }
 
 pub fn next_action_space(
@@ -392,13 +388,10 @@ pub fn apply_rewrite(
 Validation before mutation:
 
 - `rewrite.def_index` must exist in `comp.definitions()`
-- `rewrite.factorization.left_definition.base` and
-  `rewrite.factorization.right_definition.base` must equal the current fresh
-  tensor ids
 
 Mutation:
 
-1. register two fresh tensors with empty symmetry
+1. register two tensors with empty symmetry for the rewrite intermediates
 2. remove the target definition at `def_index`
 3. insert definitions at that same position in this order:
    - `left_definition`
@@ -409,17 +402,12 @@ This mirrors the existing action-layer behavior.
 
 The first design intentionally allows target definition drift between action
 generation and rewrite application. Once a `FactorizationRewrite` is built,
-`apply_rewrite` trusts it after boundary checks.
+`apply_rewrite` trusts it after checking only that `def_index` is in range.
 
 ## Small Helpers
 
 ```rust
 fn fresh_rewrite_tensor_ids(comp: &TensorComputation) -> (TensorId, TensorId);
-
-fn verify_rewrite_tensor_ids(
-    comp: &TensorComputation,
-    rewrite: &FactorizationRewrite,
-) -> Result<(), RewriteError>;
 
 fn verify_rewrite_def_index(
     comp: &TensorComputation,
@@ -455,7 +443,6 @@ Initial tests should cover:
 - factorization uses `graph.interface` for external and contracted indices
 - side terms do not filter sum indices during rewrite construction
 - apply registers two tensors and inserts three definitions
-- apply rejects stale tensor ids
 - apply rejects out-of-range definition index
 - apply allows target definition drift after rewrite construction
 
@@ -471,5 +458,6 @@ The `rewrite` module is complete when:
 - selected sub-bicliques are built mechanically from masks
 - factorization construction uses `SplitInterface` for all external and
   contracted index truth
-- `apply_rewrite` mutates `TensorComputation` only after boundary checks
+- `apply_rewrite` mutates `TensorComputation` only after the `def_index`
+  boundary check
 - no target-definition equality/staleness check is added in the first design
