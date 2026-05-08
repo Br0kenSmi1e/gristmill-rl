@@ -184,10 +184,10 @@ fn build_child_frontiers(
 fn update_delta(
     graph: &ConstrGraph,
     biclique: &Biclique,
-    q: SearchNode,
-    dq: &Delta,
-    r: SearchNode,
-    dr: &Delta,
+    chosen: SearchNode,
+    chosen_delta: &Delta,
+    candidate: SearchNode,
+    candidate_delta: &Delta,
 ) -> Option<Delta>;
 
 fn has_sharing(biclique: &Biclique) -> bool;
@@ -241,31 +241,32 @@ Do not sort the emitted biclique before pushing it.
 
 ## `update_delta` Semantics
 
-`update_delta` decides whether an existing candidate `r` remains legal after
-choosing candidate `q`.
+`update_delta` decides whether an existing `candidate` remains legal after
+choosing `chosen`.
 
 Same-side case:
 
 - no edge is required
-- provenance between `dq` and `dr` must be disjoint
-- if disjoint, keep `dr` unchanged
+- provenance between `chosen_delta` and `candidate_delta` must be disjoint
+- if disjoint, keep `candidate_delta` unchanged
 
 Opposite-side case:
 
 - the graph must contain an edge between the two nodes
 - that edge's provenance must be disjoint from:
   - the current biclique provenance
-  - `dq.terms`
-  - `dr.terms`
+  - `chosen_delta.terms`
+  - `candidate_delta.terms`
 - coefficient consistency must hold:
 
 ```text
-expected = edge.coeff / dq.coeff
+expected = edge.coeff / chosen_delta.coeff
 ```
 
-- if `dr.terms == 0`, assign `dr.coeff = expected`
-- otherwise require `dr.coeff == expected`
-- if all checks pass, OR the edge provenance into `dr.terms`
+- if `candidate_delta.terms == 0`, assign
+  `candidate_delta.coeff = expected`
+- otherwise require `candidate_delta.coeff == expected`
+- if all checks pass, OR the edge provenance into `candidate_delta.terms`
 
 This is the core legality check. It should be ported carefully.
 
