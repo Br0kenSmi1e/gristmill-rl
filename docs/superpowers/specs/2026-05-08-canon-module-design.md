@@ -21,7 +21,6 @@ This module includes:
 - tensor symmetry closure and application
 - deterministic factor ordering
 - deterministic dummy-index renaming
-- canonical term keys for downstream ordering and comparison
 
 This module excludes:
 
@@ -37,13 +36,6 @@ This module excludes:
 ```rust
 pub type IndexPool = HashMap<RangeId, Vec<IndexId>>;
 pub type TensorSymmetryMap = HashMap<TensorId, Vec<SymGenerator>>;
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct CanonicalTermKey {
-    coeff_num: i64,
-    coeff_den: i64,
-    factors: Vec<(u32, Vec<u32>)>,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonError {
@@ -80,8 +72,6 @@ pub fn canon_split(
     symmetry: &TensorSymmetryMap,
     pool: &IndexPool,
 ) -> Result<(Split, Split), CanonError>;
-
-pub fn canonical_term_key(term: &Term) -> CanonicalTermKey;
 ```
 
 Canonicalization is fallible because missing symmetry metadata, invalid
@@ -157,7 +147,8 @@ Coefficient conflict:
 
 - if multiple canonical candidates have the same structure but different
   coefficients, return `CanonError::CoefficientConflict`
-- otherwise choose the structurally smallest candidate by `CanonicalTermKey`
+- otherwise choose the structurally smallest candidate by the private term
+  comparator
 
 ## Split Canonicalization
 
@@ -242,25 +233,6 @@ Rules:
 
 No downstream module should reconstruct the interface from factor overlap.
 
-## Canonical Term Key
-
-```rust
-pub fn canonical_term_key(term: &Term) -> CanonicalTermKey;
-```
-
-`CanonicalTermKey` is a deterministic ordering key used by this module and by
-later modules that need stable term ordering.
-
-Fields:
-
-- coefficient numerator
-- coefficient denominator
-- ordered factor list
-- each factor key is `(tensor_id, factor_index_ids)`
-
-The key is intentionally simple and based on already-canonicalized terms. It
-does not perform structural reasoning by itself.
-
 ## Internal Function Pipeline
 
 The implementation should be organized as explicit private helpers. These names
@@ -306,18 +278,13 @@ Responsibilities:
 ```rust
 type DummyRange = HashMap<IndexId, RangeId>;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct StructuralFactorKey {
-    tensor: TensorId,
-    slots: Vec<(bool, u32)>,
-}
-
 fn build_dummy_range(term: &Term) -> DummyRange;
 
-fn structural_factor_key(
-    factor: &Factor,
+fn compare_factors_by_structure(
+    left: &Factor,
+    right: &Factor,
     dummy_range: &DummyRange,
-) -> StructuralFactorKey;
+) -> Ordering;
 
 fn tied_groups(
     factors: &[Factor],
@@ -333,11 +300,12 @@ fn enumerate_ordered_terms(
 Responsibilities:
 
 - `build_dummy_range` maps each summed dummy id in a term to its range
-- `structural_factor_key` compares factor structure before dummy renaming
-- dummy slots use `(true, range_id)`
-- external slots use `(false, index_id)`
-- factors are first sorted by structural key
-- only factors tied by equal structural key are permuted against each other
+- `compare_factors_by_structure` compares factor structure before dummy
+  renaming
+- dummy slots compare as dummy positions by `RangeId`
+- external slots compare as external positions by `IndexId`
+- factors are first sorted by the structural comparator
+- only factors tied by structural equality are permuted against each other
 
 This preserves external-id distinctions while treating dummy ids by range until
 renaming chooses concrete ids.
@@ -413,12 +381,18 @@ fn choose_min_owner<I>(
 ) -> Result<(Term, HashMap<IndexId, IndexId>), CanonError>
 where
     I: IntoIterator<Item = Result<(Term, HashMap<IndexId, IndexId>), CanonError>>;
+
+fn compare_terms(left: &Term, right: &Term) -> Ordering;
+
+fn compare_term_structure(left: &Term, right: &Term) -> Ordering;
 ```
 
 Responsibilities:
 
 - return `EmptyCanonicalCandidates` if there are no candidates
-- compare candidates by `canonical_term_key`
+- compare candidates by `compare_terms`
+- use `compare_term_structure` to detect equal canonical structures with
+  conflicting coefficients
 - detect coefficient conflicts for equal canonical structure
 - carry the selected owner shared map when selecting an owner term
 
@@ -526,7 +500,7 @@ Initial tests should cover:
 The `canon` module is complete when:
 
 - public API exposes explicit maps, `canon_term`, `canon_split`, and
-  `canonical_term_key`
+  fallible canonicalization errors
 - no `CanonContext` exists
 - no canonical split wrapper exists
 - `canon_term` and `canon_split` are fallible
