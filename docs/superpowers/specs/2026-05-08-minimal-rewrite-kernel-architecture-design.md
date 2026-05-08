@@ -253,7 +253,7 @@ Expected behavior:
 - generated bicliques should represent valid factorizable sharing
 - one side may have a single node if the other side has sharing
 - node IDs and coefficient vectors stay aligned
-- output order is deterministic
+- output order is unspecified
 - bicliques are graph-local records and are not themselves public rewrite
   actions
 
