@@ -297,7 +297,7 @@ pub struct FactorizationRewrite {
 pub fn next_action_space(
     comp: &TensorComputation,
     start_from: usize,
-) -> Option<ActionSpace>;
+) -> Result<Option<ActionSpace>, RewriteError>;
 
 pub fn validate_decision(
     space: &ActionSpace,
@@ -317,14 +317,16 @@ pub fn apply_rewrite(
 ```
 
 `RewriteError` is intentionally left as a named boundary type in this
-architecture spec. Its concrete variants should be designed when the rewrite
-module receives its detailed design pass.
+architecture spec. Its concrete variants are specified in the detailed
+`rewrite` module design.
 
 Expected behavior:
 
 - `next_action_space` scans definitions from `start_from`
 - definitions with no legal candidates are skipped
 - the first actionable definition returns an `ActionSpace`
+- upstream `CanonError` and `GraphError` values propagate through
+  `RewriteError`
 - candidate templates expose faithful factorization payloads
 - hidden candidate records preserve the originating graph and biclique
 - `Decision` masks select kept side terms from a template
