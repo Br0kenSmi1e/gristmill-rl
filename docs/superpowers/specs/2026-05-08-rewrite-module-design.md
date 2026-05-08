@@ -53,7 +53,8 @@ pub struct Factorization {
 pub struct ActionSpace {
     pub def_index: usize,
     pub candidate_templates: Vec<Factorization>,
-    candidates: Vec<CandidateRecord>,
+    candidate_graphs: Vec<ConstrGraph>,
+    candidate_bicliques: Vec<Biclique>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,27 +104,16 @@ pub fn apply_rewrite(
 ) -> Result<(), RewriteError>;
 ```
 
-`ActionSpace::candidates` is private. It is aligned with
-`candidate_templates` by index.
-
-## Candidate Record
-
-```rust
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct CandidateRecord {
-    graph: ConstrGraph,
-    biclique: Biclique,
-}
-```
-
-The visible template and hidden record share the same candidate index:
+`ActionSpace::candidate_graphs` and `ActionSpace::candidate_bicliques` are
+private. They are aligned with `candidate_templates` by index:
 
 ```text
-candidate_templates[i] <-> candidates[i]
+candidate_templates[i] <-> candidate_graphs[i]
+candidate_templates[i] <-> candidate_bicliques[i]
 ```
 
-The template is for receiver inspection. The hidden record is for deterministic
-rewrite construction.
+The template is for receiver inspection. The hidden graph and biclique vectors
+are for deterministic rewrite construction.
 
 ## Action-Space Generation
 
@@ -138,7 +128,7 @@ Behavior:
 
 - scan `comp.definitions()` from `start_from`
 - skip definitions with fewer than two terms
-- generate candidate records for the first actionable definition
+- generate candidate graphs and bicliques for the first actionable definition
 - return `Ok(Some(ActionSpace))` if any candidates exist
 - return `Ok(None)` if no actionable definition exists
 - propagate `CanonError` and `GraphError` as `RewriteError`
@@ -152,15 +142,26 @@ for each (def_index, def) from start_from:
   if def.terms.len() < 2:
     continue
 
-  records = enumerate_candidate_records(comp, def)?
-  if records is empty:
+  (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?
+  if candidate_bicliques is empty:
     continue
 
   templates = []
-  for record in records:
-    templates.push(build_factorization(def, record.graph, record.biclique, left_tid, right_tid))
+  for each index i:
+    templates.push(build_factorization(
+      def,
+      candidate_graphs[i],
+      candidate_bicliques[i],
+      left_tid,
+      right_tid,
+    ))
 
-  return Ok(Some(ActionSpace { def_index, candidate_templates: templates, candidates: records }))
+  return Ok(Some(ActionSpace {
+    def_index,
+    candidate_templates: templates,
+    candidate_graphs,
+    candidate_bicliques,
+  }))
 
 return Ok(None)
 ```
@@ -168,10 +169,10 @@ return Ok(None)
 ## Candidate Enumeration Pipeline
 
 ```rust
-fn enumerate_candidate_records(
+fn enumerate_candidates(
     comp: &TensorComputation,
     def: &TensorDef,
-) -> Result<Vec<CandidateRecord>, RewriteError>;
+) -> Result<(Vec<ConstrGraph>, Vec<Biclique>), RewriteError>;
 ```
 
 Pipeline:
@@ -193,12 +194,14 @@ graphs = []
 graphs.extend(graph::build_graphs_from_splits(def, &left_owner_splits_by_term)?)
 graphs.extend(graph::build_graphs_from_splits(def, &right_owner_splits_by_term)?)
 
-records = []
+candidate_graphs = []
+candidate_bicliques = []
 for graph in graphs:
   for biclique in biclique::enumerate_bicliques(&graph):
-    records.push(CandidateRecord { graph: graph.clone(), biclique })
+    candidate_graphs.push(graph.clone())
+    candidate_bicliques.push(biclique)
 
-return records
+return (candidate_graphs, candidate_bicliques)
 ```
 
 This is orchestration only. `rewrite` should not perform split, canon, graph,
@@ -244,10 +247,11 @@ Pipeline:
 ```text
 def = comp.definitions()[space.def_index] or DefinitionIndexOutOfRange
 validate_decision(space, decision)?
-record = space.candidates[decision.candidate_index] or CandidateIndexOutOfRange
+graph = space.candidate_graphs[decision.candidate_index] or CandidateIndexOutOfRange
+biclique = space.candidate_bicliques[decision.candidate_index] or CandidateIndexOutOfRange
 (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp)
-sub_biclique = sub_biclique_from_decision(record, decision)
-factorization = build_factorization(def, record.graph, sub_biclique, left_tid, right_tid)
+sub_biclique = sub_biclique_from_decision(graph, biclique, decision)
+factorization = build_factorization(def, graph, sub_biclique, left_tid, right_tid)
 return FactorizationRewrite { def_index: space.def_index, factorization }
 ```
 
@@ -257,7 +261,8 @@ No target-definition equality check is performed in the first design.
 
 ```rust
 fn sub_biclique_from_decision(
-    record: &CandidateRecord,
+    graph: &ConstrGraph,
+    biclique: &Biclique,
     decision: &Decision,
 ) -> Biclique;
 ```
@@ -265,10 +270,10 @@ fn sub_biclique_from_decision(
 Behavior:
 
 - keep selected left node IDs and left coefficients by zipping
-  `record.biclique.left_node_ids`, `record.biclique.left_coeffs`, and
+  `biclique.left_node_ids`, `biclique.left_coeffs`, and
   `decision.left_mask`
 - keep selected right node IDs and right coefficients analogously
-- compute `terms_used` by scanning `record.graph.edges` and OR-ing edges whose
+- compute `terms_used` by scanning `graph.edges` and OR-ing edges whose
   `left_id` and `right_id` are both selected
 
 The masks have already been validated, so this helper should be mechanical.
@@ -424,7 +429,7 @@ Initial tests should cover:
 
 - no action space when no definition is actionable
 - `next_action_space` returns the first actionable definition
-- candidate templates and hidden records stay index-aligned
+- candidate templates, hidden graphs, and hidden bicliques stay index-aligned
 - `canon` and `graph` errors propagate through `next_action_space`
 - decision rejects out-of-range candidate index
 - decision rejects left and right mask length mismatches
@@ -445,7 +450,8 @@ The `rewrite` module is complete when:
 - public action API is fallible where upstream stages can fail
 - `next_action_space` orchestrates split/canon/graph/biclique without embedding
   their internals
-- `ActionSpace` exposes templates and keeps hidden records private
+- `ActionSpace` exposes templates and keeps hidden graph/biclique vectors
+  private
 - decisions validate index, mask length, and nonempty-side requirements
 - selected sub-bicliques are built mechanically from masks
 - factorization construction uses `SplitInterface` for all external and
