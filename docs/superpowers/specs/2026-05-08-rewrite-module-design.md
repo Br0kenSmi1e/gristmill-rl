@@ -69,23 +69,15 @@ pub struct FactorizationRewrite {
     pub factorization: Factorization,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MaskSide {
-    Left,
-    Right,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RewriteError {
     Canon(CanonError),
     Graph(GraphError),
     CandidateIndexOutOfRange { index: usize, len: usize },
-    MaskLengthMismatch {
-        side: MaskSide,
-        expected: usize,
-        got: usize,
-    },
-    EmptyMask { side: MaskSide },
+    LeftMaskLengthMismatch { expected: usize, got: usize },
+    RightMaskLengthMismatch { expected: usize, got: usize },
+    EmptyLeftMask,
+    EmptyRightMask,
     DefinitionIndexOutOfRange { index: usize, len: usize },
 }
 
