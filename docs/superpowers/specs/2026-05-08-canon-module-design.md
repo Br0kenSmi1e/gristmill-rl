@@ -358,12 +358,6 @@ fn apply_rename_map(
     term: &Term,
     remap: &HashMap<IndexId, IndexId>,
 ) -> Term;
-
-fn apply_split_rename_map(
-    term: &Term,
-    remap: &HashMap<IndexId, IndexId>,
-    contracted_ids: &HashSet<IndexId>,
-) -> Term;
 ```
 
 Responsibilities:
@@ -375,8 +369,11 @@ Responsibilities:
 - no available ids return `ExhaustedIndexPool`
 - `build_rename_map` scans factors left to right and slots left to right
 - `apply_rename_map` renames all factor and sum indices
-- `apply_split_rename_map` renames factor indices but omits contracted ids from
-  `sum_indices`, because contracted ids live in `SplitInterface::contracted`
+
+No split-specific rename application helper is needed. By the `split` module
+contract, side-term `sum_indices` already contain only private dummy ids;
+contracted ids live in `SplitInterface::contracted`. A normal
+`apply_rename_map` preserves that separation.
 
 ### Canonical Selection Helpers
 
