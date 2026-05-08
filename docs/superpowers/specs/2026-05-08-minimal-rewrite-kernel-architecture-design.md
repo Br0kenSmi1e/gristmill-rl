@@ -88,8 +88,6 @@ It enumerates nontrivial bipartitions of a single term's factors and emits
 explicit split records:
 
 ```rust
-pub type FactorSubset = u64;
-
 pub struct SplitInterface {
     pub left_external: Vec<Index>,
     pub right_external: Vec<Index>,
@@ -114,6 +112,9 @@ Expected behavior:
 - `contracted` comes from sum indices crossing the split
 - interface vectors preserve `Index.range` and are sorted deterministically
 - bitmasks may be used internally, but no bitmask should escape the module
+
+An internal `FactorSubset` bitmask type may be useful while enumerating factor
+bipartitions, but it is not part of the public stage contract.
 
 `SplitInterface` is the source of truth for downstream stages. Later modules
 must not reconstruct external or contracted indices from factor overlap.
@@ -187,7 +188,7 @@ pub struct GraphEdge {
     pub terms_used: u64,
 }
 
-pub struct ConstructionGraph {
+pub struct ConstrGraph {
     pub interface: SplitInterface,
     pub left_nodes: Vec<Term>,
     pub right_nodes: Vec<Term>,
@@ -197,7 +198,7 @@ pub struct ConstructionGraph {
 pub fn build_graphs_from_splits(
     def: &TensorDef,
     splits_by_term: &[Vec<Split>],
-) -> Vec<ConstructionGraph>;
+) -> Vec<ConstrGraph>;
 ```
 
 Expected behavior:
@@ -235,7 +236,7 @@ pub struct Biclique {
     pub terms_used: u64,
 }
 
-pub fn enumerate_bicliques(graph: &ConstructionGraph) -> Vec<Biclique>;
+pub fn enumerate_bicliques(graph: &ConstrGraph) -> Vec<Biclique>;
 ```
 
 Expected behavior:
@@ -285,22 +286,6 @@ pub struct FactorizationRewrite {
     pub factorization: Factorization,
 }
 
-pub enum RewriteError {
-    CandidateIndexOutOfRange { index: usize, len: usize },
-    MaskLengthMismatch { side: Side, expected: usize, got: usize },
-    EmptySide { side: Side },
-    DefinitionIndexOutOfRange { index: usize, len: usize },
-    StaleTensorIds {
-        expected: (TensorId, TensorId),
-        actual: (TensorId, TensorId),
-    },
-}
-
-pub enum Side {
-    Left,
-    Right,
-}
-
 pub fn next_action_space(
     comp: &TensorComputation,
     start_from: usize,
@@ -322,6 +307,10 @@ pub fn apply_rewrite(
     rewrite: FactorizationRewrite,
 ) -> Result<(), RewriteError>;
 ```
+
+`RewriteError` is intentionally left as a named boundary type in this
+architecture spec. Its concrete variants should be designed when the rewrite
+module receives its detailed design pass.
 
 Expected behavior:
 
