@@ -155,6 +155,105 @@ only when that ordering follows directly from the chosen subset enumeration.
 
 Later stages should not rely on split position as a semantic property.
 
+## Internal Function Pipeline
+
+The public `enumerate_splits` function should be implemented as a small
+pipeline of private helpers. These names are not public API, but pinning them
+down keeps the implementation direct and testable through the public behavior.
+
+Recommended internal types:
+
+```rust
+type FactorSubset = u64;
+
+struct TermIndexInfo {
+    factor_sum_bits: Vec<u64>,
+    factor_external_bits: Vec<u64>,
+}
+```
+
+Recommended helper pipeline:
+
+```rust
+fn build_term_index_info(term: &Term, def: &TensorDef) -> TermIndexInfo;
+
+fn subset_sum_bits(info: &TermIndexInfo, subset: FactorSubset) -> u64;
+
+fn subset_external_bits(info: &TermIndexInfo, subset: FactorSubset) -> u64;
+
+fn contracted_sum_bits(
+    info: &TermIndexInfo,
+    left: FactorSubset,
+    right: FactorSubset,
+) -> u64;
+
+fn indices_from_mask(source: &[Index], mask: u64) -> Vec<Index>;
+
+fn make_subterm(
+    term: &Term,
+    subset: FactorSubset,
+    contracted_sum_bits: u64,
+) -> Term;
+
+fn make_interface(
+    term: &Term,
+    def: &TensorDef,
+    info: &TermIndexInfo,
+    left: FactorSubset,
+    right: FactorSubset,
+) -> SplitInterface;
+
+fn make_split(
+    term: &Term,
+    def: &TensorDef,
+    info: &TermIndexInfo,
+    left: FactorSubset,
+    right: FactorSubset,
+) -> Split;
+```
+
+Helper responsibilities:
+
+- `build_term_index_info` maps each factor to the summed and external indices
+  it touches, using bit positions from `term.sum_indices` and
+  `def.ext_indices`.
+- `subset_sum_bits` unions the summed-index bits touched by all factors in a
+  subset.
+- `subset_external_bits` unions the external-index bits touched by all factors
+  in a subset.
+- `contracted_sum_bits` returns the intersection of left and right summed-index
+  bits.
+- `indices_from_mask` turns a mask over a source `Index` slice into explicit
+  `Index` values sorted by `IndexId`.
+- `make_subterm` copies selected factors in original order, keeps only private
+  summed indices used by that side, removes contracted summed indices, and sets
+  coefficient to `1`.
+- `make_interface` builds `left_external`, `right_external`, and `contracted`
+  from the normalized subsets.
+- `make_split` combines `make_subterm` and `make_interface`.
+
+`enumerate_splits` should then be straightforward:
+
+```text
+if term has fewer than two factors:
+  return []
+
+build TermIndexInfo
+full = all factor bits
+out = []
+
+for each nonempty proper left subset:
+  right = full ^ left
+  if left >= right:
+    continue
+  out.push(make_split(term, def, info, left, right))
+
+return out
+```
+
+This keeps side normalization in one place: the `left < right` filter in
+`enumerate_splits`.
+
 ## Example
 
 For:
