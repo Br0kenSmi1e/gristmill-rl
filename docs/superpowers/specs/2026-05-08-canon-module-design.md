@@ -168,16 +168,25 @@ canonical owner orientations needed by graph construction:
 
 No wrapper type is introduced.
 
-### Shared And Private Dummy IDs
+### Contracted And Private Dummy IDs
 
 For a split:
 
-- shared ids are `IndexId`s that appear in both sides' factors
-- shared dummy ids are shared ids that are present in that side's
-  `DummyRange`
-- private dummy ids are side `sum_indices` whose ids are not shared
+- contracted ids come from `split.interface.contracted`
+- left-private dummy ids come from `split.left.sum_indices`
+- right-private dummy ids come from `split.right.sum_indices`
 
 External ids are never renamed.
+
+`canon` must not reconstruct the split interface from factor overlap.
+`SplitInterface` is the source of truth.
+
+The owner orientation needs a contracted-id rename map:
+
+```rust
+let contracted_ids: HashSet<IndexId> =
+    split.interface.contracted.iter().map(|index| index.id).collect();
+```
 
 ### Left-Owner Orientation
 
@@ -185,15 +194,15 @@ The left-owner orientation is built as:
 
 1. enumerate symmetry and ordering candidates for the left term
 2. for each left candidate:
-   - assign shared dummy ids using low allocation
+   - assign contracted dummy ids using low allocation
    - assign left-private dummy ids using low allocation
-   - produce an owner term and the shared rename map
-3. choose the minimum owner term, carrying its shared rename map
+   - produce an owner term and the contracted rename map
+3. choose the minimum owner term, carrying its contracted rename map
 4. enumerate symmetry and ordering candidates for the right term
-5. rename right shared dummy ids through the chosen shared map
+5. rename right contracted dummy ids through the chosen contracted map
 6. assign right-private dummy ids using high allocation
 7. choose the minimum right follower term
-8. remap `split.interface.contracted` through the owner shared map
+8. remap `split.interface.contracted` through the owner contracted map
 9. return a `Split` with the canonical left owner, canonical right follower,
    and remapped interface
 
@@ -202,11 +211,11 @@ The left-owner orientation is built as:
 The right-owner orientation is symmetric:
 
 1. canonicalize the right term as owner
-2. assign shared dummy ids using low allocation
+2. assign contracted dummy ids using low allocation
 3. assign right-private dummy ids using high allocation
-4. canonicalize the left term as follower using the right owner's shared map
+4. canonicalize the left term as follower using the right owner's contracted map
 5. assign left-private dummy ids using low allocation
-6. remap `split.interface.contracted` through the right owner's shared map
+6. remap `split.interface.contracted` through the right owner's contracted map
 
 The allocation policy intentionally makes the two owner orientations distinct
 when needed:
@@ -214,10 +223,10 @@ when needed:
 - left-owner private ids use low allocation on the left and high allocation on
   the right
 - right-owner private ids use low allocation on the left and high allocation on
-  the right after the right owner fixes the shared map
+  the right after the right owner fixes the contracted map
 
 The important invariant is that both returned splits use a consistent name for
-each contracted shared dummy id across their left and right terms.
+each contracted dummy id across their left and right terms.
 
 ### Interface Handling
 
@@ -227,7 +236,7 @@ Rules:
 
 - `left_external` passes through unchanged
 - `right_external` passes through unchanged
-- `contracted` is remapped through the owner shared rename map
+- `contracted` is remapped through the owner contracted rename map
 - remapped `contracted` values preserve `Index.range`
 - remapped `contracted` is sorted by `IndexId`
 
@@ -353,7 +362,7 @@ fn apply_rename_map(
 fn apply_split_rename_map(
     term: &Term,
     remap: &HashMap<IndexId, IndexId>,
-    shared_ids: &HashSet<IndexId>,
+    contracted_ids: &HashSet<IndexId>,
 ) -> Term;
 ```
 
@@ -366,7 +375,7 @@ Responsibilities:
 - no available ids return `ExhaustedIndexPool`
 - `build_rename_map` scans factors left to right and slots left to right
 - `apply_rename_map` renames all factor and sum indices
-- `apply_split_rename_map` renames factor indices but omits shared ids from
+- `apply_split_rename_map` renames factor indices but omits contracted ids from
   `sum_indices`, because contracted ids live in `SplitInterface::contracted`
 
 ### Canonical Selection Helpers
@@ -394,7 +403,7 @@ Responsibilities:
 - use `compare_term_structure` to detect equal canonical structures with
   conflicting coefficients
 - detect coefficient conflicts for equal canonical structure
-- carry the selected owner shared map when selecting an owner term
+- carry the selected owner contracted map when selecting an owner term
 
 ### Split Rename Helpers
 
@@ -403,18 +412,6 @@ enum SplitSide {
     Left,
     Right,
 }
-
-fn shared_ids_for_split(split: &Split) -> HashSet<IndexId>;
-
-fn private_ids_for_term(
-    term: &Term,
-    shared_ids: &HashSet<IndexId>,
-) -> HashSet<IndexId>;
-
-fn shared_dummy_ids_for_term(
-    shared_ids: &HashSet<IndexId>,
-    dummy_range: &DummyRange,
-) -> HashSet<IndexId>;
 
 fn rename_standalone_term(
     term: &Term,
@@ -425,7 +422,7 @@ fn rename_standalone_term(
 fn rename_owner_term(
     term: &Term,
     side: SplitSide,
-    shared_ids: &HashSet<IndexId>,
+    contracted_ids: &HashSet<IndexId>,
     dummy_range: &DummyRange,
     pool: &IndexPool,
 ) -> Result<(Term, HashMap<IndexId, IndexId>), CanonError>;
@@ -433,8 +430,8 @@ fn rename_owner_term(
 fn rename_follower_term(
     term: &Term,
     side: SplitSide,
-    shared_ids: &HashSet<IndexId>,
-    shared_map: &HashMap<IndexId, IndexId>,
+    contracted_ids: &HashSet<IndexId>,
+    contracted_map: &HashMap<IndexId, IndexId>,
     dummy_range: &DummyRange,
     pool: &IndexPool,
 ) -> Result<Term, CanonError>;
@@ -447,13 +444,9 @@ fn remap_interface(
 
 Responsibilities:
 
-- `shared_ids_for_split` computes ids used by both split sides' factors
-- `private_ids_for_term` finds summed ids not shared across sides
-- `shared_dummy_ids_for_term` filters shared ids to ids present in the term's
-  dummy range map
 - `rename_standalone_term` renames every dummy id using low allocation
-- `rename_owner_term` creates the owner term and shared rename map
-- `rename_follower_term` uses the owner shared map, then allocates private ids
+- `rename_owner_term` creates the owner term and contracted-id rename map
+- `rename_follower_term` uses the owner contracted map, then allocates private ids
 - `remap_interface` preserves external vectors and remaps only `contracted`
 
 ## Error Policy
