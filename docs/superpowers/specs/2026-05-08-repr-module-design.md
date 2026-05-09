@@ -248,6 +248,8 @@ Checks:
 - every `Index.range` references an existing range
 - within each definition, every factor index ID is declared by either
   `ext_indices` or the term's `sum_indices`
+- within each definition, `ext_indices` and the union of all `sum_indices` are
+  disjoint
 - within each definition, the same `IndexId` is not assigned two different
   ranges
 - within each definition, duplicate external index IDs are rejected
@@ -295,6 +297,10 @@ pub enum ReprError {
         second: RangeId,
     },
     DuplicateExternalIndex {
+        def_index: usize,
+        index: IndexId,
+    },
+    ExternalAndSumIndexOverlap {
         def_index: usize,
         index: IndexId,
     },
@@ -346,6 +352,7 @@ Initial tests should cover:
 - `validate` catches unknown range, tensor, and index references
 - `validate` catches inconsistent index ranges
 - `validate` catches duplicate external and sum index IDs
+- `validate` catches external/sum index overlap
 - `validate` catches invalid symmetry permutations
 
 ## Acceptance Criteria
