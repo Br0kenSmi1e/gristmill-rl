@@ -1,5 +1,7 @@
 use gristmill_symbolics::repr::{IndexId, Rational, TensorDef, TensorId, Term};
+use gristmill_symbolics::repr::{Factor, Index, RangeId};
 use gristmill_symbolics::split::enumerate_splits;
+use gristmill_symbolics::split::{Split, SplitInterface};
 
 fn one() -> Rational {
     Rational::new(1, 1)
@@ -29,4 +31,70 @@ fn terms_with_fewer_than_two_factors_produce_no_splits() {
         }],
     };
     assert_eq!(enumerate_splits(&one_factor, &def).unwrap(), vec![]);
+}
+
+#[test]
+fn two_factor_term_produces_one_unit_coefficient_split() {
+    let range = RangeId(0);
+    let a = Index {
+        id: IndexId(0),
+        range,
+    };
+    let b = Index {
+        id: IndexId(1),
+        range,
+    };
+    let c = Index {
+        id: IndexId(2),
+        range,
+    };
+    let x = TensorId(0);
+    let y = TensorId(1);
+
+    let def = TensorDef {
+        base: TensorId(2),
+        ext_indices: vec![a, b],
+        terms: vec![],
+    };
+    let term = Term {
+        coeff: Rational::new(7, 3),
+        sum_indices: vec![c],
+        factors: vec![
+            Factor {
+                tensor: x,
+                indices: vec![a.id, c.id],
+            },
+            Factor {
+                tensor: y,
+                indices: vec![c.id, b.id],
+            },
+        ],
+    };
+
+    assert_eq!(
+        enumerate_splits(&term, &def).unwrap(),
+        vec![Split {
+            left: Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![Factor {
+                    tensor: x,
+                    indices: vec![a.id, c.id],
+                }],
+            },
+            right: Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![Factor {
+                    tensor: y,
+                    indices: vec![c.id, b.id],
+                }],
+            },
+            interface: SplitInterface {
+                left_external: vec![a],
+                right_external: vec![b],
+                contracted: vec![c],
+            },
+        }]
+    );
 }
