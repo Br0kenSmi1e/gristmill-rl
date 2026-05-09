@@ -81,8 +81,8 @@ pub fn canon_term(
         }
     }
 
-    let index = choose_min_term_index(&candidates)?;
-    Ok(candidates[index].clone())
+    let indices = choose_min_term_indices(&candidates)?;
+    Ok(candidates[indices[0]].clone())
 }
 
 pub fn canon_split(
@@ -699,29 +699,25 @@ fn canon_split_orientation(
         SplitSide::Left => SplitSide::Right,
         SplitSide::Right => SplitSide::Left,
     };
-    let mut owner_candidates = Vec::new();
+    let mut owner_terms = Vec::new();
+    let mut owner_maps = Vec::new();
 
     for sym_term in enumerate_symmetry_terms(owner_raw, symmetry)? {
         for ordered in enumerate_ordered_terms(&sym_term, dummy_range) {
-            owner_candidates.push(rename_owner_term(
-                &ordered,
-                owner_side,
-                contracted_ids,
-                dummy_range,
-                pool,
-            )?);
+            let (owner_term, owner_map) =
+                rename_owner_term(&ordered, owner_side, contracted_ids, dummy_range, pool)?;
+            owner_terms.push(owner_term);
+            owner_maps.push(owner_map);
         }
     }
 
-    let owner_index = choose_min_owner_candidate_index(&owner_candidates)?;
-    let owner_term = owner_candidates[owner_index].0.clone();
-    let mut candidates = Vec::new();
+    let owner_indices = choose_min_term_indices(&owner_terms)?;
+    let mut follower_terms = Vec::new();
+    let mut split_candidates = Vec::new();
 
-    for (candidate_owner_term, contracted_map) in owner_candidates {
-        if compare_term_structure(&candidate_owner_term, &owner_term) != Ordering::Equal {
-            continue;
-        }
-
+    for owner_index in owner_indices {
+        let candidate_owner_term = &owner_terms[owner_index];
+        let contracted_map = &owner_maps[owner_index];
         let interface = remap_interface(&split.interface, &contracted_map);
 
         for follower_sym_term in enumerate_symmetry_terms(follower_raw, symmetry)? {
@@ -734,7 +730,8 @@ fn canon_split_orientation(
                     dummy_range,
                     pool,
                 )?;
-                candidates.push(oriented_split(
+                follower_terms.push(follower_term.clone());
+                split_candidates.push(oriented_split(
                     owner_side,
                     candidate_owner_term.clone(),
                     follower_term,
@@ -744,35 +741,8 @@ fn canon_split_orientation(
         }
     }
 
-    let index = choose_min_split_index(owner_side, &candidates)?;
-    Ok(candidates[index].clone())
-}
-
-fn choose_min_owner_candidate_index(
-    candidates: &[(Term, HashMap<IndexId, IndexId>)],
-) -> Result<usize, CanonError> {
-    if candidates.is_empty() {
-        return Err(CanonError::EmptyCanonicalCandidates);
-    }
-
-    for left in 0..candidates.len() {
-        for right in (left + 1)..candidates.len() {
-            if compare_term_structure(&candidates[left].0, &candidates[right].0) == Ordering::Equal
-                && candidates[left].0.coeff != candidates[right].0.coeff
-            {
-                return Err(CanonError::InconsistentSymmetryCoefficient);
-            }
-        }
-    }
-
-    let mut best = 0;
-    for index in 1..candidates.len() {
-        if compare_term_structure(&candidates[index].0, &candidates[best].0) == Ordering::Less {
-            best = index;
-        }
-    }
-
-    Ok(best)
+    let follower_indices = choose_min_term_indices(&follower_terms)?;
+    Ok(split_candidates[follower_indices[0]].clone())
 }
 
 fn oriented_split(
@@ -795,7 +765,7 @@ fn oriented_split(
     }
 }
 
-fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError> {
+fn choose_min_term_indices(candidates: &[Term]) -> Result<Vec<usize>, CanonError> {
     if candidates.is_empty() {
         return Err(CanonError::EmptyCanonicalCandidates);
     }
@@ -817,60 +787,11 @@ fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError> {
         }
     }
 
-    Ok(best)
-}
-
-fn choose_min_split_index(
-    owner_side: SplitSide,
-    candidates: &[Split],
-) -> Result<usize, CanonError> {
-    if candidates.is_empty() {
-        return Err(CanonError::EmptyCanonicalCandidates);
-    }
-
-    for left in 0..candidates.len() {
-        for right in (left + 1)..candidates.len() {
-            if compare_oriented_split_structure(owner_side, &candidates[left], &candidates[right])
-                == Ordering::Equal
-                && (candidates[left].left.coeff != candidates[right].left.coeff
-                    || candidates[left].right.coeff != candidates[right].right.coeff)
-            {
-                return Err(CanonError::InconsistentSymmetryCoefficient);
-            }
-        }
-    }
-
-    let mut best = 0;
-    for index in 1..candidates.len() {
-        if compare_oriented_split_structure(owner_side, &candidates[index], &candidates[best])
-            == Ordering::Less
-        {
-            best = index;
-        }
-    }
-
-    Ok(best)
-}
-
-fn compare_oriented_split_structure(
-    owner_side: SplitSide,
-    left: &Split,
-    right: &Split,
-) -> Ordering {
-    match owner_side {
-        SplitSide::Left => compare_term_structure(&left.left, &right.left)
-            .then_with(|| compare_term_structure(&left.right, &right.right))
-            .then_with(|| compare_interface_structure(&left.interface, &right.interface)),
-        SplitSide::Right => compare_term_structure(&left.right, &right.right)
-            .then_with(|| compare_term_structure(&left.left, &right.left))
-            .then_with(|| compare_interface_structure(&left.interface, &right.interface)),
-    }
-}
-
-fn compare_interface_structure(left: &SplitInterface, right: &SplitInterface) -> Ordering {
-    compare_indices(&left.left_external, &right.left_external)
-        .then_with(|| compare_indices(&left.right_external, &right.right_external))
-        .then_with(|| compare_indices(&left.contracted, &right.contracted))
+    Ok((0..candidates.len())
+        .filter(|&index| {
+            compare_term_structure(&candidates[index], &candidates[best]) == Ordering::Equal
+        })
+        .collect())
 }
 
 fn compare_term_structure(left: &Term, right: &Term) -> Ordering {
