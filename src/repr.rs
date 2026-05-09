@@ -179,12 +179,7 @@ impl TensorComputation {
         id
     }
 
-    pub fn add_definition(
-        &mut self,
-        base: TensorId,
-        ext_indices: Vec<Index>,
-        terms: Vec<Term>,
-    ) {
+    pub fn add_definition(&mut self, base: TensorId, ext_indices: Vec<Index>, terms: Vec<Term>) {
         self.definitions.push(TensorDef {
             base,
             ext_indices,

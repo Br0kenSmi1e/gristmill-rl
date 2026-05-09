@@ -224,10 +224,12 @@ fn validate_rejects_sum_index_range_mismatches_across_terms() {
 #[test]
 fn validate_rejects_duplicate_index_declarations() {
     let mut duplicate_external = well_formed_computation();
-    duplicate_external.definitions_mut()[0].ext_indices.push(Index {
-        id: IndexId(0),
-        range: RangeId(0),
-    });
+    duplicate_external.definitions_mut()[0]
+        .ext_indices
+        .push(Index {
+            id: IndexId(0),
+            range: RangeId(0),
+        });
     assert_eq!(
         duplicate_external.validate(),
         Err(ReprError::DuplicateExternalIndex {
