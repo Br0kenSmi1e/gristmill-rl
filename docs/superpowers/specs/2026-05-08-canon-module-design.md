@@ -52,7 +52,7 @@ pub enum CanonError {
     MissingIndexPool { range: RangeId },
     ExhaustedIndexPool { range: RangeId },
     EmptyCanonicalCandidates,
-    CoefficientConflict,
+    InconsistentSymmetryCoefficient,
 }
 
 pub fn build_index_pool(def: &TensorDef) -> IndexPool;
@@ -143,12 +143,15 @@ Expected behavior:
   range
 - factor order is deterministic after symmetry and tied-group handling
 
-Coefficient conflict:
+Symmetry coefficient consistency:
 
 - if multiple canonical candidates have the same structure but different
-  coefficients, return `CanonError::CoefficientConflict`
+  coefficients, return `CanonError::InconsistentSymmetryCoefficient`
 - otherwise choose the structurally smallest candidate by the private term
   comparator
+- coefficient values do not affect which structural representative is selected
+- `canon` does not simplify or drop terms implied to be zero by inconsistent
+  symmetry coefficients; callers decide how to handle this condition
 
 ## Split Canonicalization
 
@@ -167,6 +170,12 @@ canonical owner orientations needed by graph construction:
 - second return value: right side is owner
 
 No wrapper type is introduced.
+
+Owner orientation is only the policy for choosing the contracted dummy-id rename
+map. It does not change the split side roles. Both returned `Split` values keep
+the original `left` and `right` side positions: `Split.left` corresponds to
+`interface.left_external`, and `Split.right` corresponds to
+`interface.right_external`.
 
 ### Contracted And Private Dummy IDs
 
@@ -288,7 +297,9 @@ Responsibilities:
 ```rust
 type DummyRange = HashMap<IndexId, RangeId>;
 
-fn build_dummy_range(term: &Term) -> DummyRange;
+fn build_term_dummy_range(term: &Term) -> DummyRange;
+
+fn build_split_dummy_range(split: &Split) -> DummyRange;
 
 fn compare_factors_by_structure(
     left: &Factor,
@@ -309,7 +320,12 @@ fn enumerate_ordered_terms(
 
 Responsibilities:
 
-- `build_dummy_range` maps each summed dummy id in a term to its range
+- `build_term_dummy_range` maps each summed dummy id in a standalone term to
+  its range
+- `build_split_dummy_range` maps every renameable split dummy id to its range:
+  contracted ids from `split.interface.contracted`, left-private ids from
+  `split.left.sum_indices`, and right-private ids from
+  `split.right.sum_indices`
 - `compare_factors_by_structure` compares factor structure before dummy
   renaming
 - dummy slots compare as dummy positions by `RangeId`
@@ -319,6 +335,13 @@ Responsibilities:
 
 This preserves external-id distinctions while treating dummy ids by range until
 renaming chooses concrete ids.
+
+For split canonicalization, contracted ids are not present in either side term's
+`sum_indices`; by the `split` contract they live only in
+`SplitInterface::contracted`. Therefore split factor ordering must use
+`build_split_dummy_range(split)`, not a side-local term dummy range. Contracted
+and private id sets used by rename helpers are derived directly from
+`SplitInterface::contracted` and the corresponding side term's `sum_indices`.
 
 ### Allocation And Rename Helpers
 
@@ -389,11 +412,13 @@ fn compare_term_structure(left: &Term, right: &Term) -> Ordering;
 Responsibilities:
 
 - return `EmptyCanonicalCandidates` if there are no candidates
-- compare candidates by `compare_terms`
-- return the index of the minimum candidate
+- compare candidates by `compare_term_structure`
+- return the index of the structurally minimum candidate
 - use `compare_term_structure` to detect equal canonical structures with
-  conflicting coefficients
-- detect coefficient conflicts for equal canonical structure
+  inconsistent coefficients
+- detect inconsistent coefficients for equal canonical structure
+- coefficient values are payload/sign transport and are not structural
+  tie-breakers
 - callers that need sidecar data, such as contracted rename maps, should keep
   that data in vectors aligned with the candidate term vector and fetch it by
   the returned index
@@ -454,7 +479,7 @@ Return errors for:
 - missing index pool entries
 - exhausted index pools
 - empty canonical candidate iterators
-- equal canonical structures with conflicting coefficients
+- equal canonical structures with inconsistent coefficients
 
 `repr::validate` catches many structural problems earlier, but `canon` should
 still defend its own assumptions where it has enough context to return a clear
@@ -472,8 +497,10 @@ Initial tests should cover:
 - `canon_term` applies `Negate` to coefficients
 - `canon_term` distinguishes external ids with the same range
 - `canon_term` is deterministic for tied factors
-- `canon_term` returns coefficient conflict instead of panicking
+- `canon_term` selects representatives by structure, not coefficient value
+- `canon_term` returns `InconsistentSymmetryCoefficient` instead of panicking
 - `canon_split` returns two owner orientations
+- `canon_split` owner orientation does not swap split left/right side roles
 - split owner/follower terms use consistent shared names
 - `canon_split` remaps `interface.contracted`
 - `canon_split` preserves `left_external` and `right_external`
