@@ -117,7 +117,7 @@ fn sift(
     biclique: &Biclique,
     candidates: &[SearchNode],
     frontier: &HashMap<SearchNode, Delta>,
-    _child_frontiers: &HashMap<SearchNode, HashMap<SearchNode, Delta>>,
+    child_frontiers: &HashMap<SearchNode, HashMap<SearchNode, Delta>>,
 ) -> Vec<SearchNode> {
     if biclique.left_node_ids.is_empty() && biclique.right_node_ids.is_empty() {
         return candidates
@@ -136,7 +136,29 @@ fn sift(
             .collect();
     }
 
-    candidates.to_vec()
+    let current = candidates.to_vec();
+
+    let mut best_forbidden = Vec::new();
+    let mut best_score = 0usize;
+    for &node in &current {
+        let forbidden: Vec<SearchNode> = child_frontiers
+            .get(&node)
+            .map(|next| next.keys().copied().collect())
+            .unwrap_or_default();
+        let score = forbidden
+            .iter()
+            .filter(|candidate| current.contains(candidate))
+            .count();
+        if score > best_score {
+            best_score = score;
+            best_forbidden = forbidden;
+        }
+    }
+
+    current
+        .into_iter()
+        .filter(|node| !best_forbidden.contains(node))
+        .collect()
 }
 
 fn build_child_frontiers(

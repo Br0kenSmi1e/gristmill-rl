@@ -261,3 +261,56 @@ fn enumerate_bicliques_supports_negative_rational_coefficients() {
     assert_eq!(biclique.right_coeffs, vec![rat(-1, 2), rat(3, 4)]);
     assert_eq!(biclique.terms_used, 0b1111);
 }
+
+#[test]
+fn enumerate_bicliques_emits_only_the_maximal_2x3_rectangle_once() {
+    let graph = graph_i64(
+        sample_left_nodes(),
+        sample_right_nodes(),
+        &[
+            (0, 0, 2, 0b000001),
+            (0, 1, 4, 0b000010),
+            (0, 2, 6, 0b000100),
+            (1, 0, 6, 0b001000),
+            (1, 1, 12, 0b010000),
+            (1, 2, 18, 0b100000),
+        ],
+    );
+
+    let bicliques = enumerate_bicliques(&graph);
+
+    assert_eq!(bicliques.len(), 1);
+
+    let biclique = &bicliques[0];
+    assert_eq!(biclique.left_node_ids, vec![0, 1]);
+    assert_eq!(biclique.right_node_ids, vec![0, 1, 2]);
+    assert_eq!(biclique.left_coeffs, vec![rat(1, 1), rat(3, 1)]);
+    assert_eq!(
+        biclique.right_coeffs,
+        vec![rat(2, 1), rat(4, 1), rat(6, 1)]
+    );
+    assert_eq!(biclique.terms_used, 0b111111);
+}
+
+#[test]
+fn enumerate_bicliques_ignores_non_current_left_pivots_after_bootstrap() {
+    let graph = graph_i64(
+        sample_left_nodes(),
+        sample_right_nodes()[0..2].to_vec(),
+        &[
+            (0, 0, 10, 0b001000),
+            (0, 1, 20, 0b010000),
+            (1, 0, 2, 0b000001),
+            (1, 1, 4, 0b000010),
+            (2, 0, 6, 0b000100),
+            (2, 1, 12, 0b001000),
+        ],
+    );
+
+    let bicliques = enumerate_bicliques(&graph);
+    let biclique = find_biclique(&bicliques, &[1, 2], &[0, 1]);
+
+    assert_eq!(biclique.left_coeffs, vec![rat(1, 1), rat(3, 1)]);
+    assert_eq!(biclique.right_coeffs, vec![rat(2, 1), rat(4, 1)]);
+    assert_eq!(biclique.terms_used, 0b001111);
+}
