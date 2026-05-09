@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type IndexPool = HashMap<RangeId, Vec<IndexId>>;
 pub type TensorSymmetryMap = HashMap<TensorId, Vec<SymGenerator>>;
+type DummyRange = HashMap<IndexId, RangeId>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonError {
@@ -65,8 +66,15 @@ pub fn canon_term(
     symmetry: &TensorSymmetryMap,
     pool: &IndexPool,
 ) -> Result<Term, CanonError> {
-    let _ = pool;
-    let candidates = enumerate_symmetry_terms(term, symmetry)?;
+    let dummy_range = build_term_dummy_range(term);
+    let mut candidates = Vec::new();
+
+    for sym_term in enumerate_symmetry_terms(term, symmetry)? {
+        for ordered in enumerate_ordered_terms(&sym_term, &dummy_range) {
+            candidates.push(rename_standalone_term(&ordered, &dummy_range, pool)?);
+        }
+    }
+
     let candidate = candidates
         .into_iter()
         .min_by(compare_terms)
@@ -81,6 +89,72 @@ pub fn canon_split(
 ) -> Result<(Split, Split), CanonError> {
     let _ = (split, symmetry, pool);
     Err(CanonError::EmptyCanonicalCandidates)
+}
+
+fn build_term_dummy_range(term: &Term) -> DummyRange {
+    term.sum_indices
+        .iter()
+        .map(|index| (index.id, index.range))
+        .collect()
+}
+
+#[derive(Clone, Copy)]
+enum IndexSlot {
+    Dummy(RangeId),
+    External(IndexId),
+}
+
+struct PoolAllocator<'a> {
+    pool: &'a IndexPool,
+    used: HashMap<RangeId, HashSet<usize>>,
+}
+
+impl<'a> PoolAllocator<'a> {
+    fn new(pool: &'a IndexPool) -> Self {
+        Self {
+            pool,
+            used: HashMap::new(),
+        }
+    }
+
+    fn alloc_low(&mut self, range: RangeId) -> Result<IndexId, CanonError> {
+        let ids = self
+            .pool
+            .get(&range)
+            .ok_or(CanonError::MissingIndexPool { range })?;
+        let used = self.used.entry(range).or_default();
+
+        for (position, &id) in ids.iter().enumerate() {
+            if used.insert(position) {
+                return Ok(id);
+            }
+        }
+
+        Err(CanonError::ExhaustedIndexPool { range })
+    }
+
+    #[allow(dead_code)]
+    fn alloc_high(&mut self, range: RangeId) -> Result<IndexId, CanonError> {
+        let ids = self
+            .pool
+            .get(&range)
+            .ok_or(CanonError::MissingIndexPool { range })?;
+        let used = self.used.entry(range).or_default();
+
+        for (position, &id) in ids.iter().enumerate().rev() {
+            if used.insert(position) {
+                return Ok(id);
+            }
+        }
+
+        Err(CanonError::ExhaustedIndexPool { range })
+    }
+}
+
+#[allow(dead_code)]
+fn range_for_new_id(pool: &IndexPool, id: IndexId) -> Option<RangeId> {
+    pool.iter()
+        .find_map(|(&range, ids)| ids.contains(&id).then_some(range))
 }
 
 fn enumerate_sym_group(
@@ -232,6 +306,220 @@ fn apply_action_to_coeff(coeff: Rational, action: SymAction) -> Rational {
         SymAction::Identity => coeff,
         SymAction::Negate => -coeff,
     }
+}
+
+fn compare_factors_by_structure(
+    left: &Factor,
+    right: &Factor,
+    dummy_range: &DummyRange,
+) -> Ordering {
+    left.tensor
+        .cmp(&right.tensor)
+        .then_with(|| compare_index_slots(&left.indices, &right.indices, dummy_range))
+}
+
+fn compare_index_slots(left: &[IndexId], right: &[IndexId], dummy_range: &DummyRange) -> Ordering {
+    for (left_id, right_id) in left.iter().zip(right) {
+        let ordering = index_slot(*left_id, dummy_range).cmp(&index_slot(*right_id, dummy_range));
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+
+    left.len().cmp(&right.len())
+}
+
+fn index_slot(index: IndexId, dummy_range: &DummyRange) -> IndexSlot {
+    if let Some(&range) = dummy_range.get(&index) {
+        IndexSlot::Dummy(range)
+    } else {
+        IndexSlot::External(index)
+    }
+}
+
+impl PartialEq for IndexSlot {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for IndexSlot {}
+
+impl PartialOrd for IndexSlot {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for IndexSlot {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self, other) {
+            (IndexSlot::Dummy(left), IndexSlot::Dummy(right)) => left.cmp(right),
+            (IndexSlot::Dummy(_), IndexSlot::External(_)) => Ordering::Less,
+            (IndexSlot::External(_), IndexSlot::Dummy(_)) => Ordering::Greater,
+            (IndexSlot::External(left), IndexSlot::External(right)) => left.cmp(right),
+        }
+    }
+}
+
+fn enumerate_ordered_terms(term: &Term, dummy_range: &DummyRange) -> Vec<Term> {
+    let mut factors = term.factors.clone();
+    factors.sort_by(|left, right| compare_factors_by_structure(left, right, dummy_range));
+    let groups = tied_groups(&factors, dummy_range);
+    let mut factor_orders = Vec::new();
+    enumerate_group_permutations(&factors, &groups, 0, &mut factor_orders);
+
+    factor_orders
+        .into_iter()
+        .map(|factors| Term {
+            coeff: term.coeff.clone(),
+            sum_indices: term.sum_indices.clone(),
+            factors,
+        })
+        .collect()
+}
+
+fn tied_groups(factors: &[Factor], dummy_range: &DummyRange) -> Vec<(usize, usize)> {
+    let mut groups = Vec::new();
+    let mut start = 0;
+
+    while start < factors.len() {
+        let mut end = start + 1;
+        while end < factors.len()
+            && compare_factors_by_structure(&factors[start], &factors[end], dummy_range)
+                == Ordering::Equal
+        {
+            end += 1;
+        }
+        groups.push((start, end));
+        start = end;
+    }
+
+    groups
+}
+
+fn enumerate_group_permutations(
+    factors: &[Factor],
+    groups: &[(usize, usize)],
+    group_index: usize,
+    out: &mut Vec<Vec<Factor>>,
+) {
+    if group_index == groups.len() {
+        out.push(factors.to_vec());
+        return;
+    }
+
+    let (start, end) = groups[group_index];
+    for permutation in permutations(&factors[start..end]) {
+        let mut next = factors.to_vec();
+        next.splice(start..end, permutation);
+        enumerate_group_permutations(&next, groups, group_index + 1, out);
+    }
+}
+
+fn permutations(items: &[Factor]) -> Vec<Vec<Factor>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+
+    let mut out = Vec::new();
+    for index in 0..items.len() {
+        let mut rest = items.to_vec();
+        let head = rest.remove(index);
+        for mut tail in permutations(&rest) {
+            let mut permutation = vec![head.clone()];
+            permutation.append(&mut tail);
+            out.push(permutation);
+        }
+    }
+
+    out
+}
+
+fn build_rename_map<F>(
+    term: &Term,
+    rename_ids: &HashSet<IndexId>,
+    dummy_range: &DummyRange,
+    base_map: &HashMap<IndexId, IndexId>,
+    allocator: &mut PoolAllocator<'_>,
+    mut allocate: F,
+) -> Result<HashMap<IndexId, IndexId>, CanonError>
+where
+    F: FnMut(&mut PoolAllocator<'_>, RangeId) -> Result<IndexId, CanonError>,
+{
+    let mut remap = base_map.clone();
+
+    for factor in &term.factors {
+        for &index_id in &factor.indices {
+            if !rename_ids.contains(&index_id) || remap.contains_key(&index_id) {
+                continue;
+            }
+            let range = *dummy_range
+                .get(&index_id)
+                .expect("rename_ids must be present in dummy_range");
+            remap.insert(index_id, allocate(allocator, range)?);
+        }
+    }
+
+    for index in &term.sum_indices {
+        if !rename_ids.contains(&index.id) || remap.contains_key(&index.id) {
+            continue;
+        }
+        let range = *dummy_range
+            .get(&index.id)
+            .expect("rename_ids must be present in dummy_range");
+        remap.insert(index.id, allocate(allocator, range)?);
+    }
+
+    Ok(remap)
+}
+
+fn apply_rename_map(term: &Term, remap: &HashMap<IndexId, IndexId>) -> Term {
+    let mut sum_indices: Vec<_> = term
+        .sum_indices
+        .iter()
+        .map(|index| Index {
+            id: remap.get(&index.id).copied().unwrap_or(index.id),
+            range: index.range,
+        })
+        .collect();
+    sum_indices.sort_by_key(|index| index.id);
+
+    Term {
+        coeff: term.coeff.clone(),
+        sum_indices,
+        factors: term
+            .factors
+            .iter()
+            .map(|factor| Factor {
+                tensor: factor.tensor,
+                indices: factor
+                    .indices
+                    .iter()
+                    .map(|index| remap.get(index).copied().unwrap_or(*index))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn rename_standalone_term(
+    term: &Term,
+    dummy_range: &DummyRange,
+    pool: &IndexPool,
+) -> Result<Term, CanonError> {
+    let rename_ids: HashSet<_> = term.sum_indices.iter().map(|index| index.id).collect();
+    let mut allocator = PoolAllocator::new(pool);
+    let remap = build_rename_map(
+        term,
+        &rename_ids,
+        dummy_range,
+        &HashMap::new(),
+        &mut allocator,
+        |allocator, range| allocator.alloc_low(range),
+    )?;
+
+    Ok(apply_rename_map(term, &remap))
 }
 
 fn compare_terms(left: &Term, right: &Term) -> Ordering {

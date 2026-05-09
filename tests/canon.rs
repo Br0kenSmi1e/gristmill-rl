@@ -210,3 +210,155 @@ fn canon_term_reports_invalid_symmetry_permutation() {
         })
     );
 }
+
+#[test]
+fn canon_term_normalizes_dummy_names_and_sum_index_order() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![idx(8, 0), idx(4, 0)],
+        factors: vec![factor(0, &[8, 4]), factor(1, &[4, 8])],
+    };
+    let def = TensorDef {
+        base: TensorId(2),
+        ext_indices: vec![],
+        terms: vec![term.clone()],
+    };
+    let tensors = vec![
+        TensorInfo {
+            id: TensorId(0),
+            symmetry: vec![],
+        },
+        TensorInfo {
+            id: TensorId(1),
+            symmetry: vec![],
+        },
+    ];
+
+    let canonical = canon_term(
+        &term,
+        &build_tensor_symmetry_map(&tensors),
+        &build_index_pool(&def),
+    )
+    .unwrap();
+
+    assert_eq!(
+        canonical,
+        Term {
+            coeff: one(),
+            sum_indices: vec![idx(4, 0), idx(8, 0)],
+            factors: vec![factor(0, &[4, 8]), factor(1, &[8, 4])],
+        }
+    );
+}
+
+#[test]
+fn canon_term_orders_factors_but_preserves_external_id_distinctions() {
+    let a = idx(1, 0);
+    let b = idx(2, 0);
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: vec![factor(1, &[b.id.0]), factor(0, &[a.id.0])],
+    };
+    let def = TensorDef {
+        base: TensorId(2),
+        ext_indices: vec![a, b],
+        terms: vec![term.clone()],
+    };
+    let tensors = vec![
+        TensorInfo {
+            id: TensorId(0),
+            symmetry: vec![],
+        },
+        TensorInfo {
+            id: TensorId(1),
+            symmetry: vec![],
+        },
+    ];
+
+    let canonical = canon_term(
+        &term,
+        &build_tensor_symmetry_map(&tensors),
+        &build_index_pool(&def),
+    )
+    .unwrap();
+
+    assert_eq!(
+        canonical.factors,
+        vec![factor(0, &[a.id.0]), factor(1, &[b.id.0])]
+    );
+}
+
+#[test]
+fn canon_term_is_deterministic_for_tied_factor_groups() {
+    let term_a = Term {
+        coeff: one(),
+        sum_indices: vec![idx(10, 0), idx(11, 0), idx(12, 0)],
+        factors: vec![
+            factor(0, &[11, 10]),
+            factor(0, &[12, 11]),
+            factor(0, &[10, 12]),
+        ],
+    };
+    let term_b = Term {
+        coeff: one(),
+        sum_indices: vec![idx(12, 0), idx(10, 0), idx(11, 0)],
+        factors: vec![
+            factor(0, &[10, 12]),
+            factor(0, &[11, 10]),
+            factor(0, &[12, 11]),
+        ],
+    };
+    let def = TensorDef {
+        base: TensorId(1),
+        ext_indices: vec![],
+        terms: vec![term_a.clone(), term_b.clone()],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![],
+    }];
+    let symmetry = build_tensor_symmetry_map(&tensors);
+    let pool = build_index_pool(&def);
+
+    assert_eq!(
+        canon_term(&term_a, &symmetry, &pool).unwrap(),
+        canon_term(&term_b, &symmetry, &pool).unwrap()
+    );
+}
+
+#[test]
+fn canon_term_reports_missing_index_pool() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![idx(10, 4)],
+        factors: vec![factor(0, &[10])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![],
+    }];
+
+    assert_eq!(
+        canon_term(
+            &term,
+            &build_tensor_symmetry_map(&tensors),
+            &Default::default()
+        ),
+        Err(CanonError::MissingIndexPool { range: RangeId(4) })
+    );
+}
+
+#[test]
+fn canon_term_reports_missing_index_pool_for_unused_dummy() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![idx(10, 4)],
+        factors: vec![],
+    };
+
+    assert_eq!(
+        canon_term(&term, &build_tensor_symmetry_map(&[]), &Default::default()),
+        Err(CanonError::MissingIndexPool { range: RangeId(4) })
+    );
+}
