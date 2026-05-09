@@ -24,6 +24,94 @@ pub struct SymGenerator {
     pub action: SymAction,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReprError {
+    RangeIdMismatch {
+        position: usize,
+        found: RangeId,
+    },
+    TensorIdMismatch {
+        position: usize,
+        found: TensorId,
+    },
+    UnknownRange {
+        range: RangeId,
+    },
+    UnknownTensor {
+        tensor: TensorId,
+    },
+    UnknownIndex {
+        def_index: usize,
+        term_index: usize,
+        index: IndexId,
+    },
+    InconsistentIndexRange {
+        def_index: usize,
+        index: IndexId,
+        first: RangeId,
+        second: RangeId,
+    },
+    DuplicateExternalIndex {
+        def_index: usize,
+        index: IndexId,
+    },
+    ExternalAndSumIndexOverlap {
+        def_index: usize,
+        index: IndexId,
+    },
+    DuplicateSumIndex {
+        def_index: usize,
+        term_index: usize,
+        index: IndexId,
+    },
+    InvalidPermutation {
+        perm: Vec<usize>,
+    },
+    SymmetryArityMismatch {
+        expected: usize,
+        got: usize,
+    },
+}
+
+impl SymAction {
+    pub fn combine(self, other: SymAction) -> SymAction {
+        match (self, other) {
+            (SymAction::Identity, rhs) => rhs,
+            (SymAction::Negate, SymAction::Identity) => SymAction::Negate,
+            (SymAction::Negate, SymAction::Negate) => SymAction::Identity,
+        }
+    }
+}
+
+impl SymGenerator {
+    pub fn apply<T: Copy>(&self, indices: &[T]) -> Result<(Vec<T>, SymAction), ReprError> {
+        if self.perm.len() != indices.len() {
+            return Err(ReprError::SymmetryArityMismatch {
+                expected: self.perm.len(),
+                got: indices.len(),
+            });
+        }
+
+        let mut seen = vec![false; self.perm.len()];
+        for &position in &self.perm {
+            if position >= self.perm.len() || seen[position] {
+                return Err(ReprError::InvalidPermutation {
+                    perm: self.perm.clone(),
+                });
+            }
+            seen[position] = true;
+        }
+
+        Ok((
+            self.perm
+                .iter()
+                .map(|&position| indices[position])
+                .collect(),
+            self.action,
+        ))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Range {
     pub id: RangeId,
