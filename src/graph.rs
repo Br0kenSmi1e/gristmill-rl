@@ -41,7 +41,7 @@ pub fn build_graphs_from_splits(
             let graph = graphs
                 .entry(split.interface.clone())
                 .or_insert_with(|| empty_graph(split.interface.clone()));
-            insert_split(graph, source_coeff, term_idx, split)?;
+            insert_split(graph, source_coeff, term_idx, split);
         }
     }
 
@@ -62,17 +62,17 @@ fn insert_split(
     source_coeff: &Rational,
     term_idx: usize,
     split: &Split,
-) -> Result<(), GraphError> {
+) {
     let (left, right, coeff) = normalize_edge_contribution(source_coeff, split);
     let left_id = ensure_node(&mut graph.left_nodes, left);
     let right_id = ensure_node(&mut graph.right_nodes, right);
-    push_edge(&mut graph.edges, left_id, right_id, term_idx, coeff)
+    push_edge(&mut graph.edges, left_id, right_id, term_idx, coeff);
 }
 
 fn normalize_edge_contribution(source_coeff: &Rational, split: &Split) -> (Term, Term, Rational) {
     let mut left = split.left.clone();
     let mut right = split.right.clone();
-    let coeff = source_coeff * &left.coeff * &right.coeff;
+    let coeff = *source_coeff * left.coeff * right.coeff;
     left.coeff = Rational::new(1, 1);
     right.coeff = Rational::new(1, 1);
     (left, right, coeff)
@@ -94,7 +94,7 @@ fn push_edge(
     right_id: usize,
     term_idx: usize,
     coeff: Rational,
-) -> Result<(), GraphError> {
+) {
     let term_bit = 1_u64 << term_idx;
 
     edges.push(GraphEdge {
@@ -103,7 +103,6 @@ fn push_edge(
         coeff,
         terms_used: term_bit,
     });
-    Ok(())
 }
 
 fn finalize_graphs(graphs: HashMap<SplitInterface, ConstrGraph>) -> Vec<ConstrGraph> {
