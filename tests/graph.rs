@@ -1,4 +1,4 @@
-use gristmill_symbolics::graph::{build_graphs_from_splits, ConstrGraph, GraphEdge, GraphError};
+use gristmill_symbolics::graph::{ConstrGraph, GraphEdge, GraphError, build_graphs_from_splits};
 use gristmill_symbolics::repr::{
     Factor, Index, IndexId, RangeId, Rational, TensorDef, TensorId, Term,
 };
@@ -134,10 +134,7 @@ fn builds_graph_bucket_with_independent_left_and_right_nodes() {
                 shared_term_value.clone(),
                 term(one(), vec![factor(8, &[2, 1])]),
             ],
-            right_nodes: vec![
-                shared_term_value,
-                term(one(), vec![factor(10, &[0])]),
-            ],
+            right_nodes: vec![shared_term_value, term(one(), vec![factor(10, &[0])]),],
             edges: vec![
                 GraphEdge {
                     left_id: 0,

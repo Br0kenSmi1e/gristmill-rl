@@ -57,12 +57,7 @@ fn empty_graph(interface: SplitInterface) -> ConstrGraph {
     }
 }
 
-fn insert_split(
-    graph: &mut ConstrGraph,
-    source_coeff: &Rational,
-    term_idx: usize,
-    split: &Split,
-) {
+fn insert_split(graph: &mut ConstrGraph, source_coeff: &Rational, term_idx: usize, split: &Split) {
     let (left, right, coeff) = normalize_edge_contribution(source_coeff, split);
     let left_id = ensure_node(&mut graph.left_nodes, left);
     let right_id = ensure_node(&mut graph.right_nodes, right);
@@ -109,9 +104,7 @@ fn finalize_graphs(graphs: HashMap<SplitInterface, ConstrGraph>) -> Vec<ConstrGr
     graphs
         .into_values()
         .filter_map(|mut graph| {
-            graph
-                .edges
-                .retain(|edge| edge.coeff != Rational::new(0, 1));
+            graph.edges.retain(|edge| edge.coeff != Rational::new(0, 1));
             (graph.edges.len() >= 2).then_some(graph)
         })
         .collect()
