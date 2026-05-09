@@ -684,3 +684,34 @@ fn canon_split_right_owner_prioritizes_right_owner_before_left_follower() {
         vec![IndexId(4), IndexId(8), b.id]
     );
 }
+
+#[test]
+fn canon_term_reports_exhausted_index_pool() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![idx(1, 0), idx(2, 0)],
+        factors: vec![factor(0, &[1, 2])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![],
+    }];
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![],
+        terms: vec![Term {
+            coeff: one(),
+            sum_indices: vec![idx(1, 0)],
+            factors: vec![],
+        }],
+    };
+
+    assert_eq!(
+        canon_term(
+            &term,
+            &build_tensor_symmetry_map(&tensors),
+            &build_index_pool(&def)
+        ),
+        Err(CanonError::ExhaustedIndexPool { range: RangeId(0) })
+    );
+}
