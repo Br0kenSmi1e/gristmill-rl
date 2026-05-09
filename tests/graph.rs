@@ -262,7 +262,10 @@ fn equal_interfaces_share_a_bucket_and_different_interfaces_create_separate_grap
 
     assert_eq!(graphs.len(), 2);
     assert_eq!(graph_by_interface(&graphs, &first_interface).edges.len(), 2);
-    assert_eq!(graph_by_interface(&graphs, &second_interface).edges.len(), 2);
+    assert_eq!(
+        graph_by_interface(&graphs, &second_interface).edges.len(),
+        2
+    );
 }
 
 #[test]
