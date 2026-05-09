@@ -155,3 +155,35 @@ fn one_edge_bicliques_are_not_emitted() {
 
     assert!(enumerate_bicliques(&graph).is_empty());
 }
+
+#[test]
+fn enumerate_bicliques_bootstraps_to_a_2x1_biclique() {
+    let graph = graph_i64(
+        sample_left_nodes(),
+        sample_right_nodes()[0..1].to_vec(),
+        &[(0, 0, 2, 0b001), (1, 0, 6, 0b010)],
+    );
+
+    let bicliques = enumerate_bicliques(&graph);
+    let biclique = find_biclique(&bicliques, &[0, 1], &[0]);
+
+    assert_eq!(biclique.left_coeffs, vec![rat(1, 1), rat(3, 1)]);
+    assert_eq!(biclique.right_coeffs, vec![rat(2, 1)]);
+    assert_eq!(biclique.terms_used, 0b011);
+}
+
+#[test]
+fn enumerate_bicliques_bootstraps_to_a_1x2_biclique() {
+    let graph = graph_i64(
+        sample_left_nodes()[0..1].to_vec(),
+        sample_right_nodes(),
+        &[(0, 0, 2, 0b001), (0, 1, 4, 0b010)],
+    );
+
+    let bicliques = enumerate_bicliques(&graph);
+    let biclique = find_biclique(&bicliques, &[0], &[0, 1]);
+
+    assert_eq!(biclique.left_coeffs, vec![rat(1, 1)]);
+    assert_eq!(biclique.right_coeffs, vec![rat(2, 1), rat(4, 1)]);
+    assert_eq!(biclique.terms_used, 0b011);
+}
