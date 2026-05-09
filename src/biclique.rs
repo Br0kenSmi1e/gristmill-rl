@@ -226,7 +226,7 @@ fn update_delta(
         return None;
     }
 
-    let expected = edge.coeff.clone() / chosen_delta.coeff.clone();
+    let expected = edge.coeff / chosen_delta.coeff;
     let mut next = candidate_delta.clone();
     if candidate_delta.terms == 0 {
         next.coeff = expected;
@@ -243,7 +243,7 @@ fn has_sharing(biclique: &Biclique) -> bool {
 
 fn push(biclique: &mut Biclique, node: SearchNode, delta: &Delta) {
     biclique.terms_used |= delta.terms;
-    let coeff = delta.coeff.clone();
+    let coeff = delta.coeff;
 
     match node {
         SearchNode::Left(id) => {
