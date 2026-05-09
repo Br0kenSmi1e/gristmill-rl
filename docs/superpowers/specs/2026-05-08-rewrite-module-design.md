@@ -116,6 +116,14 @@ candidate_templates[i] <-> candidate_bicliques[i]
 The template is for receiver inspection. The hidden graph and biclique vectors
 are for deterministic rewrite construction.
 
+Lifecycle contract:
+
+- an `ActionSpace` is valid only for the unchanged `TensorComputation` that
+  produced it
+- the first implementation assumes no `TensorComputation` mutation between
+  `next_action_space`, `build_rewrite`, and `apply_rewrite`
+- stale action spaces are not detected or recovered from
+
 ## Action-Space Generation
 
 ```rust
@@ -207,6 +215,10 @@ return (candidate_graphs, candidate_bicliques)
 
 This is orchestration only. `rewrite` should not perform split, canon, graph,
 or biclique logic itself.
+
+Candidate indices are meaningful only within one returned `ActionSpace` value.
+The module does not guarantee stable candidate ordering across separate calls to
+`next_action_space`, even for equivalent `TensorComputation` inputs.
 
 ## Decision Validation
 
@@ -431,6 +443,7 @@ Initial tests should cover:
 - no action space when no definition is actionable
 - `next_action_space` returns the first actionable definition
 - candidate templates, hidden graphs, and hidden bicliques stay index-aligned
+  in `src/rewrite.rs` module tests, since the sidecars are private
 - `split`, `canon`, and `graph` errors propagate through `next_action_space`
 - decision rejects out-of-range candidate index
 - decision rejects left and right mask length mismatches
@@ -443,6 +456,7 @@ Initial tests should cover:
 - apply registers two tensors and inserts three definitions
 - apply rejects out-of-range definition index
 - apply allows target definition drift after rewrite construction
+- the computation validates after applying a rewrite
 
 ## Acceptance Criteria
 
@@ -460,3 +474,4 @@ The `rewrite` module is complete when:
 - `apply_rewrite` mutates `TensorComputation` only after the `def_index`
   boundary check
 - no target-definition equality/staleness check is added in the first design
+- candidate indices are scoped to one `ActionSpace`, not stable across calls
