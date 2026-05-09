@@ -56,10 +56,27 @@ Field meanings:
 
 The node-id vectors and coefficient vectors are aligned by position.
 
+## Input Contract
+
+`enumerate_bicliques` expects a finalized `ConstrGraph` produced by the
+`graph` module.
+
+That means:
+
+- zero-coefficient edges have already been removed
+- graphs with fewer than two useful edges have already been omitted by the
+  caller or return no bicliques
+- edge node IDs are valid indexes into the graph's node arrays
+- `terms_used` bitsets represent source-term provenance from `graph`
+
+The biclique module does not repair malformed graphs. Its job is to enumerate
+legal bicliques from the graph-stage output.
+
 ## Legality
 
 A returned `Biclique` is legal when:
 
+- `left_node_ids` and `right_node_ids` are both nonempty
 - every selected left node is connected to every selected right node
 - each selected edge coefficient satisfies:
 
@@ -75,6 +92,27 @@ left_node_ids.len() >= 2 || right_node_ids.len() >= 2
 ```
 
 The sharing rule excludes trivial one-edge bicliques.
+
+## Coefficient Normalization
+
+Coefficient factorization has a scalar ambiguity. The module preserves the
+`rustymill` convention:
+
+- initial search deltas have coefficient `1`
+- search starts from left nodes only
+- the first selected left node therefore fixes the biclique's coefficient scale
+- opposite-side coefficients are derived by:
+
+```text
+expected = edge.coeff / chosen_delta.coeff
+```
+
+When a candidate node has no assigned edge provenance yet, its coefficient is
+set to `expected`. Once assigned, later incident edges must produce the same
+`expected` value.
+
+This normalization is part of the public behavior because later rewrite
+templates consume the emitted node and coefficient order directly.
 
 ## Maximality
 
@@ -104,7 +142,8 @@ designed deliberately.
 ## Algorithm
 
 The implementation should closely port the existing `rustymill` recursive
-search.
+search. The intended behavior is exactly `rustymill` biclique enumeration,
+except that emitted bicliques are not sorted before being returned.
 
 Keep:
 
@@ -238,6 +277,36 @@ if has_sharing(biclique) && frontier is empty:
 ```
 
 Do not sort the emitted biclique before pushing it.
+
+## `sift` Semantics
+
+`sift` should preserve the `rustymill` branching behavior:
+
+```text
+if biclique is empty:
+  return left candidates only
+
+if biclique has exactly one left node and no right nodes:
+  return right candidates whose frontier delta has nonzero provenance
+
+curr = all remaining candidates
+best_forbidden = []
+best_score = 0
+
+for q in curr:
+  forbidden = child_frontiers[q].keys()
+  score = count nodes in forbidden that are also in curr
+  if score > best_score:
+    best_score = score
+    best_forbidden = forbidden
+
+return curr excluding best_forbidden
+```
+
+The first two cases are the bootstrap behavior. They avoid symmetric duplicate
+starts and prevent isolated same-side sets from being emitted. The later pivot
+step is preserved from `rustymill` as part of the inclusion-maximal recursive
+search.
 
 ## `update_delta` Semantics
 
