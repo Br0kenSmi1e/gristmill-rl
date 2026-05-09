@@ -3,7 +3,10 @@ use gristmill_symbolics::graph::GraphError;
 use gristmill_symbolics::repr::{
     Factor, Index, IndexId, RangeId, Rational, TensorComputation, TensorId, Term,
 };
-use gristmill_symbolics::rewrite::{RewriteError, next_action_space};
+use gristmill_symbolics::rewrite::{
+    Decision, Factorization, FactorizationRewrite, RewriteError, apply_rewrite, build_rewrite,
+    next_action_space,
+};
 use gristmill_symbolics::split::SplitError;
 
 fn one() -> Rational {
@@ -50,6 +53,23 @@ fn comp_with_shared_left_candidate() -> TensorComputation {
     );
 
     comp
+}
+
+fn empty_def(base: TensorId) -> gristmill_symbolics::repr::TensorDef {
+    gristmill_symbolics::repr::TensorDef {
+        base,
+        ext_indices: vec![],
+        terms: vec![],
+    }
+}
+
+fn first_full_decision(space: &gristmill_symbolics::rewrite::ActionSpace) -> Decision {
+    let template = &space.candidate_templates[0];
+    Decision {
+        candidate_index: 0,
+        left_mask: vec![true; template.left_definition.terms.len()],
+        right_mask: vec![true; template.right_definition.terms.len()],
+    }
 }
 
 #[test]
@@ -156,4 +176,59 @@ fn next_action_space_propagates_graph_errors() {
             max: 64,
         }))
     );
+}
+
+#[test]
+fn apply_rewrite_registers_tensors_inserts_definitions_and_validates() {
+    let mut comp = comp_with_shared_left_candidate();
+    let original_tensors = comp.tensors().len();
+    let original_definitions = comp.definitions().len();
+    let space = next_action_space(&comp, 0).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+    let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
+    let def_index = rewrite.def_index;
+    let left_base = rewrite.factorization.left_definition.base;
+    let right_base = rewrite.factorization.right_definition.base;
+    let rewritten_base = rewrite.factorization.rewritten_definition.base;
+
+    apply_rewrite(&mut comp, rewrite).unwrap();
+
+    assert_eq!(comp.tensors().len(), original_tensors + 2);
+    assert_eq!(comp.definitions().len(), original_definitions + 2);
+    assert_eq!(comp.definitions()[def_index].base, left_base);
+    assert_eq!(comp.definitions()[def_index + 1].base, right_base);
+    assert_eq!(comp.definitions()[def_index + 2].base, rewritten_base);
+    assert_eq!(comp.validate(), Ok(()));
+}
+
+#[test]
+fn apply_rewrite_rejects_out_of_range_definition_index_before_mutation() {
+    let mut comp = TensorComputation::new();
+    let rewrite = FactorizationRewrite {
+        def_index: 7,
+        factorization: Factorization {
+            left_definition: empty_def(TensorId(0)),
+            right_definition: empty_def(TensorId(1)),
+            rewritten_definition: empty_def(TensorId(2)),
+        },
+    };
+
+    assert_eq!(
+        apply_rewrite(&mut comp, rewrite),
+        Err(RewriteError::DefinitionIndexOutOfRange { index: 7, len: 0 })
+    );
+    assert_eq!(comp.tensors().len(), 0);
+    assert_eq!(comp.definitions().len(), 0);
+}
+
+#[test]
+fn apply_rewrite_only_checks_definition_index_after_rewrite_construction() {
+    let mut comp = comp_with_shared_left_candidate();
+    let space = next_action_space(&comp, 0).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+    let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
+
+    comp.definitions_mut()[rewrite.def_index].terms.clear();
+
+    assert_eq!(apply_rewrite(&mut comp, rewrite), Ok(()));
 }

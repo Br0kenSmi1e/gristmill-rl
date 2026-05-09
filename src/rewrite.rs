@@ -213,10 +213,50 @@ pub fn build_rewrite(
 }
 
 pub fn apply_rewrite(
-    _comp: &mut TensorComputation,
-    _rewrite: FactorizationRewrite,
+    comp: &mut TensorComputation,
+    rewrite: FactorizationRewrite,
 ) -> Result<(), RewriteError> {
+    verify_rewrite_def_index(comp, &rewrite)?;
+    register_rewrite_tensors(comp);
+    replace_definition_with_factorization(comp, rewrite);
     Ok(())
+}
+
+fn verify_rewrite_def_index(
+    comp: &TensorComputation,
+    rewrite: &FactorizationRewrite,
+) -> Result<(), RewriteError> {
+    if rewrite.def_index < comp.definitions().len() {
+        Ok(())
+    } else {
+        Err(RewriteError::DefinitionIndexOutOfRange {
+            index: rewrite.def_index,
+            len: comp.definitions().len(),
+        })
+    }
+}
+
+fn register_rewrite_tensors(comp: &mut TensorComputation) {
+    comp.add_tensor(vec![]);
+    comp.add_tensor(vec![]);
+}
+
+fn replace_definition_with_factorization(
+    comp: &mut TensorComputation,
+    rewrite: FactorizationRewrite,
+) {
+    let def_index = rewrite.def_index;
+    let Factorization {
+        left_definition,
+        right_definition,
+        rewritten_definition,
+    } = rewrite.factorization;
+    let definitions = comp.definitions_mut();
+
+    definitions.remove(def_index);
+    definitions.insert(def_index, rewritten_definition);
+    definitions.insert(def_index, right_definition);
+    definitions.insert(def_index, left_definition);
 }
 
 #[allow(dead_code)]
