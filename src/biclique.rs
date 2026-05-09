@@ -272,3 +272,46 @@ fn pop(biclique: &mut Biclique, node: SearchNode, delta: &Delta) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta() -> Delta {
+        Delta {
+            coeff: Rational::new(1, 1),
+            terms: 1,
+        }
+    }
+
+    #[test]
+    fn sift_prunes_candidates_for_best_post_bootstrap_pivot() {
+        let biclique = Biclique {
+            left_node_ids: vec![0],
+            right_node_ids: vec![0],
+            left_coeffs: vec![Rational::new(1, 1)],
+            right_coeffs: vec![Rational::new(1, 1)],
+            terms_used: 1,
+        };
+        let candidates = vec![SearchNode::Left(1), SearchNode::Right(1), SearchNode::Left(2)];
+        let frontier = candidates
+            .iter()
+            .copied()
+            .map(|node| (node, delta()))
+            .collect();
+        let child_frontiers = HashMap::from([
+            (
+                SearchNode::Left(1),
+                HashMap::from([(SearchNode::Right(1), delta()), (SearchNode::Left(2), delta())]),
+            ),
+            (
+                SearchNode::Right(1),
+                HashMap::from([(SearchNode::Left(2), delta())]),
+            ),
+        ]);
+
+        let sifted = sift(&biclique, &candidates, &frontier, &child_frontiers);
+
+        assert_eq!(sifted, vec![SearchNode::Left(1)]);
+    }
+}
