@@ -2,7 +2,9 @@ use crate::biclique::Biclique;
 use crate::canon::CanonError;
 use crate::graph::{ConstrGraph, GraphError};
 use crate::repr::{Factor, Index, Rational, TensorComputation, TensorDef, TensorId, Term};
+use crate::split::Split;
 use crate::split::SplitError;
+use crate::{biclique, canon, graph, split};
 use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,10 +67,75 @@ impl From<GraphError> for RewriteError {
 }
 
 pub fn next_action_space(
-    _comp: &TensorComputation,
-    _start_from: usize,
+    comp: &TensorComputation,
+    start_from: usize,
 ) -> Result<Option<ActionSpace>, RewriteError> {
+    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
+
+    for (def_index, def) in comp.definitions().iter().enumerate().skip(start_from) {
+        if def.terms.len() < 2 {
+            continue;
+        }
+
+        let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
+        if candidate_bicliques.is_empty() {
+            continue;
+        }
+
+        let candidate_templates = candidate_graphs
+            .iter()
+            .zip(&candidate_bicliques)
+            .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
+            .collect();
+
+        return Ok(Some(ActionSpace {
+            def_index,
+            candidate_templates,
+            candidate_graphs,
+            candidate_bicliques,
+        }));
+    }
+
     Ok(None)
+}
+
+fn enumerate_candidates(
+    comp: &TensorComputation,
+    def: &TensorDef,
+) -> Result<(Vec<ConstrGraph>, Vec<Biclique>), RewriteError> {
+    let symmetry = canon::build_tensor_symmetry_map(comp.tensors());
+    let pool = canon::build_index_pool(def);
+    let mut left_owner_splits_by_term: Vec<Vec<Split>> = vec![vec![]; def.terms.len()];
+    let mut right_owner_splits_by_term: Vec<Vec<Split>> = vec![vec![]; def.terms.len()];
+
+    for (term_idx, term) in def.terms.iter().enumerate() {
+        for raw_split in split::enumerate_splits(term, def)? {
+            let (left_owner, right_owner) = canon::canon_split(&raw_split, &symmetry, &pool)?;
+            left_owner_splits_by_term[term_idx].push(left_owner);
+            right_owner_splits_by_term[term_idx].push(right_owner);
+        }
+    }
+
+    let mut graphs = Vec::new();
+    graphs.extend(graph::build_graphs_from_splits(
+        def,
+        &left_owner_splits_by_term,
+    )?);
+    graphs.extend(graph::build_graphs_from_splits(
+        def,
+        &right_owner_splits_by_term,
+    )?);
+
+    let mut candidate_graphs = Vec::new();
+    let mut candidate_bicliques = Vec::new();
+    for graph in graphs {
+        for biclique in biclique::enumerate_bicliques(&graph) {
+            candidate_graphs.push(graph.clone());
+            candidate_bicliques.push(biclique);
+        }
+    }
+
+    Ok((candidate_graphs, candidate_bicliques))
 }
 
 pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
