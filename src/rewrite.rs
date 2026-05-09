@@ -3,6 +3,7 @@ use crate::canon::CanonError;
 use crate::graph::{ConstrGraph, GraphError};
 use crate::repr::{Factor, Index, Rational, TensorComputation, TensorDef, TensorId, Term};
 use crate::split::SplitError;
+use std::collections::HashSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Factorization {
@@ -106,11 +107,42 @@ pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(),
 }
 
 pub fn build_rewrite(
-    _comp: &TensorComputation,
-    _space: &ActionSpace,
-    _decision: &Decision,
+    comp: &TensorComputation,
+    space: &ActionSpace,
+    decision: &Decision,
 ) -> Result<FactorizationRewrite, RewriteError> {
-    Err(RewriteError::DefinitionIndexOutOfRange { index: 0, len: 0 })
+    let def =
+        comp.definitions()
+            .get(space.def_index)
+            .ok_or(RewriteError::DefinitionIndexOutOfRange {
+                index: space.def_index,
+                len: comp.definitions().len(),
+            })?;
+
+    validate_decision(space, decision)?;
+
+    let graph = space.candidate_graphs.get(decision.candidate_index).ok_or(
+        RewriteError::CandidateIndexOutOfRange {
+            index: decision.candidate_index,
+            len: space.candidate_graphs.len(),
+        },
+    )?;
+    let biclique = space
+        .candidate_bicliques
+        .get(decision.candidate_index)
+        .ok_or(RewriteError::CandidateIndexOutOfRange {
+            index: decision.candidate_index,
+            len: space.candidate_bicliques.len(),
+        })?;
+
+    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
+    let sub_biclique = sub_biclique_from_decision(graph, biclique, decision);
+    let factorization = build_factorization(def, graph, &sub_biclique, left_tid, right_tid);
+
+    Ok(FactorizationRewrite {
+        def_index: space.def_index,
+        factorization,
+    })
 }
 
 pub fn apply_rewrite(
@@ -259,6 +291,54 @@ fn bits_to_vec(mask: u64) -> Vec<usize> {
     (0..64)
         .filter(|position| mask & (1_u64 << position) != 0)
         .collect()
+}
+
+#[allow(dead_code)]
+fn sub_biclique_from_decision(
+    graph: &ConstrGraph,
+    biclique: &Biclique,
+    decision: &Decision,
+) -> Biclique {
+    let left: Vec<_> = biclique
+        .left_node_ids
+        .iter()
+        .copied()
+        .zip(biclique.left_coeffs.iter().copied())
+        .zip(decision.left_mask.iter().copied())
+        .filter_map(|((node_id, coeff), keep)| keep.then_some((node_id, coeff)))
+        .collect();
+    let right: Vec<_> = biclique
+        .right_node_ids
+        .iter()
+        .copied()
+        .zip(biclique.right_coeffs.iter().copied())
+        .zip(decision.right_mask.iter().copied())
+        .filter_map(|((node_id, coeff), keep)| keep.then_some((node_id, coeff)))
+        .collect();
+
+    let selected_left: HashSet<_> = left.iter().map(|(node_id, _)| *node_id).collect();
+    let selected_right: HashSet<_> = right.iter().map(|(node_id, _)| *node_id).collect();
+    let terms_used = graph
+        .edges
+        .iter()
+        .filter(|edge| {
+            selected_left.contains(&edge.left_id) && selected_right.contains(&edge.right_id)
+        })
+        .fold(0, |acc, edge| acc | edge.terms_used);
+
+    Biclique {
+        left_node_ids: left.iter().map(|(node_id, _)| *node_id).collect(),
+        right_node_ids: right.iter().map(|(node_id, _)| *node_id).collect(),
+        left_coeffs: left.iter().map(|(_, coeff)| *coeff).collect(),
+        right_coeffs: right.iter().map(|(_, coeff)| *coeff).collect(),
+        terms_used,
+    }
+}
+
+fn fresh_rewrite_tensor_ids(comp: &TensorComputation) -> (TensorId, TensorId) {
+    let left = comp.next_tensor_id();
+    let right = TensorId(left.0 + 1);
+    (left, right)
 }
 
 #[cfg(test)]
@@ -540,6 +620,110 @@ mod tests {
                     },
                 ],
             }
+        );
+    }
+
+    fn comp_with_definition(def: TensorDef) -> TensorComputation {
+        let mut comp = TensorComputation::new();
+        comp.add_definition(def.base, def.ext_indices.clone(), def.terms.clone());
+        comp
+    }
+
+    fn action_space_for_factorization(comp: &TensorComputation) -> ActionSpace {
+        let def = &comp.definitions()[0];
+        let (graph, biclique) = graph_and_biclique_for_factorization();
+        let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
+        let template = build_factorization(def, &graph, &biclique, left_tid, right_tid);
+
+        ActionSpace {
+            def_index: 0,
+            candidate_templates: vec![template],
+            candidate_graphs: vec![graph],
+            candidate_bicliques: vec![biclique],
+        }
+    }
+
+    #[test]
+    fn sub_biclique_from_decision_keeps_selected_terms_and_recomputes_provenance() {
+        let (graph, biclique) = graph_and_biclique_for_factorization();
+        let decision = Decision {
+            candidate_index: 0,
+            left_mask: vec![true],
+            right_mask: vec![false, true],
+        };
+
+        let sub_biclique = sub_biclique_from_decision(&graph, &biclique, &decision);
+
+        assert_eq!(sub_biclique.left_node_ids, vec![0]);
+        assert_eq!(sub_biclique.right_node_ids, vec![1]);
+        assert_eq!(sub_biclique.left_coeffs, vec![rat(3)]);
+        assert_eq!(sub_biclique.right_coeffs, vec![rat(7)]);
+        assert_eq!(sub_biclique.terms_used, 0b010);
+    }
+
+    #[test]
+    fn build_rewrite_full_biclique_matches_visible_template() {
+        let comp = comp_with_definition(source_def_for_factorization());
+        let space = action_space_for_factorization(&comp);
+        let decision = Decision {
+            candidate_index: 0,
+            left_mask: vec![true],
+            right_mask: vec![true, true],
+        };
+
+        let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
+
+        assert_eq!(rewrite.def_index, 0);
+        assert_eq!(rewrite.factorization, space.candidate_templates[0]);
+    }
+
+    #[test]
+    fn build_rewrite_subset_decision_shrinks_side_definition_and_consumed_terms() {
+        let comp = comp_with_definition(source_def_for_factorization());
+        let space = action_space_for_factorization(&comp);
+        let decision = Decision {
+            candidate_index: 0,
+            left_mask: vec![true],
+            right_mask: vec![false, true],
+        };
+
+        let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
+
+        assert_eq!(rewrite.factorization.left_definition.terms.len(), 1);
+        assert_eq!(rewrite.factorization.right_definition.terms.len(), 1);
+        assert_eq!(
+            rewrite.factorization.right_definition.terms[0].coeff,
+            rat(7)
+        );
+        assert_eq!(rewrite.factorization.rewritten_definition.terms.len(), 3);
+        assert_eq!(
+            rewrite.factorization.rewritten_definition.terms[0],
+            comp.definitions()[0].terms[0]
+        );
+        assert_eq!(
+            rewrite.factorization.rewritten_definition.terms[1],
+            comp.definitions()[0].terms[2]
+        );
+    }
+
+    #[test]
+    fn build_rewrite_rejects_out_of_range_definition_index() {
+        let comp = TensorComputation::new();
+        let space = ActionSpace {
+            def_index: 0,
+            candidate_templates: vec![],
+            candidate_graphs: vec![],
+            candidate_bicliques: vec![],
+        };
+        let decision = Decision {
+            candidate_index: 0,
+            left_mask: vec![],
+            right_mask: vec![],
+        };
+
+        assert_eq!(
+            build_rewrite(&comp, &space, &decision),
+            Err(RewriteError::DefinitionIndexOutOfRange { index: 0, len: 0 })
         );
     }
 }
