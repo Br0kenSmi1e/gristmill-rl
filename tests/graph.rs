@@ -350,3 +350,107 @@ fn repeated_source_term_contribution_to_same_edge_is_ignored() {
     assert_eq!(graphs[0].edges[0].coeff, Rational::new(2, 1));
     assert_eq!(graphs[0].edges[0].terms_used, 0b001);
 }
+
+#[test]
+fn zero_sum_edges_are_removed_and_single_edge_graphs_are_omitted() {
+    let interface = iface(vec![], vec![], vec![]);
+    let left = term(one(), vec![factor(0, &[0])]);
+    let right = term(one(), vec![factor(1, &[1])]);
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![],
+        terms: vec![
+            Term {
+                coeff: Rational::new(2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(-2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(9, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+        ],
+    };
+    let splits_by_term = vec![
+        vec![split(left.clone(), right.clone(), interface.clone())],
+        vec![split(left, right, interface.clone())],
+        vec![split(
+            term(one(), vec![factor(2, &[2])]),
+            term(one(), vec![factor(3, &[3])]),
+            interface.clone(),
+        )],
+    ];
+
+    assert_eq!(
+        build_graphs_from_splits(&def, &splits_by_term).unwrap(),
+        vec![]
+    );
+}
+
+#[test]
+fn graph_with_two_remaining_edges_survives_after_zero_edge_removal() {
+    let interface = iface(vec![], vec![], vec![]);
+    let cancel_left = term(one(), vec![factor(0, &[0])]);
+    let cancel_right = term(one(), vec![factor(1, &[1])]);
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![],
+        terms: vec![
+            Term {
+                coeff: Rational::new(2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(-2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(3, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(4, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+        ],
+    };
+    let splits_by_term = vec![
+        vec![split(
+            cancel_left.clone(),
+            cancel_right.clone(),
+            interface.clone(),
+        )],
+        vec![split(cancel_left, cancel_right, interface.clone())],
+        vec![split(
+            term(one(), vec![factor(2, &[2])]),
+            term(one(), vec![factor(3, &[3])]),
+            interface.clone(),
+        )],
+        vec![split(
+            term(one(), vec![factor(4, &[4])]),
+            term(one(), vec![factor(5, &[5])]),
+            interface.clone(),
+        )],
+    ];
+
+    let graphs = build_graphs_from_splits(&def, &splits_by_term).unwrap();
+
+    assert_eq!(graphs.len(), 1);
+    assert_eq!(graphs[0].edges.len(), 2);
+    assert!(
+        graphs[0]
+            .edges
+            .iter()
+            .all(|edge| edge.coeff != Rational::new(0, 1))
+    );
+}
