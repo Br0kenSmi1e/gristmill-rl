@@ -293,6 +293,12 @@ fn compose_perm(left: &[usize], right: &[usize]) -> Vec<usize> {
     left.iter().map(|&position| right[position]).collect()
 }
 
+fn apply_permutation<T: Clone>(items: &[T], perm: &[usize]) -> Vec<T> {
+    perm.iter()
+        .map(|&position| items[position].clone())
+        .collect()
+}
+
 fn enumerate_factor_variants(
     tensor: TensorId,
     indices: &[IndexId],
@@ -301,12 +307,7 @@ fn enumerate_factor_variants(
     enumerate_sym_group(tensor, generators, indices.len()).map(|group| {
         group
             .into_iter()
-            .map(|(perm, action)| {
-                (
-                    perm.into_iter().map(|position| indices[position]).collect(),
-                    action,
-                )
-            })
+            .map(|(perm, action)| (apply_permutation(indices, &perm), action))
             .collect()
     })
 }
@@ -485,14 +486,20 @@ fn enumerate_group_permutations(
     }
 
     let (start, end) = groups[group_index];
-    for permutation in permutations(&factors[start..end]) {
+    for perm in index_permutations(end - start) {
         let mut next = factors.to_vec();
+        let permutation = apply_permutation(&factors[start..end], &perm);
         next.splice(start..end, permutation);
         enumerate_group_permutations(&next, groups, group_index + 1, out);
     }
 }
 
-fn permutations(items: &[Factor]) -> Vec<Vec<Factor>> {
+fn index_permutations(len: usize) -> Vec<Vec<usize>> {
+    let items: Vec<_> = (0..len).collect();
+    permutations(&items)
+}
+
+fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
     if items.len() <= 1 {
         return vec![items.to_vec()];
     }
