@@ -2,13 +2,19 @@ use crate::repr::{
     Factor, Index, IndexId, RangeId, Rational, SymAction, SymGenerator, TensorDef, TensorId,
     TensorInfo, Term,
 };
-use crate::split::Split;
+use crate::split::{Split, SplitInterface};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type IndexPool = HashMap<RangeId, Vec<IndexId>>;
 pub type TensorSymmetryMap = HashMap<TensorId, Vec<SymGenerator>>;
 type DummyRange = HashMap<IndexId, RangeId>;
+
+#[derive(Clone, Copy)]
+enum SplitSide {
+    Left,
+    Right,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CanonError {
@@ -84,8 +90,27 @@ pub fn canon_split(
     symmetry: &TensorSymmetryMap,
     pool: &IndexPool,
 ) -> Result<(Split, Split), CanonError> {
-    let _ = (split, symmetry, pool);
-    Err(CanonError::EmptyCanonicalCandidates)
+    let dummy_range = build_split_dummy_range(split);
+    let contracted_ids = index_id_set(&split.interface.contracted);
+
+    let left_owner = canon_split_orientation(
+        split,
+        SplitSide::Left,
+        &contracted_ids,
+        &dummy_range,
+        symmetry,
+        pool,
+    )?;
+    let right_owner = canon_split_orientation(
+        split,
+        SplitSide::Right,
+        &contracted_ids,
+        &dummy_range,
+        symmetry,
+        pool,
+    )?;
+
+    Ok((left_owner, right_owner))
 }
 
 fn build_term_dummy_range(term: &Term) -> DummyRange {
@@ -93,6 +118,21 @@ fn build_term_dummy_range(term: &Term) -> DummyRange {
         .iter()
         .map(|index| (index.id, index.range))
         .collect()
+}
+
+fn build_split_dummy_range(split: &Split) -> DummyRange {
+    split
+        .interface
+        .contracted
+        .iter()
+        .chain(split.left.sum_indices.iter())
+        .chain(split.right.sum_indices.iter())
+        .map(|index| (index.id, index.range))
+        .collect()
+}
+
+fn index_id_set(indices: &[Index]) -> HashSet<IndexId> {
+    indices.iter().map(|index| index.id).collect()
 }
 
 #[derive(Clone, Copy)]
@@ -114,6 +154,46 @@ impl<'a> PoolAllocator<'a> {
         }
     }
 
+    fn from_base_map_for_ids(
+        pool: &'a IndexPool,
+        base_map: &HashMap<IndexId, IndexId>,
+        base_ids: &HashSet<IndexId>,
+        dummy_range: &DummyRange,
+    ) -> Result<Self, CanonError> {
+        let mut allocator = Self::new(pool);
+
+        for original_id in base_ids {
+            let Some(&mapped_id) = base_map.get(original_id) else {
+                continue;
+            };
+            let Some(mapped_range) = range_for_new_id(pool, mapped_id) else {
+                let range = dummy_range
+                    .get(original_id)
+                    .copied()
+                    .or_else(|| range_for_new_id(pool, *original_id))
+                    .expect("base_ids must be present in dummy_range");
+                return Err(CanonError::ExhaustedIndexPool { range });
+            };
+            let ids = pool
+                .get(&mapped_range)
+                .ok_or(CanonError::MissingIndexPool {
+                    range: mapped_range,
+                })?;
+            let position = ids.iter().position(|&id| id == mapped_id).ok_or(
+                CanonError::ExhaustedIndexPool {
+                    range: mapped_range,
+                },
+            )?;
+            allocator
+                .used
+                .entry(mapped_range)
+                .or_default()
+                .insert(position);
+        }
+
+        Ok(allocator)
+    }
+
     fn alloc_low(&mut self, range: RangeId) -> Result<IndexId, CanonError> {
         let ids = self
             .pool
@@ -130,7 +210,6 @@ impl<'a> PoolAllocator<'a> {
         Err(CanonError::ExhaustedIndexPool { range })
     }
 
-    #[allow(dead_code)]
     fn alloc_high(&mut self, range: RangeId) -> Result<IndexId, CanonError> {
         let ids = self
             .pool
@@ -148,7 +227,6 @@ impl<'a> PoolAllocator<'a> {
     }
 }
 
-#[allow(dead_code)]
 fn range_for_new_id(pool: &IndexPool, id: IndexId) -> Option<RangeId> {
     pool.iter()
         .find_map(|(&range, ids)| ids.contains(&id).then_some(range))
@@ -519,6 +597,161 @@ fn rename_standalone_term(
     Ok(apply_rename_map(term, &remap))
 }
 
+fn rename_owner_term(
+    term: &Term,
+    side: SplitSide,
+    contracted_ids: &HashSet<IndexId>,
+    dummy_range: &DummyRange,
+    pool: &IndexPool,
+) -> Result<(Term, HashMap<IndexId, IndexId>), CanonError> {
+    let private_ids: HashSet<_> = term.sum_indices.iter().map(|index| index.id).collect();
+
+    let mut allocator = PoolAllocator::new(pool);
+    let contracted_map = build_rename_map(
+        term,
+        contracted_ids,
+        dummy_range,
+        &HashMap::new(),
+        &mut allocator,
+        |allocator, range| allocator.alloc_low(range),
+    )?;
+
+    let mut remap = contracted_map.clone();
+    let private_map = build_rename_map(
+        term,
+        &private_ids,
+        dummy_range,
+        &remap,
+        &mut allocator,
+        |allocator, range| match side {
+            SplitSide::Left => allocator.alloc_low(range),
+            SplitSide::Right => allocator.alloc_high(range),
+        },
+    )?;
+    remap.extend(private_map);
+
+    Ok((apply_rename_map(term, &remap), contracted_map))
+}
+
+fn rename_follower_term(
+    term: &Term,
+    side: SplitSide,
+    contracted_ids: &HashSet<IndexId>,
+    contracted_map: &HashMap<IndexId, IndexId>,
+    dummy_range: &DummyRange,
+    pool: &IndexPool,
+) -> Result<Term, CanonError> {
+    let private_ids: HashSet<_> = term.sum_indices.iter().map(|index| index.id).collect();
+    let mut remap = contracted_map.clone();
+    let mut allocator =
+        PoolAllocator::from_base_map_for_ids(pool, contracted_map, contracted_ids, dummy_range)?;
+    let private_map = build_rename_map(
+        term,
+        &private_ids,
+        dummy_range,
+        &remap,
+        &mut allocator,
+        |allocator, range| match side {
+            SplitSide::Left => allocator.alloc_low(range),
+            SplitSide::Right => allocator.alloc_high(range),
+        },
+    )?;
+    remap.extend(private_map);
+
+    Ok(apply_rename_map(term, &remap))
+}
+
+fn remap_interface(
+    interface: &SplitInterface,
+    remap: &HashMap<IndexId, IndexId>,
+) -> SplitInterface {
+    let mut contracted: Vec<_> = interface
+        .contracted
+        .iter()
+        .map(|index| Index {
+            id: remap.get(&index.id).copied().unwrap_or(index.id),
+            range: index.range,
+        })
+        .collect();
+    contracted.sort_by_key(|index| index.id);
+
+    SplitInterface {
+        left_external: interface.left_external.clone(),
+        right_external: interface.right_external.clone(),
+        contracted,
+    }
+}
+
+fn canon_split_orientation(
+    split: &Split,
+    owner_side: SplitSide,
+    contracted_ids: &HashSet<IndexId>,
+    dummy_range: &DummyRange,
+    symmetry: &TensorSymmetryMap,
+    pool: &IndexPool,
+) -> Result<Split, CanonError> {
+    let (owner_raw, follower_raw) = match owner_side {
+        SplitSide::Left => (&split.left, &split.right),
+        SplitSide::Right => (&split.right, &split.left),
+    };
+
+    let follower_side = match owner_side {
+        SplitSide::Left => SplitSide::Right,
+        SplitSide::Right => SplitSide::Left,
+    };
+    let mut candidates = Vec::new();
+
+    for sym_term in enumerate_symmetry_terms(owner_raw, symmetry)? {
+        for ordered in enumerate_ordered_terms(&sym_term, dummy_range) {
+            let (owner_term, contracted_map) =
+                rename_owner_term(&ordered, owner_side, contracted_ids, dummy_range, pool)?;
+            let interface = remap_interface(&split.interface, &contracted_map);
+
+            for follower_sym_term in enumerate_symmetry_terms(follower_raw, symmetry)? {
+                for follower_ordered in enumerate_ordered_terms(&follower_sym_term, dummy_range) {
+                    let follower_term = rename_follower_term(
+                        &follower_ordered,
+                        follower_side,
+                        contracted_ids,
+                        &contracted_map,
+                        dummy_range,
+                        pool,
+                    )?;
+                    candidates.push(oriented_split(
+                        owner_side,
+                        owner_term.clone(),
+                        follower_term,
+                        interface.clone(),
+                    ));
+                }
+            }
+        }
+    }
+
+    let index = choose_min_split_index(owner_side, &candidates)?;
+    Ok(candidates[index].clone())
+}
+
+fn oriented_split(
+    owner_side: SplitSide,
+    owner_term: Term,
+    follower_term: Term,
+    interface: SplitInterface,
+) -> Split {
+    match owner_side {
+        SplitSide::Left => Split {
+            left: owner_term,
+            right: follower_term,
+            interface,
+        },
+        SplitSide::Right => Split {
+            left: follower_term,
+            right: owner_term,
+            interface,
+        },
+    }
+}
+
 fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError> {
     if candidates.is_empty() {
         return Err(CanonError::EmptyCanonicalCandidates);
@@ -542,6 +775,59 @@ fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError> {
     }
 
     Ok(best)
+}
+
+fn choose_min_split_index(
+    owner_side: SplitSide,
+    candidates: &[Split],
+) -> Result<usize, CanonError> {
+    if candidates.is_empty() {
+        return Err(CanonError::EmptyCanonicalCandidates);
+    }
+
+    for left in 0..candidates.len() {
+        for right in (left + 1)..candidates.len() {
+            if compare_oriented_split_structure(owner_side, &candidates[left], &candidates[right])
+                == Ordering::Equal
+                && (candidates[left].left.coeff != candidates[right].left.coeff
+                    || candidates[left].right.coeff != candidates[right].right.coeff)
+            {
+                return Err(CanonError::InconsistentSymmetryCoefficient);
+            }
+        }
+    }
+
+    let mut best = 0;
+    for index in 1..candidates.len() {
+        if compare_oriented_split_structure(owner_side, &candidates[index], &candidates[best])
+            == Ordering::Less
+        {
+            best = index;
+        }
+    }
+
+    Ok(best)
+}
+
+fn compare_oriented_split_structure(
+    owner_side: SplitSide,
+    left: &Split,
+    right: &Split,
+) -> Ordering {
+    match owner_side {
+        SplitSide::Left => compare_term_structure(&left.left, &right.left)
+            .then_with(|| compare_term_structure(&left.right, &right.right))
+            .then_with(|| compare_interface_structure(&left.interface, &right.interface)),
+        SplitSide::Right => compare_term_structure(&left.right, &right.right)
+            .then_with(|| compare_term_structure(&left.left, &right.left))
+            .then_with(|| compare_interface_structure(&left.interface, &right.interface)),
+    }
+}
+
+fn compare_interface_structure(left: &SplitInterface, right: &SplitInterface) -> Ordering {
+    compare_indices(&left.left_external, &right.left_external)
+        .then_with(|| compare_indices(&left.right_external, &right.right_external))
+        .then_with(|| compare_indices(&left.contracted, &right.contracted))
 }
 
 fn compare_term_structure(left: &Term, right: &Term) -> Ordering {
