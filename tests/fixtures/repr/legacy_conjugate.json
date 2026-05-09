@@ -1,0 +1,14 @@
+{
+  "ranges": [
+    { "id": 0, "size": 3 }
+  ],
+  "tensors": [
+    {
+      "id": 0,
+      "symmetry": [
+        { "perm": [0], "action": "Conjugate" }
+      ]
+    }
+  ],
+  "definitions": []
+}

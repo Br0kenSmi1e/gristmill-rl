@@ -1,0 +1,30 @@
+{
+  "ranges": [
+    { "id": 0, "size": 3 }
+  ],
+  "tensors": [
+    {
+      "id": 0,
+      "symmetry": [
+        { "perm": [0], "action": "Identity" }
+      ]
+    }
+  ],
+  "definitions": [
+    {
+      "base": 0,
+      "ext_indices": [
+        { "id": 0, "range": 0 }
+      ],
+      "terms": [
+        {
+          "coeff": [1, 1],
+          "sum_indices": [],
+          "factors": [
+            { "tensor": 0, "indices": [0] }
+          ]
+        }
+      ]
+    }
+  ]
+}
