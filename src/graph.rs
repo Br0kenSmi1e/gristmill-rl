@@ -61,7 +61,7 @@ fn insert_split(graph: &mut ConstrGraph, source_coeff: &Rational, term_idx: usiz
     let (left, right, coeff) = normalize_edge_contribution(source_coeff, split);
     let left_id = ensure_node(&mut graph.left_nodes, left);
     let right_id = ensure_node(&mut graph.right_nodes, right);
-    push_edge(&mut graph.edges, left_id, right_id, term_idx, coeff);
+    merge_or_push_edge(&mut graph.edges, left_id, right_id, term_idx, coeff);
 }
 
 fn normalize_edge_contribution(source_coeff: &Rational, split: &Split) -> (Term, Term, Rational) {
@@ -83,7 +83,7 @@ fn ensure_node(nodes: &mut Vec<Term>, term: Term) -> usize {
     }
 }
 
-fn push_edge(
+fn merge_or_push_edge(
     edges: &mut Vec<GraphEdge>,
     left_id: usize,
     right_id: usize,
@@ -91,6 +91,17 @@ fn push_edge(
     coeff: Rational,
 ) {
     let term_bit = 1_u64 << term_idx;
+
+    if let Some(edge) = edges
+        .iter_mut()
+        .find(|edge| edge.left_id == left_id && edge.right_id == right_id)
+    {
+        if edge.terms_used & term_bit == 0 {
+            edge.coeff += coeff;
+            edge.terms_used |= term_bit;
+        }
+        return;
+    }
 
     edges.push(GraphEdge {
         left_id,

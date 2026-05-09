@@ -192,3 +192,158 @@ fn edge_coefficients_absorb_source_and_side_coefficients_and_nodes_are_unit_term
     assert_eq!(graph.right_nodes[0].coeff, one());
     assert_eq!(graph.edges[0].coeff, Rational::new(-36, 1));
 }
+
+fn graph_by_interface<'a>(
+    graphs: &'a [ConstrGraph],
+    interface: &SplitInterface,
+) -> &'a ConstrGraph {
+    graphs
+        .iter()
+        .find(|graph| &graph.interface == interface)
+        .expect("graph with interface should exist")
+}
+
+#[test]
+fn equal_interfaces_share_a_bucket_and_different_interfaces_create_separate_graphs() {
+    let a = idx(0, 0);
+    let b = idx(1, 0);
+    let first_interface = iface(vec![a], vec![b], vec![]);
+    let second_interface = iface(vec![b], vec![a], vec![]);
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![a, b],
+        terms: vec![
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+        ],
+    };
+    let splits_by_term = vec![
+        vec![split(
+            term(one(), vec![factor(0, &[0])]),
+            term(one(), vec![factor(1, &[1])]),
+            first_interface.clone(),
+        )],
+        vec![split(
+            term(one(), vec![factor(2, &[0])]),
+            term(one(), vec![factor(3, &[1])]),
+            first_interface.clone(),
+        )],
+        vec![split(
+            term(one(), vec![factor(4, &[1])]),
+            term(one(), vec![factor(5, &[0])]),
+            second_interface.clone(),
+        )],
+        vec![split(
+            term(one(), vec![factor(6, &[1])]),
+            term(one(), vec![factor(7, &[0])]),
+            second_interface.clone(),
+        )],
+    ];
+
+    let graphs = build_graphs_from_splits(&def, &splits_by_term).unwrap();
+
+    assert_eq!(graphs.len(), 2);
+    assert_eq!(graph_by_interface(&graphs, &first_interface).edges.len(), 2);
+    assert_eq!(graph_by_interface(&graphs, &second_interface).edges.len(), 2);
+}
+
+#[test]
+fn distinct_source_terms_contributing_to_same_edge_are_summed() {
+    let interface = iface(vec![], vec![], vec![]);
+    let left = term(one(), vec![factor(0, &[0])]);
+    let right = term(one(), vec![factor(1, &[1])]);
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![],
+        terms: vec![
+            Term {
+                coeff: Rational::new(2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: Rational::new(5, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+        ],
+    };
+    let splits_by_term = vec![
+        vec![split(left.clone(), right.clone(), interface.clone())],
+        vec![split(left.clone(), right.clone(), interface.clone())],
+        vec![split(
+            term(one(), vec![factor(2, &[2])]),
+            term(one(), vec![factor(3, &[3])]),
+            interface.clone(),
+        )],
+    ];
+
+    let graphs = build_graphs_from_splits(&def, &splits_by_term).unwrap();
+    let merged_edge = &graphs[0].edges[0];
+
+    assert_eq!(merged_edge.coeff, Rational::new(7, 1));
+    assert_eq!(merged_edge.terms_used, 0b011);
+}
+
+#[test]
+fn repeated_source_term_contribution_to_same_edge_is_ignored() {
+    let interface = iface(vec![], vec![], vec![]);
+    let left = term(one(), vec![factor(0, &[0])]);
+    let right = term(one(), vec![factor(1, &[1])]);
+    let def = TensorDef {
+        base: TensorId(0),
+        ext_indices: vec![],
+        terms: vec![
+            Term {
+                coeff: Rational::new(2, 1),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+            Term {
+                coeff: one(),
+                sum_indices: vec![],
+                factors: vec![],
+            },
+        ],
+    };
+    let splits_by_term = vec![
+        vec![
+            split(left.clone(), right.clone(), interface.clone()),
+            split(left.clone(), right.clone(), interface.clone()),
+        ],
+        vec![split(
+            term(one(), vec![factor(2, &[2])]),
+            term(one(), vec![factor(3, &[3])]),
+            interface.clone(),
+        )],
+    ];
+
+    let graphs = build_graphs_from_splits(&def, &splits_by_term).unwrap();
+
+    assert_eq!(graphs[0].edges.len(), 2);
+    assert_eq!(graphs[0].edges[0].coeff, Rational::new(2, 1));
+    assert_eq!(graphs[0].edges[0].terms_used, 0b001);
+}
