@@ -686,6 +686,60 @@ fn canon_split_right_owner_prioritizes_right_owner_before_left_follower() {
 }
 
 #[test]
+fn canon_split_reports_inconsistent_owner_symmetry_coefficients_before_follower_tiebreak() {
+    let k = idx(4, 0);
+    let l = idx(8, 0);
+    let split = Split {
+        left: Term {
+            coeff: one(),
+            sum_indices: vec![],
+            factors: vec![factor(0, &[k.id.0, l.id.0])],
+        },
+        right: Term {
+            coeff: one(),
+            sum_indices: vec![],
+            factors: vec![factor(1, &[k.id.0, l.id.0])],
+        },
+        interface: SplitInterface {
+            left_external: vec![],
+            right_external: vec![],
+            contracted: vec![k, l],
+        },
+    };
+    let def = TensorDef {
+        base: TensorId(2),
+        ext_indices: vec![],
+        terms: vec![Term {
+            coeff: one(),
+            sum_indices: vec![k, l],
+            factors: vec![],
+        }],
+    };
+    let tensors = vec![
+        TensorInfo {
+            id: TensorId(0),
+            symmetry: vec![SymGenerator {
+                perm: vec![1, 0],
+                action: SymAction::Negate,
+            }],
+        },
+        TensorInfo {
+            id: TensorId(1),
+            symmetry: vec![],
+        },
+    ];
+
+    assert_eq!(
+        canon_split(
+            &split,
+            &build_tensor_symmetry_map(&tensors),
+            &build_index_pool(&def),
+        ),
+        Err(CanonError::InconsistentSymmetryCoefficient)
+    );
+}
+
+#[test]
 fn canon_term_reports_exhausted_index_pool() {
     let term = Term {
         coeff: one(),

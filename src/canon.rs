@@ -699,37 +699,80 @@ fn canon_split_orientation(
         SplitSide::Left => SplitSide::Right,
         SplitSide::Right => SplitSide::Left,
     };
-    let mut candidates = Vec::new();
+    let mut owner_candidates = Vec::new();
 
     for sym_term in enumerate_symmetry_terms(owner_raw, symmetry)? {
         for ordered in enumerate_ordered_terms(&sym_term, dummy_range) {
-            let (owner_term, contracted_map) =
-                rename_owner_term(&ordered, owner_side, contracted_ids, dummy_range, pool)?;
-            let interface = remap_interface(&split.interface, &contracted_map);
+            owner_candidates.push(rename_owner_term(
+                &ordered,
+                owner_side,
+                contracted_ids,
+                dummy_range,
+                pool,
+            )?);
+        }
+    }
 
-            for follower_sym_term in enumerate_symmetry_terms(follower_raw, symmetry)? {
-                for follower_ordered in enumerate_ordered_terms(&follower_sym_term, dummy_range) {
-                    let follower_term = rename_follower_term(
-                        &follower_ordered,
-                        follower_side,
-                        contracted_ids,
-                        &contracted_map,
-                        dummy_range,
-                        pool,
-                    )?;
-                    candidates.push(oriented_split(
-                        owner_side,
-                        owner_term.clone(),
-                        follower_term,
-                        interface.clone(),
-                    ));
-                }
+    let owner_index = choose_min_owner_candidate_index(&owner_candidates)?;
+    let owner_term = owner_candidates[owner_index].0.clone();
+    let mut candidates = Vec::new();
+
+    for (candidate_owner_term, contracted_map) in owner_candidates {
+        if compare_term_structure(&candidate_owner_term, &owner_term) != Ordering::Equal {
+            continue;
+        }
+
+        let interface = remap_interface(&split.interface, &contracted_map);
+
+        for follower_sym_term in enumerate_symmetry_terms(follower_raw, symmetry)? {
+            for follower_ordered in enumerate_ordered_terms(&follower_sym_term, dummy_range) {
+                let follower_term = rename_follower_term(
+                    &follower_ordered,
+                    follower_side,
+                    contracted_ids,
+                    &contracted_map,
+                    dummy_range,
+                    pool,
+                )?;
+                candidates.push(oriented_split(
+                    owner_side,
+                    candidate_owner_term.clone(),
+                    follower_term,
+                    interface.clone(),
+                ));
             }
         }
     }
 
     let index = choose_min_split_index(owner_side, &candidates)?;
     Ok(candidates[index].clone())
+}
+
+fn choose_min_owner_candidate_index(
+    candidates: &[(Term, HashMap<IndexId, IndexId>)],
+) -> Result<usize, CanonError> {
+    if candidates.is_empty() {
+        return Err(CanonError::EmptyCanonicalCandidates);
+    }
+
+    for left in 0..candidates.len() {
+        for right in (left + 1)..candidates.len() {
+            if compare_term_structure(&candidates[left].0, &candidates[right].0) == Ordering::Equal
+                && candidates[left].0.coeff != candidates[right].0.coeff
+            {
+                return Err(CanonError::InconsistentSymmetryCoefficient);
+            }
+        }
+    }
+
+    let mut best = 0;
+    for index in 1..candidates.len() {
+        if compare_term_structure(&candidates[index].0, &candidates[best].0) == Ordering::Less {
+            best = index;
+        }
+    }
+
+    Ok(best)
 }
 
 fn oriented_split(
