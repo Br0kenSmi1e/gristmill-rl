@@ -109,3 +109,104 @@ fn canon_term_reports_missing_tensor_symmetry() {
         })
     );
 }
+
+#[test]
+fn canon_term_applies_factor_symmetry_and_negates_coefficient() {
+    let term = Term {
+        coeff: Rational::new(3, 1),
+        sum_indices: vec![],
+        factors: vec![factor(0, &[2, 1])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![SymGenerator {
+            perm: vec![1, 0],
+            action: SymAction::Negate,
+        }],
+    }];
+
+    let canonical = canon_term(
+        &term,
+        &build_tensor_symmetry_map(&tensors),
+        &build_index_pool(&TensorDef {
+            base: TensorId(0),
+            ext_indices: vec![idx(1, 0), idx(2, 0)],
+            terms: vec![term.clone()],
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        canonical,
+        Term {
+            coeff: Rational::new(-3, 1),
+            sum_indices: vec![],
+            factors: vec![factor(0, &[1, 2])],
+        }
+    );
+}
+
+#[test]
+fn canon_term_reports_symmetry_arity_mismatch() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: vec![factor(0, &[0])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![SymGenerator {
+            perm: vec![1, 0],
+            action: SymAction::Identity,
+        }],
+    }];
+
+    assert_eq!(
+        canon_term(
+            &term,
+            &build_tensor_symmetry_map(&tensors),
+            &build_index_pool(&TensorDef {
+                base: TensorId(0),
+                ext_indices: vec![idx(0, 0)],
+                terms: vec![term.clone()],
+            }),
+        ),
+        Err(CanonError::SymmetryArityMismatch {
+            tensor: TensorId(0),
+            expected: 2,
+            got: 1,
+        })
+    );
+}
+
+#[test]
+fn canon_term_reports_invalid_symmetry_permutation() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: vec![factor(0, &[0, 1])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![SymGenerator {
+            perm: vec![0, 0],
+            action: SymAction::Identity,
+        }],
+    }];
+
+    assert_eq!(
+        canon_term(
+            &term,
+            &build_tensor_symmetry_map(&tensors),
+            &build_index_pool(&TensorDef {
+                base: TensorId(0),
+                ext_indices: vec![idx(0, 0), idx(1, 0)],
+                terms: vec![term.clone()],
+            }),
+        ),
+        Err(CanonError::InvalidSymmetryPermutation {
+            tensor: TensorId(0),
+            perm: vec![0, 0],
+        })
+    );
+}
