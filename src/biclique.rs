@@ -202,8 +202,7 @@ fn update_delta(
 ) -> Option<Delta> {
     if matches!(
         (chosen, candidate),
-        (SearchNode::Left(_), SearchNode::Left(_))
-            | (SearchNode::Right(_), SearchNode::Right(_))
+        (SearchNode::Left(_), SearchNode::Left(_)) | (SearchNode::Right(_), SearchNode::Right(_))
     ) {
         if chosen_delta.terms & candidate_delta.terms != 0 {
             return None;
@@ -293,7 +292,11 @@ mod tests {
             right_coeffs: vec![Rational::new(1, 1)],
             terms_used: 1,
         };
-        let candidates = vec![SearchNode::Left(1), SearchNode::Right(1), SearchNode::Left(2)];
+        let candidates = vec![
+            SearchNode::Left(1),
+            SearchNode::Right(1),
+            SearchNode::Left(2),
+        ];
         let frontier = candidates
             .iter()
             .copied()
@@ -302,7 +305,10 @@ mod tests {
         let child_frontiers = HashMap::from([
             (
                 SearchNode::Left(1),
-                HashMap::from([(SearchNode::Right(1), delta()), (SearchNode::Left(2), delta())]),
+                HashMap::from([
+                    (SearchNode::Right(1), delta()),
+                    (SearchNode::Left(2), delta()),
+                ]),
             ),
             (
                 SearchNode::Right(1),

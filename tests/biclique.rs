@@ -1,8 +1,6 @@
 use gristmill_symbolics::biclique::{Biclique, enumerate_bicliques};
 use gristmill_symbolics::graph::{ConstrGraph, GraphEdge};
-use gristmill_symbolics::repr::{
-    Factor, Index, IndexId, RangeId, Rational, TensorId, Term,
-};
+use gristmill_symbolics::repr::{Factor, Index, IndexId, RangeId, Rational, TensorId, Term};
 use gristmill_symbolics::split::SplitInterface;
 
 fn rat(num: i64, den: i64) -> Rational {
@@ -104,9 +102,7 @@ fn find_biclique<'a>(
 ) -> &'a Biclique {
     bicliques
         .iter()
-        .find(|biclique| {
-            biclique.left_node_ids == left_ids && biclique.right_node_ids == right_ids
-        })
+        .find(|biclique| biclique.left_node_ids == left_ids && biclique.right_node_ids == right_ids)
         .expect("expected biclique was not returned")
 }
 
@@ -225,8 +221,9 @@ fn enumerate_bicliques_rejects_non_factorizable_2x2_rectangle() {
     let bicliques = enumerate_bicliques(&graph);
 
     assert!(
-        bicliques.iter().all(|biclique| biclique.left_node_ids != [0, 1]
-            || biclique.right_node_ids != [0, 1])
+        bicliques
+            .iter()
+            .all(|biclique| biclique.left_node_ids != [0, 1] || biclique.right_node_ids != [0, 1])
     );
 }
 
@@ -285,10 +282,7 @@ fn enumerate_bicliques_emits_only_the_maximal_2x3_rectangle_once() {
     assert_eq!(biclique.left_node_ids, vec![0, 1]);
     assert_eq!(biclique.right_node_ids, vec![0, 1, 2]);
     assert_eq!(biclique.left_coeffs, vec![rat(1, 1), rat(3, 1)]);
-    assert_eq!(
-        biclique.right_coeffs,
-        vec![rat(2, 1), rat(4, 1), rat(6, 1)]
-    );
+    assert_eq!(biclique.right_coeffs, vec![rat(2, 1), rat(4, 1), rat(6, 1)]);
     assert_eq!(biclique.terms_used, 0b111111);
 }
 
