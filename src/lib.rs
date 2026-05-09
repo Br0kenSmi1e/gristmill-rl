@@ -1,3 +1,4 @@
+pub mod biclique;
 pub mod canon;
 pub mod graph;
 pub mod repr;
