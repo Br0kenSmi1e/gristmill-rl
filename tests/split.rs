@@ -1,10 +1,18 @@
-use gristmill_symbolics::repr::{IndexId, Rational, TensorDef, TensorId, Term};
 use gristmill_symbolics::repr::{Factor, Index, RangeId};
+use gristmill_symbolics::repr::{IndexId, Rational, TensorDef, TensorId, Term};
+use gristmill_symbolics::split::SplitError;
 use gristmill_symbolics::split::enumerate_splits;
 use gristmill_symbolics::split::{Split, SplitInterface};
 
 fn one() -> Rational {
     Rational::new(1, 1)
+}
+
+fn factor_with_index(index: IndexId) -> Factor {
+    Factor {
+        tensor: TensorId(0),
+        indices: vec![index],
+    }
 }
 
 #[test]
@@ -186,4 +194,77 @@ fn three_factor_chain_emits_public_unordered_bipartitions() {
         assert_eq!(split.left.coeff, one());
         assert_eq!(split.right.coeff, one());
     }
+}
+
+#[test]
+fn too_many_factors_returns_split_error() {
+    let range = RangeId(0);
+    let def = TensorDef {
+        base: TensorId(1),
+        ext_indices: vec![Index {
+            id: IndexId(0),
+            range,
+        }],
+        terms: vec![],
+    };
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: (0..65).map(|_| factor_with_index(IndexId(0))).collect(),
+    };
+
+    assert_eq!(
+        enumerate_splits(&term, &def),
+        Err(SplitError::TooManyFactors { len: 65, max: 64 })
+    );
+}
+
+#[test]
+fn too_many_sum_indices_returns_split_error() {
+    let range = RangeId(0);
+    let def = TensorDef {
+        base: TensorId(1),
+        ext_indices: vec![],
+        terms: vec![],
+    };
+    let term = Term {
+        coeff: one(),
+        sum_indices: (0..65)
+            .map(|id| Index {
+                id: IndexId(id),
+                range,
+            })
+            .collect(),
+        factors: vec![factor_with_index(IndexId(0)), factor_with_index(IndexId(1))],
+    };
+
+    assert_eq!(
+        enumerate_splits(&term, &def),
+        Err(SplitError::TooManySumIndices { len: 65, max: 64 })
+    );
+}
+
+#[test]
+fn too_many_external_indices_returns_split_error() {
+    let range = RangeId(0);
+    let def = TensorDef {
+        base: TensorId(1),
+        ext_indices: (0..65)
+            .map(|id| Index {
+                id: IndexId(id),
+                range,
+            })
+            .collect(),
+        terms: vec![],
+    };
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: vec![factor_with_index(IndexId(0)), factor_with_index(IndexId(1))],
+    };
+
+    assert_eq!(
+        enumerate_splits(&term, &def),
+        Err(SplitError::TooManyExternalIndices { len: 65, max: 64 })
+    );
 }
