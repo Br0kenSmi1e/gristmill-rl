@@ -1,5 +1,6 @@
 use num::rational::Ratio;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 pub type Rational = Ratio<i64>;
 
@@ -210,10 +211,146 @@ impl TensorComputation {
     pub fn next_tensor_id(&self) -> TensorId {
         TensorId(self.tensors.len() as u32)
     }
+
+    pub fn validate(&self) -> Result<(), ReprError> {
+        for (position, range) in self.ranges.iter().enumerate() {
+            let expected = RangeId(position as u32);
+            if range.id != expected {
+                return Err(ReprError::RangeIdMismatch {
+                    position,
+                    found: range.id,
+                });
+            }
+        }
+
+        for (position, tensor) in self.tensors.iter().enumerate() {
+            let expected = TensorId(position as u32);
+            if tensor.id != expected {
+                return Err(ReprError::TensorIdMismatch {
+                    position,
+                    found: tensor.id,
+                });
+            }
+
+            for generator in &tensor.symmetry {
+                validate_permutation(&generator.perm)?;
+            }
+        }
+
+        for (def_index, definition) in self.definitions.iter().enumerate() {
+            self.ensure_tensor_exists(definition.base)?;
+
+            let mut external_ranges = HashMap::new();
+            for index in &definition.ext_indices {
+                self.ensure_range_exists(index.range)?;
+                if external_ranges.insert(index.id, index.range).is_some() {
+                    return Err(ReprError::DuplicateExternalIndex {
+                        def_index,
+                        index: index.id,
+                    });
+                }
+            }
+
+            let mut definition_index_ranges = external_ranges.clone();
+            for (term_index, term) in definition.terms.iter().enumerate() {
+                let mut sum_index_ids = HashSet::new();
+                let mut visible_ranges = external_ranges.clone();
+
+                for index in &term.sum_indices {
+                    self.ensure_range_exists(index.range)?;
+
+                    if !sum_index_ids.insert(index.id) {
+                        return Err(ReprError::DuplicateSumIndex {
+                            def_index,
+                            term_index,
+                            index: index.id,
+                        });
+                    }
+
+                    if let Some(&external_range) = external_ranges.get(&index.id) {
+                        if external_range != index.range {
+                            return Err(ReprError::InconsistentIndexRange {
+                                def_index,
+                                index: index.id,
+                                first: external_range,
+                                second: index.range,
+                            });
+                        }
+
+                        return Err(ReprError::ExternalAndSumIndexOverlap {
+                            def_index,
+                            index: index.id,
+                        });
+                    }
+
+                    if let Some(&first_range) = definition_index_ranges.get(&index.id) {
+                        if first_range != index.range {
+                            return Err(ReprError::InconsistentIndexRange {
+                                def_index,
+                                index: index.id,
+                                first: first_range,
+                                second: index.range,
+                            });
+                        }
+                    } else {
+                        definition_index_ranges.insert(index.id, index.range);
+                    }
+
+                    visible_ranges.insert(index.id, index.range);
+                }
+
+                for factor in &term.factors {
+                    self.ensure_tensor_exists(factor.tensor)?;
+
+                    for &index in &factor.indices {
+                        if !visible_ranges.contains_key(&index) {
+                            return Err(ReprError::UnknownIndex {
+                                def_index,
+                                term_index,
+                                index,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_range_exists(&self, range: RangeId) -> Result<(), ReprError> {
+        if (range.0 as usize) < self.ranges.len() {
+            Ok(())
+        } else {
+            Err(ReprError::UnknownRange { range })
+        }
+    }
+
+    fn ensure_tensor_exists(&self, tensor: TensorId) -> Result<(), ReprError> {
+        if (tensor.0 as usize) < self.tensors.len() {
+            Ok(())
+        } else {
+            Err(ReprError::UnknownTensor { tensor })
+        }
+    }
 }
 
 impl Default for TensorComputation {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn validate_permutation(perm: &[usize]) -> Result<(), ReprError> {
+    let mut seen = vec![false; perm.len()];
+    for &position in perm {
+        if position >= perm.len() || seen[position] {
+            return Err(ReprError::InvalidPermutation {
+                perm: perm.to_vec(),
+            });
+        }
+        seen[position] = true;
+    }
+
+    Ok(())
 }
