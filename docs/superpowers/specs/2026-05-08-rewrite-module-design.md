@@ -72,6 +72,7 @@ pub struct FactorizationRewrite {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RewriteError {
+    Split(SplitError),
     Canon(CanonError),
     Graph(GraphError),
     CandidateIndexOutOfRange { index: usize, len: usize },
@@ -131,7 +132,7 @@ Behavior:
 - generate candidate graphs and bicliques for the first actionable definition
 - return `Ok(Some(ActionSpace))` if any candidates exist
 - return `Ok(None)` if no actionable definition exists
-- propagate `CanonError` and `GraphError` as `RewriteError`
+- propagate `SplitError`, `CanonError`, and `GraphError` as `RewriteError`
 
 Internal flow:
 
@@ -185,7 +186,7 @@ left_owner_splits_by_term = vec![vec![]; def.terms.len()]
 right_owner_splits_by_term = vec![vec![]; def.terms.len()]
 
 for each term_idx, term in def.terms:
-  for raw_split in split::enumerate_splits(term, def):
+  for raw_split in split::enumerate_splits(term, def)?:
     (left_owner, right_owner) = canon::canon_split(raw_split, &symmetry, &pool)?
     left_owner_splits_by_term[term_idx].push(left_owner)
     right_owner_splits_by_term[term_idx].push(right_owner)
@@ -430,7 +431,7 @@ Initial tests should cover:
 - no action space when no definition is actionable
 - `next_action_space` returns the first actionable definition
 - candidate templates, hidden graphs, and hidden bicliques stay index-aligned
-- `canon` and `graph` errors propagate through `next_action_space`
+- `split`, `canon`, and `graph` errors propagate through `next_action_space`
 - decision rejects out-of-range candidate index
 - decision rejects left and right mask length mismatches
 - decision rejects empty left and right masks

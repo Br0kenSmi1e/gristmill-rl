@@ -100,7 +100,13 @@ pub struct Split {
     pub interface: SplitInterface,
 }
 
-pub fn enumerate_splits(term: &Term, def: &TensorDef) -> Vec<Split>;
+pub enum SplitError {
+    TooManyFactors { len: usize, max: usize },
+    TooManySumIndices { len: usize, max: usize },
+    TooManyExternalIndices { len: usize, max: usize },
+}
+
+pub fn enumerate_splits(term: &Term, def: &TensorDef) -> Result<Vec<Split>, SplitError>;
 ```
 
 Expected behavior:
@@ -112,6 +118,8 @@ Expected behavior:
 - `contracted` comes from sum indices crossing the split
 - interface vectors preserve `Index.range` and are sorted deterministically
 - bitmasks may be used internally, but no bitmask should escape the module
+- fixed-width bitmask limits are reported through `SplitError` rather than
+  panicking
 
 An internal `FactorSubset` bitmask type may be useful while enumerating factor
 bipartitions, but it is not part of the public stage contract.
@@ -325,7 +333,7 @@ Expected behavior:
 - `next_action_space` scans definitions from `start_from`
 - definitions with no legal candidates are skipped
 - the first actionable definition returns an `ActionSpace`
-- upstream `CanonError` and `GraphError` values propagate through
+- upstream `SplitError`, `CanonError`, and `GraphError` values propagate through
   `RewriteError`
 - candidate templates expose faithful factorization payloads
 - hidden candidate records preserve the originating graph and biclique
@@ -380,7 +388,7 @@ for each candidate TensorDef from start_from:
   right_owner_splits_by_term = Vec<Vec<Split>>
 
   for each term in def.terms:
-    for raw_split in split::enumerate_splits(term, def):
+    for raw_split in split::enumerate_splits(term, def)?:
       (left_owner, right_owner) = canon::canon_split(raw_split, symmetry, pool)?
       push left_owner into the left-owner stream for this term
       push right_owner into the right-owner stream for this term

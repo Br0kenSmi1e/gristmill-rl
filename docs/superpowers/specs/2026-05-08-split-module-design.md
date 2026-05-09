@@ -47,7 +47,14 @@ pub struct Split {
     pub interface: SplitInterface,
 }
 
-pub fn enumerate_splits(term: &Term, def: &TensorDef) -> Vec<Split>;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SplitError {
+    TooManyFactors { len: usize, max: usize },
+    TooManySumIndices { len: usize, max: usize },
+    TooManyExternalIndices { len: usize, max: usize },
+}
+
+pub fn enumerate_splits(term: &Term, def: &TensorDef) -> Result<Vec<Split>, SplitError>;
 ```
 
 `SplitInterface` is the authoritative downstream record for the final
@@ -70,7 +77,7 @@ bipartitions:
 - both sides are disjoint
 - both sides together cover all factors
 
-For `n < 2`, the function returns an empty vector.
+For `n < 2`, the function returns `Ok(vec![])`.
 
 Each unordered bipartition should be emitted once. `split` should not emit both
 `(left, right)` and `(right, left)` as separate records. Later
@@ -85,10 +92,16 @@ index membership, but no bitset type is public API.
 If an internal `FactorSubset` type is useful, it should stay private to the
 module.
 
-Any practical limit from a bitset implementation is an implementation detail,
-not a semantic part of the public contract. If the implementation chooses a
-fixed-width bitset, it should either assert/fail clearly at that boundary or be
-changed later without affecting callers.
+Any practical limit from a fixed-width bitset implementation should be reported
+through `SplitError`, not by panicking. The initial implementation may use `u64`
+masks internally and return:
+
+- `TooManyFactors { len, max: 64 }` when factor-subset enumeration cannot fit
+- `TooManySumIndices { len, max: 64 }` when summed-index membership cannot fit
+- `TooManyExternalIndices { len, max: 64 }` when external-index membership cannot fit
+
+A future implementation may replace fixed-width masks internally while keeping
+the same high-level split semantics.
 
 ## Side Normalization
 
@@ -153,7 +166,7 @@ definition.
 
 ## Output Ordering
 
-`enumerate_splits` does not need to sort its returned `Vec<Split>`.
+`enumerate_splits` does not need to sort the `Vec<Split>` returned on success.
 
 The output order should be deterministic as a consequence of deterministic
 subset enumeration plus side normalization. Tests should assert exact ordering
@@ -181,7 +194,7 @@ struct TermIndexInfo {
 Recommended helper pipeline:
 
 ```rust
-fn build_term_index_info(term: &Term, def: &TensorDef) -> TermIndexInfo;
+fn build_term_index_info(term: &Term, def: &TensorDef) -> Result<TermIndexInfo, SplitError>;
 
 fn subset_sum_bits(info: &TermIndexInfo, subset: FactorSubset) -> u64;
 
@@ -242,9 +255,9 @@ Helper responsibilities:
 
 ```text
 if term has fewer than two factors:
-  return []
+  return Ok([])
 
-build TermIndexInfo
+build TermIndexInfo?
 full = all factor bits
 out = []
 
@@ -256,7 +269,7 @@ for each nonempty proper left subset:
     swap(left, right)
   out.push(make_split(term, def, info, left, right))
 
-return out
+return Ok(out)
 ```
 
 This keeps duplicate elimination and side normalization separate:
@@ -342,6 +355,7 @@ subterm overlap.
 Initial tests should cover:
 
 - terms with zero or one factor produce no splits
+- fixed-width implementation limits return `SplitError` rather than panicking
 - a two-factor term produces one split
 - a three-factor chain produces three unordered splits
 - subterm coefficients are reset to `1`
@@ -350,8 +364,7 @@ Initial tests should cover:
 - private sum indices remain on the side that uses them
 - `left_external`, `right_external`, and `contracted` preserve `Index.range`
 - interface vectors are sorted by `IndexId`
-- duplicate elimination emits only the `left < right` representative under
-  internal `FactorSubset` ordering
+- duplicate elimination emits each public unordered bipartition once
 - side normalization swaps subsets when external-index bitset ordering says to
   swap
 
@@ -359,8 +372,10 @@ Initial tests should cover:
 
 The `split` module is complete when:
 
-- public API exposes only `SplitInterface`, `Split`, and `enumerate_splits`
+- public API exposes only `SplitInterface`, `Split`, `SplitError`, and
+  `enumerate_splits`
 - no public factor-subset bitmask type exists
+- fixed-width implementation limits are reported through `SplitError`
 - each unordered factor bipartition is emitted once
 - subterms are structural unit-coefficient terms
 - contracted indices are represented only in `SplitInterface::contracted`
