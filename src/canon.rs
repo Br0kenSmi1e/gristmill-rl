@@ -75,11 +75,8 @@ pub fn canon_term(
         }
     }
 
-    let candidate = candidates
-        .into_iter()
-        .min_by(compare_terms)
-        .ok_or(CanonError::EmptyCanonicalCandidates)?;
-    Ok(candidate)
+    let index = choose_min_term_index(&candidates)?;
+    Ok(candidates[index].clone())
 }
 
 pub fn canon_split(
@@ -522,10 +519,34 @@ fn rename_standalone_term(
     Ok(apply_rename_map(term, &remap))
 }
 
-fn compare_terms(left: &Term, right: &Term) -> Ordering {
-    compare_factors(&left.factors, &right.factors)
-        .then_with(|| compare_indices(&left.sum_indices, &right.sum_indices))
-        .then_with(|| left.coeff.cmp(&right.coeff))
+fn choose_min_term_index(candidates: &[Term]) -> Result<usize, CanonError> {
+    if candidates.is_empty() {
+        return Err(CanonError::EmptyCanonicalCandidates);
+    }
+
+    for left in 0..candidates.len() {
+        for right in (left + 1)..candidates.len() {
+            if compare_term_structure(&candidates[left], &candidates[right]) == Ordering::Equal
+                && candidates[left].coeff != candidates[right].coeff
+            {
+                return Err(CanonError::InconsistentSymmetryCoefficient);
+            }
+        }
+    }
+
+    let mut best = 0;
+    for index in 1..candidates.len() {
+        if compare_term_structure(&candidates[index], &candidates[best]) == Ordering::Less {
+            best = index;
+        }
+    }
+
+    Ok(best)
+}
+
+fn compare_term_structure(left: &Term, right: &Term) -> Ordering {
+    compare_indices(&left.sum_indices, &right.sum_indices)
+        .then_with(|| compare_factors(&left.factors, &right.factors))
 }
 
 fn compare_factors(left: &[Factor], right: &[Factor]) -> Ordering {
@@ -542,6 +563,6 @@ fn compare_indices(left: &[Index], right: &[Index]) -> Ordering {
     left.iter().map(index_key).cmp(right.iter().map(index_key))
 }
 
-fn index_key(index: &Index) -> (IndexId, RangeId) {
-    (index.id, index.range)
+fn index_key(index: &Index) -> (RangeId, IndexId) {
+    (index.range, index.id)
 }

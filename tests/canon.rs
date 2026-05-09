@@ -362,3 +362,62 @@ fn canon_term_reports_missing_index_pool_for_unused_dummy() {
         Err(CanonError::MissingIndexPool { range: RangeId(4) })
     );
 }
+
+#[test]
+fn canon_term_selects_representative_by_structure_not_coefficient() {
+    let term = Term {
+        coeff: Rational::new(5, 1),
+        sum_indices: vec![],
+        factors: vec![factor(0, &[1, 2])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![SymGenerator {
+            perm: vec![1, 0],
+            action: SymAction::Negate,
+        }],
+    }];
+
+    let canonical = canon_term(
+        &term,
+        &build_tensor_symmetry_map(&tensors),
+        &build_index_pool(&TensorDef {
+            base: TensorId(0),
+            ext_indices: vec![idx(1, 0), idx(2, 0)],
+            terms: vec![term.clone()],
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(canonical.coeff, Rational::new(5, 1));
+    assert_eq!(canonical.factors, vec![factor(0, &[1, 2])]);
+}
+
+#[test]
+fn canon_term_reports_inconsistent_symmetry_coefficient() {
+    let term = Term {
+        coeff: one(),
+        sum_indices: vec![],
+        factors: vec![factor(0, &[1, 1])],
+    };
+    let tensors = vec![TensorInfo {
+        id: TensorId(0),
+        symmetry: vec![SymGenerator {
+            perm: vec![1, 0],
+            action: SymAction::Negate,
+        }],
+    }];
+
+    assert_eq!(
+        canon_term(
+            &term,
+            &build_tensor_symmetry_map(&tensors),
+            &build_index_pool(&TensorDef {
+                base: TensorId(0),
+                ext_indices: vec![idx(1, 0)],
+                terms: vec![term.clone()],
+            }),
+        ),
+        Err(CanonError::InconsistentSymmetryCoefficient)
+    );
+}
