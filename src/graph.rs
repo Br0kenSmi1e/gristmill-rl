@@ -1,6 +1,5 @@
 use crate::repr::{Rational, TensorDef, Term};
 use crate::split::{Split, SplitInterface};
-use std::collections::HashMap;
 
 const MAX_TERMS: usize = 64;
 
@@ -53,17 +52,4 @@ fn validate_splits_by_term(
     }
 
     Ok(())
-}
-
-fn empty_graph(interface: SplitInterface) -> ConstrGraph {
-    ConstrGraph {
-        interface,
-        left_nodes: vec![],
-        right_nodes: vec![],
-        edges: vec![],
-    }
-}
-
-fn finalize_graphs(_graphs: HashMap<SplitInterface, ConstrGraph>) -> Vec<ConstrGraph> {
-    vec![]
 }

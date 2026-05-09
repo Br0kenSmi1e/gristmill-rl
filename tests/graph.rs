@@ -1,31 +1,8 @@
 use gristmill_symbolics::graph::{build_graphs_from_splits, GraphError};
-use gristmill_symbolics::repr::{Factor, Index, IndexId, RangeId, Rational, TensorDef, TensorId, Term};
-use gristmill_symbolics::split::{Split, SplitInterface};
+use gristmill_symbolics::repr::{Rational, TensorDef, TensorId, Term};
 
 fn one() -> Rational {
     Rational::new(1, 1)
-}
-
-fn idx(id: u32, range: u32) -> Index {
-    Index {
-        id: IndexId(id),
-        range: RangeId(range),
-    }
-}
-
-fn factor(tensor: u32, indices: &[u32]) -> Factor {
-    Factor {
-        tensor: TensorId(tensor),
-        indices: indices.iter().copied().map(IndexId).collect(),
-    }
-}
-
-fn term(coeff: Rational, factors: Vec<Factor>) -> Term {
-    Term {
-        coeff,
-        sum_indices: vec![],
-        factors,
-    }
 }
 
 fn empty_def_with_terms(len: usize) -> TensorDef {
