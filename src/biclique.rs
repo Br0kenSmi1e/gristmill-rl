@@ -207,8 +207,10 @@ fn update_delta(
 
     let expected = edge.coeff.clone() / chosen_delta.coeff.clone();
     let mut next = candidate_delta.clone();
-    if next.terms == 0 {
+    if candidate_delta.terms == 0 {
         next.coeff = expected;
+    } else if candidate_delta.coeff != expected {
+        return None;
     }
     next.terms |= edge.terms_used;
     Some(next)
