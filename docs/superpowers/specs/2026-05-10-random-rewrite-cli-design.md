@@ -37,8 +37,11 @@ This design excludes:
 Command shape:
 
 ```text
-gristmill-symbolics [--seed <U64>] [--steps <N>] [--random-subsets] [--snapshot-dir <DIR>] <input.json> <output.json>
+random-rewrite [--seed <U64>] [--steps <N>] [--random-subsets] [--snapshot-dir <DIR>] <input.json> <output.json>
 ```
+
+The CLI should be a named Cargo binary at `src/bin/random-rewrite.rs`, not the
+package-name default binary at `src/main.rs`.
 
 Arguments and defaults:
 
@@ -56,13 +59,13 @@ reached so far.
 The simplest smoke-test command is:
 
 ```text
-gristmill-symbolics input.json output.json
+random-rewrite input.json output.json
 ```
 
 which is equivalent to:
 
 ```text
-gristmill-symbolics --seed 42 --steps 1 input.json output.json
+random-rewrite --seed 42 --steps 1 input.json output.json
 ```
 
 ## Rewrite Loop
@@ -209,7 +212,7 @@ Random subset behavior:
 
 The CLI is complete when:
 
-- `src/main.rs` implements the command contract above
+- `src/bin/random-rewrite.rs` implements the command contract above
 - `Cargo.toml` includes `clap` and `rand`
 - the binary reads input JSON and writes output JSON through `io`
 - random rewrites are applied through `next_action_space`, `build_rewrite`, and
