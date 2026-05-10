@@ -142,6 +142,7 @@ def test_next_action_space_returns_handle_and_public_snapshot():
     assert space.def_index == 0
     assert space.candidate_count == len(snapshot["candidate_templates"])
     assert space.candidate_count > 0
+    assert set(snapshot) == {"def_index", "candidate_templates"}
     assert snapshot["def_index"] == 0
     first = snapshot["candidate_templates"][0]
     assert set(first) == {
