@@ -43,7 +43,7 @@ def large_count_root_record() -> RootTraceRecord:
         state_snapshot={"definitions": [{"name": "x"}]},
         action_space_snapshot={"candidate_templates": [{"id": 0}, {"id": 1}]},
         sampled_actions=[sample_action(0), sample_action(1)],
-        visit_distribution=np.asarray([1e300, 1e300], dtype=np.float64),
+        visit_distribution=np.asarray([1e308, 1e308], dtype=np.float64),
         state_log_flops=10.0,
         start_from=0,
     )

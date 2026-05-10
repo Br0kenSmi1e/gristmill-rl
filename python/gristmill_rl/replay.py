@@ -43,9 +43,10 @@ class EpisodeTrace:
         completed = []
         for record in self.records:
             visit_distribution = _validated_visit_distribution(record)
-            total = float(np.sum(visit_distribution))
-            policy_target = visit_distribution / total
-            policy_target = policy_target.astype(np.float32, copy=True)
+            max_value = float(np.max(visit_distribution))
+            scaled = visit_distribution / max_value
+            total = float(np.sum(scaled))
+            policy_target = (scaled / total).astype(np.float32, copy=True)
             completed.append(
                 ReplayItem(
                     state_snapshot=copy.deepcopy(record.state_snapshot),
@@ -72,9 +73,9 @@ def _validated_visit_distribution(record: RootTraceRecord) -> np.ndarray:
         raise ValueError("visit_distribution must contain only finite values")
     if np.any(visit_distribution < 0.0):
         raise ValueError("visit_distribution must not contain negative values")
-    total = float(np.sum(visit_distribution))
-    if not np.isfinite(total) or total <= 0.0:
-        raise ValueError("visit_distribution must have positive finite mass")
+    max_value = float(np.max(visit_distribution))
+    if max_value <= 0.0:
+        raise ValueError("visit_distribution must have positive mass")
     return visit_distribution
 
 
