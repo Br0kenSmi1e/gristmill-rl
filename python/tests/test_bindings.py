@@ -153,3 +153,72 @@ def test_next_action_space_returns_handle_and_public_snapshot():
     assert first["left_definition"]["terms"]
     assert first["right_definition"]["terms"]
     assert first["rewritten_definition"]["terms"]
+
+
+def first_full_decision(space):
+    template = space.snapshot()["candidate_templates"][0]
+    return {
+        "candidate_index": 0,
+        "left_mask": [True] * len(template["left_definition"]["terms"]),
+        "right_mask": [True] * len(template["right_definition"]["terms"]),
+    }
+
+
+def test_apply_decision_with_space_mutates_clone_and_returns_none():
+    comp = TensorComputation.from_json_string(actionable_json())
+    space = comp.next_action_space(0)
+    child = comp.clone()
+    before = child.snapshot()
+    decision = first_full_decision(space)
+
+    result = child.apply_decision_with_space(space, decision)
+    after = child.snapshot()
+
+    assert result is None
+    assert len(after["tensors"]) == len(before["tensors"]) + 2
+    assert len(after["definitions"]) == len(before["definitions"]) + 2
+    assert after != before
+
+
+def test_invalid_decision_raises_and_does_not_mutate():
+    comp = TensorComputation.from_json_string(actionable_json())
+    space = comp.next_action_space(0)
+    child = comp.clone()
+    before = child.snapshot()
+    bad_decision = {
+        "candidate_index": 0,
+        "left_mask": [],
+        "right_mask": [True],
+    }
+
+    with pytest.raises(GristmillSymbolicsError):
+        child.apply_decision_with_space(space, bad_decision)
+
+    assert child.snapshot() == before
+
+
+def test_malformed_decision_shape_raises_type_or_value_error():
+    comp = TensorComputation.from_json_string(actionable_json())
+    space = comp.next_action_space(0)
+
+    with pytest.raises(TypeError):
+        comp.clone().apply_decision_with_space(space, "not a dict")
+
+    with pytest.raises(ValueError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": 0, "left_mask": [True]},
+        )
+
+
+def test_action_space_handle_is_reusable_on_multiple_clones():
+    comp = TensorComputation.from_json_string(actionable_json())
+    space = comp.next_action_space(0)
+    decision = first_full_decision(space)
+    left = comp.clone()
+    right = comp.clone()
+
+    left.apply_decision_with_space(space, decision)
+    right.apply_decision_with_space(space, decision)
+
+    assert left.snapshot() == right.snapshot()

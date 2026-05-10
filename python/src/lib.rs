@@ -4,8 +4,12 @@ use ::gristmill_symbolics::repr::{
     Factor, Index, Range, Rational, SymAction, SymGenerator,
     TensorComputation as RustTensorComputation, TensorDef, TensorInfo, Term,
 };
-use ::gristmill_symbolics::rewrite::{self, ActionSpace as RustActionSpace, Factorization};
+use ::gristmill_symbolics::rewrite::{
+    self, ActionSpace as RustActionSpace, Decision, Factorization,
+};
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::pythonize;
 use serde_json::{Value, json};
 use std::fmt;
@@ -122,6 +126,44 @@ fn action_space_value(space: &RustActionSpace) -> Value {
     })
 }
 
+fn required_dict_item<'py>(dict: &Bound<'py, PyDict>, field: &str) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(field)?
+        .ok_or_else(|| PyValueError::new_err(format!("missing decision field '{field}'")))
+}
+
+fn parse_bool_mask(value: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<bool>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err(format!("decision field '{field}' must be a list")))?;
+
+    let mut mask = Vec::with_capacity(list.len());
+    for item in list.iter() {
+        if !item.is_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(format!(
+                "decision field '{field}' must contain only bool values"
+            )));
+        }
+        mask.push(item.extract::<bool>()?);
+    }
+    Ok(mask)
+}
+
+fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
+    let dict = value
+        .cast::<PyDict>()
+        .map_err(|_| PyTypeError::new_err("decision must be a dict"))?;
+
+    let candidate_index = required_dict_item(dict, "candidate_index")?.extract::<usize>()?;
+    let left_mask = parse_bool_mask(&required_dict_item(dict, "left_mask")?, "left_mask")?;
+    let right_mask = parse_bool_mask(&required_dict_item(dict, "right_mask")?, "right_mask")?;
+
+    Ok(Decision {
+        candidate_index,
+        left_mask,
+        right_mask,
+    })
+}
+
 #[pyclass(name = "TensorComputation")]
 struct PyTensorComputation {
     inner: RustTensorComputation,
@@ -159,6 +201,17 @@ impl PyTensorComputation {
         rewrite::next_action_space(&self.inner, start_from)
             .map(|space| space.map(|inner| PyActionSpace { inner }))
             .map_err(py_gristmill_error)
+    }
+
+    fn apply_decision_with_space(
+        &mut self,
+        space: &PyActionSpace,
+        decision: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let decision = parse_decision(decision)?;
+        let rewrite = rewrite::build_rewrite(&self.inner, &space.inner, &decision)
+            .map_err(py_gristmill_error)?;
+        rewrite::apply_rewrite(&mut self.inner, rewrite).map_err(py_gristmill_error)
     }
 }
 
