@@ -23,11 +23,13 @@ def test_search_node_expands_once_and_stores_space():
         calls += 1
         return [first_full_mask_action(snapshot, prior=2.0)]
 
-    node.expand(proposal, SearchConfig(actions_per_node=4))
+    first = node.expand(proposal_fn=proposal)
     first_space = node.action_space
     first_snapshot = node.action_space_snapshot
-    node.expand(proposal, SearchConfig(actions_per_node=4))
+    second = node.expand(proposal_fn=proposal)
 
+    assert first is node
+    assert second is node
     assert calls == 1
     assert node.expanded
     assert not node.terminal
@@ -62,6 +64,18 @@ def test_puct_score_prefers_unvisited_child_with_prior():
     )
 
 
+def test_puct_score_uses_max_parent_visit_count_formula():
+    child = SearchChild(
+        action=SampledAction(
+            {"candidate_index": 0, "left_mask": [True], "right_mask": [True]},
+            prior=0.5,
+        ),
+        prior=0.5,
+    )
+
+    assert puct_score(child, parent_visit_count=4, c_puct=1.5) == 1.5
+
+
 def test_run_sampled_puct_visit_distribution_sums_to_one():
     comp = actionable_comp()
 
@@ -87,8 +101,7 @@ def test_child_node_owns_rewritten_clone_and_start_cursor():
     comp = actionable_comp()
     node = SearchNode(comp=comp, start_from=0)
     node.expand(
-        lambda snapshot: [first_full_mask_action(snapshot, prior=1.0)],
-        SearchConfig(actions_per_node=1),
+        proposal_fn=lambda snapshot: [first_full_mask_action(snapshot, prior=1.0)]
     )
     child = node.children[0]
 

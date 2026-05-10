@@ -52,30 +52,30 @@ class SearchNode:
         if self.children is None:
             self.children = []
 
-    def expand(self, proposal_fn: ProposalFn, config: SearchConfig) -> None:
+    def expand(
+        self, *, proposal_fn: Callable[[dict[str, Any]], list[SampledAction]]
+    ) -> SearchNode:
         if self.expanded:
-            return
-        if config.actions_per_node <= 0:
-            raise ValueError("actions_per_node must be positive")
+            return self
 
         space = self.comp.next_action_space(self.start_from)
         self.action_space = space
         self.expanded = True
         if space is None:
             self.terminal = True
-            return
+            return self
 
         snapshot = space.snapshot()
         self.action_space_snapshot = deepcopy(snapshot)
         proposed = list(proposal_fn(self.action_space_snapshot))
-        actions = proposed[: config.actions_per_node]
-        normalized = _normalize_action_priors(actions)
+        normalized = _normalize_action_priors(proposed)
         self.sampled_actions = normalized
         self.children = [
             SearchChild(action=action, prior=float(action.prior)) for action in normalized
         ]
         if not self.children:
             self.terminal = True
+        return self
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ def puct_score(
     parent_visit_count: int,
     c_puct: float,
 ) -> float:
-    exploration = c_puct * child.prior * sqrt(parent_visit_count + 1) / (
+    exploration = c_puct * child.prior * sqrt(max(parent_visit_count, 1)) / (
         1 + child.visit_count
     )
     return child.q_value + exploration
@@ -167,9 +167,14 @@ def run_sampled_puct(
 ) -> SearchResult:
     if config.simulations < 0:
         raise ValueError("simulations must be non-negative")
+    if config.actions_per_node <= 0:
+        raise ValueError("actions_per_node must be positive")
+
+    def limited_proposal(snapshot: dict[str, Any]) -> list[SampledAction]:
+        return list(proposal_fn(snapshot))[: config.actions_per_node]
 
     root = SearchNode(comp=comp, start_from=start_from)
-    root.expand(proposal_fn, config)
+    root.expand(proposal_fn=limited_proposal)
 
     for _ in range(config.simulations):
         node = root
@@ -182,7 +187,7 @@ def run_sampled_puct(
             node = child.node
 
         if not node.expanded:
-            node.expand(proposal_fn, config)
+            node.expand(proposal_fn=limited_proposal)
 
         value = -float(node.comp.log_total_flops())
         for child in path:
