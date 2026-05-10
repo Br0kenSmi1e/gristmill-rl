@@ -93,3 +93,97 @@ def sample_valid_actions(
         if len(unique) >= actions_per_node:
             break
     return list(unique.values())
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0.0:
+        return 1.0 / (1.0 + float(np.exp(-value)))
+    exp_value = float(np.exp(value))
+    return exp_value / (1.0 + exp_value)
+
+
+def _sample_mask_from_logits(
+    logits: np.ndarray,
+    valid_mask: np.ndarray,
+    rng: np.random.Generator,
+) -> tuple[list[bool], float]:
+    choices = []
+    prior = 1.0
+    valid_indices = np.flatnonzero(valid_mask)
+    for index, logit in enumerate(logits[: valid_mask.shape[0]]):
+        if not bool(valid_mask[index]):
+            choices.append(False)
+            continue
+        probability = _sigmoid(float(logit))
+        keep = bool(rng.random() < probability)
+        choices.append(keep)
+        prior *= probability if keep else (1.0 - probability)
+    if valid_indices.size and not any(choices):
+        forced = int(rng.choice(valid_indices))
+        choices[forced] = True
+        prior = max(prior, 1.0e-8)
+    return choices, max(prior, 1.0e-8)
+
+
+def _fit_mask_to_term_count(mask: list[bool], term_count: int) -> list[bool]:
+    if len(mask) >= term_count:
+        return mask[:term_count]
+    return [*mask, *([False] * (term_count - len(mask)))]
+
+
+def make_model_proposal_fn(
+    *,
+    model: Any,
+    features: Any,
+    action_space_snapshot: dict[str, Any],
+    rng: np.random.Generator,
+) -> Callable[[], SampledAction]:
+    candidate_templates = action_space_snapshot["candidate_templates"]
+    if not candidate_templates:
+        raise ValueError("action space has no candidate templates")
+
+    def propose() -> SampledAction:
+        outputs = model(features)
+        candidate_logits = np.asarray(outputs.candidate_logits, dtype=np.float64)
+        candidate_mask = np.asarray(features.candidate_mask, dtype=bool).copy()
+        represented_count = min(candidate_logits.shape[0], len(candidate_templates))
+        candidate_mask[represented_count:] = False
+        if not candidate_mask[:represented_count].any():
+            raise ValueError("no valid represented action candidates")
+
+        safe_logits = np.where(np.isfinite(candidate_logits), candidate_logits, -1.0e9)
+        masked = np.where(candidate_mask, safe_logits, -1.0e9)
+        shifted = masked - np.max(masked[candidate_mask])
+        probabilities = np.where(candidate_mask, np.exp(shifted), 0.0)
+        total = probabilities.sum()
+        if not np.isfinite(total) or total <= 0.0:
+            probabilities = candidate_mask.astype(np.float64)
+            total = probabilities.sum()
+        probabilities = probabilities / total
+
+        candidate_index = int(rng.choice(len(probabilities), p=probabilities))
+        candidate = candidate_templates[candidate_index]
+        left_mask, left_prior = _sample_mask_from_logits(
+            np.asarray(outputs.left_logits[candidate_index], dtype=np.float64),
+            np.asarray(features.left_term_mask[candidate_index], dtype=bool),
+            rng,
+        )
+        right_mask, right_prior = _sample_mask_from_logits(
+            np.asarray(outputs.right_logits[candidate_index], dtype=np.float64),
+            np.asarray(features.right_term_mask[candidate_index], dtype=bool),
+            rng,
+        )
+        return SampledAction(
+            decision={
+                "candidate_index": candidate_index,
+                "left_mask": _fit_mask_to_term_count(
+                    left_mask, len(candidate["left_definition"]["terms"])
+                ),
+                "right_mask": _fit_mask_to_term_count(
+                    right_mask, len(candidate["right_definition"]["terms"])
+                ),
+            },
+            prior=float(probabilities[candidate_index] * left_prior * right_prior),
+        )
+
+    return propose
