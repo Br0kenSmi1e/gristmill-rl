@@ -266,12 +266,28 @@ The repository gains a `python/` directory for the PyO3 crate and package:
 python/
   Cargo.toml
   pyproject.toml
+  uv.lock
   src/lib.rs
   tests/
 ```
 
 The PyO3 crate depends on the root crate by path. It builds the Python extension
 module named `gristmill_symbolics`.
+
+Python package and environment management use `uv`. The `pyproject.toml` file is
+still required because it is the standard Python project/build metadata file.
+For this extension, `pyproject.toml` declares `maturin` as the build backend and
+declares Python test/development dependencies. `uv` drives environment creation,
+dependency locking, sync, and command execution.
+
+Expected development commands use the `uv` entry point:
+
+```text
+cd python
+uv sync
+uv run maturin develop
+uv run pytest
+```
 
 The later pure Python RL package can live under `python/gristmill_rl/`, but it is
 outside this PyO3 submodule design.
