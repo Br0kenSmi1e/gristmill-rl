@@ -38,6 +38,17 @@ def multi_action_root_record() -> RootTraceRecord:
     )
 
 
+def large_count_root_record() -> RootTraceRecord:
+    return RootTraceRecord(
+        state_snapshot={"definitions": [{"name": "x"}]},
+        action_space_snapshot={"candidate_templates": [{"id": 0}, {"id": 1}]},
+        sampled_actions=[sample_action(0), sample_action(1)],
+        visit_distribution=np.asarray([1e300, 1e300], dtype=np.float64),
+        state_log_flops=10.0,
+        start_from=0,
+    )
+
+
 def test_episode_trace_completes_value_targets():
     trace = EpisodeTrace()
     trace.append(root_record(10.0, 0))
@@ -54,6 +65,14 @@ def test_episode_trace_normalizes_multi_action_visit_counts():
     items = EpisodeTrace([multi_action_root_record()]).complete(final_log_flops=7.0)
 
     np.testing.assert_allclose(items[0].policy_target, [0.25, 0.75])
+
+
+def test_episode_trace_normalizes_large_finite_visit_counts():
+    items = EpisodeTrace([large_count_root_record()]).complete(final_log_flops=7.0)
+
+    assert items[0].policy_target.dtype == np.float32
+    assert np.all(np.isfinite(items[0].policy_target))
+    np.testing.assert_allclose(items[0].policy_target, [0.5, 0.5])
 
 
 @pytest.mark.parametrize(
@@ -80,6 +99,32 @@ def test_episode_trace_rejects_invalid_direct_constructor_records(visit_distribu
 
     with pytest.raises(ValueError):
         EpisodeTrace([invalid_record]).complete(final_log_flops=7.0)
+
+
+@pytest.mark.parametrize(
+    "visit_distribution",
+    [
+        np.asarray([], dtype=np.float32),
+        np.asarray([np.inf], dtype=np.float32),
+        np.asarray([np.nan], dtype=np.float32),
+        np.asarray([-1.0], dtype=np.float32),
+        np.asarray([0.0], dtype=np.float32),
+        np.asarray([0.5, 0.5], dtype=np.float32),
+    ],
+)
+def test_episode_trace_append_rejects_invalid_records(visit_distribution):
+    record = root_record(10.0)
+    invalid_record = RootTraceRecord(
+        state_snapshot=record.state_snapshot,
+        action_space_snapshot=record.action_space_snapshot,
+        sampled_actions=record.sampled_actions,
+        visit_distribution=visit_distribution,
+        state_log_flops=record.state_log_flops,
+        start_from=record.start_from,
+    )
+
+    with pytest.raises(ValueError):
+        EpisodeTrace().append(invalid_record)
 
 
 def test_episode_trace_rejects_non_vector_visit_distribution():

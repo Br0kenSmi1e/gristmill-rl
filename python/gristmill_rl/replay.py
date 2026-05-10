@@ -44,7 +44,8 @@ class EpisodeTrace:
         for record in self.records:
             visit_distribution = _validated_visit_distribution(record)
             total = float(np.sum(visit_distribution))
-            policy_target = visit_distribution.astype(np.float32, copy=True) / total
+            policy_target = visit_distribution / total
+            policy_target = policy_target.astype(np.float32, copy=True)
             completed.append(
                 ReplayItem(
                     state_snapshot=copy.deepcopy(record.state_snapshot),
