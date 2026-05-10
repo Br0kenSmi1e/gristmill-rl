@@ -112,18 +112,22 @@ class PolicyValueModel:
         return self.module(features)
 
 
-def _mask_log_prob(logits: jax.Array, mask: list[bool]) -> jax.Array:
-    if len(mask) != logits.shape[0]:
+def _mask_log_prob(
+    logits: jax.Array, action_mask: list[bool], valid_mask: np.ndarray
+) -> jax.Array:
+    valid_count = int(np.asarray(valid_mask).sum())
+    if len(action_mask) != valid_count:
         raise ValueError(
-            f"mask length {len(mask)} does not match represented logits length "
-            f"{logits.shape[0]}"
+            f"mask length {len(action_mask)} does not match represented term count "
+            f"{valid_count}"
         )
-    if logits.shape[0] == 0:
+    if valid_count == 0:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    bits = jnp.asarray(mask, dtype=jnp.float32)
+    represented_logits = logits[:valid_count]
+    bits = jnp.asarray(action_mask, dtype=jnp.float32)
     return jnp.sum(
-        jax.nn.log_sigmoid(logits) * bits
-        + jax.nn.log_sigmoid(-logits) * (1.0 - bits)
+        jax.nn.log_sigmoid(represented_logits) * bits
+        + jax.nn.log_sigmoid(-represented_logits) * (1.0 - bits)
     )
 
 
@@ -147,8 +151,16 @@ def action_log_prob(
     candidate_log_probs = jax.nn.log_softmax(outputs.candidate_logits)
     return (
         candidate_log_probs[candidate_index]
-        + _mask_log_prob(outputs.left_logits[candidate_index], decision["left_mask"])
-        + _mask_log_prob(outputs.right_logits[candidate_index], decision["right_mask"])
+        + _mask_log_prob(
+            outputs.left_logits[candidate_index],
+            decision["left_mask"],
+            features.left_term_mask[candidate_index],
+        )
+        + _mask_log_prob(
+            outputs.right_logits[candidate_index],
+            decision["right_mask"],
+            features.right_term_mask[candidate_index],
+        )
     )
 
 

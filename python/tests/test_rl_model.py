@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from gristmill_rl.actions import first_full_mask_action
+from gristmill_rl.actions import SampledAction, first_full_mask_action
 from gristmill_rl.features import FeatureConfig, extract_features
 from gristmill_rl.model import PolicyValueModel, TrainConfig, action_log_prob, train_step
 
@@ -57,6 +57,17 @@ def test_action_log_prob_is_finite():
     assert np.isfinite(float(value))
 
 
+def test_action_log_prob_is_finite_with_padded_term_features():
+    features, action = model_features_with_config(
+        FeatureConfig(max_candidates=4, max_left_terms=3, max_right_terms=3)
+    )
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+
+    value = action_log_prob(model, features, action)
+
+    assert np.isfinite(float(value))
+
+
 def test_action_log_prob_rejects_unrepresented_candidate():
     features, action = model_features_with_config(
         FeatureConfig(max_candidates=1, max_left_terms=3, max_right_terms=3),
@@ -71,6 +82,24 @@ def test_action_log_prob_rejects_unrepresented_candidate():
 def test_action_log_prob_rejects_unrepresented_term_mask():
     features, action = model_features_with_config(
         FeatureConfig(max_candidates=4, max_left_terms=0, max_right_terms=2)
+    )
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+
+    with pytest.raises(ValueError, match="mask length"):
+        action_log_prob(model, features, action)
+
+
+def test_action_log_prob_rejects_padded_term_mask_position():
+    features, _ = model_features_with_config(
+        FeatureConfig(max_candidates=4, max_left_terms=3, max_right_terms=3)
+    )
+    action = SampledAction(
+        decision={
+            "candidate_index": 0,
+            "left_mask": [True, False, True],
+            "right_mask": [True, True, False],
+        },
+        prior=1.0,
     )
     model = PolicyValueModel(hidden_dim=16, rng_seed=0)
 
