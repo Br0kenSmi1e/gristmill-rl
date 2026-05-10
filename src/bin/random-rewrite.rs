@@ -1,8 +1,6 @@
 use clap::Parser;
-use gristmill_symbolics::repr::{Rational, TensorDef, TensorId, Term};
 use gristmill_symbolics::rewrite::{Decision, Factorization};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
@@ -78,6 +76,9 @@ fn main() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gristmill_symbolics::repr::{Rational, TensorDef, TensorId, Term};
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     fn term() -> Term {
         Term {
