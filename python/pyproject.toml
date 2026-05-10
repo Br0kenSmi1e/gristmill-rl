@@ -6,8 +6,13 @@ build-backend = "maturin"
 name = "gristmill-symbolics"
 version = "0.1.0"
 requires-python = ">=3.11"
-description = "Python bindings for the gristmill-symbolics rewrite kernel"
-dependencies = []
+description = "Python bindings and RL prototype for the gristmill-symbolics rewrite kernel"
+dependencies = [
+    "flax>=0.12",
+    "jax>=0.5",
+    "numpy>=2.0",
+    "optax>=0.2",
+]
 
 [dependency-groups]
 dev = [
@@ -19,3 +24,4 @@ dev = [
 bindings = "pyo3"
 module-name = "gristmill_symbolics"
 manifest-path = "Cargo.toml"
+python-packages = ["gristmill_rl"]
