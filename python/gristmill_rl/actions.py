@@ -10,6 +10,7 @@ import numpy as np
 class SampledAction:
     decision: dict[str, Any]
     prior: float
+    score_decision: dict[str, Any] | None = None
 
 
 def decision_key(decision: dict[str, Any]) -> tuple[int, tuple[bool, ...], tuple[bool, ...]]:
@@ -168,6 +169,16 @@ def _fit_mask_to_term_count_with_fallback(
     )
 
 
+def _compress_mask_to_valid_positions(
+    mask: list[bool], valid_mask: np.ndarray
+) -> list[bool]:
+    represented_count = min(len(mask), valid_mask.shape[0])
+    return [
+        bool(mask[index])
+        for index in np.flatnonzero(valid_mask[:represented_count])
+    ]
+
+
 def make_model_proposal_fn(
     *,
     model: Any,
@@ -210,6 +221,14 @@ def make_model_proposal_fn(
             np.asarray(features.right_term_mask[candidate_index], dtype=bool),
             rng,
         )
+        left_score_mask = _compress_mask_to_valid_positions(
+            left_mask,
+            np.asarray(features.left_term_mask[candidate_index], dtype=bool),
+        )
+        right_score_mask = _compress_mask_to_valid_positions(
+            right_mask,
+            np.asarray(features.right_term_mask[candidate_index], dtype=bool),
+        )
         left_mask, left_fit_prior = _fit_mask_to_term_count_with_fallback(
             left_mask, len(candidate["left_definition"]["terms"]), rng
         )
@@ -229,6 +248,11 @@ def make_model_proposal_fn(
                 * right_prior
                 * right_fit_prior
             ),
+            score_decision={
+                "candidate_index": candidate_index,
+                "left_mask": left_score_mask,
+                "right_mask": right_score_mask,
+            },
         )
 
     return propose

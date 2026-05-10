@@ -138,7 +138,9 @@ def action_log_prob(
 ) -> jax.Array:
     module = model.module if isinstance(model, PolicyValueModel) else model
     outputs = module(features)
-    decision = action.decision
+    decision = (
+        action.score_decision if action.score_decision is not None else action.decision
+    )
     candidate_index = int(decision["candidate_index"])
     candidate_mask = features.candidate_mask
     if candidate_index < 0 or candidate_index >= candidate_mask.shape[0]:

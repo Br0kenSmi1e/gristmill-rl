@@ -9,7 +9,7 @@ from gristmill_rl.actions import (
     uniform_random_action,
 )
 from gristmill_rl.features import FeatureConfig, extract_features
-from gristmill_rl.model import PolicyValueModel
+from gristmill_rl.model import PolicyValueModel, action_log_prob
 
 from .rl_fixtures import actionable_space
 
@@ -115,3 +115,38 @@ def test_model_proposal_fn_falls_back_for_unrepresented_nonempty_side():
     assert all(any(action.decision["left_mask"]) for action in actions)
     assert all(any(action.decision["right_mask"]) for action in actions)
     assert all(action.prior > 0.0 for action in actions)
+
+
+def test_model_proposal_fallback_action_is_executable_and_scoreable():
+    comp, space = actionable_space()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    features = extract_features(
+        comp_snapshot=comp.snapshot(),
+        action_space_snapshot=space.snapshot(),
+        start_from=0,
+        log_total_flops=comp.log_total_flops(),
+        config=FeatureConfig(max_candidates=4, max_left_terms=0, max_right_terms=2),
+    )
+    proposal_fn = make_model_proposal_fn(
+        model=model,
+        features=features,
+        action_space_snapshot=space.snapshot(),
+        rng=np.random.default_rng(0),
+    )
+
+    actions = sample_valid_actions(
+        comp=comp,
+        space=space,
+        proposal_fn=proposal_fn,
+        actions_per_node=1,
+        sample_attempts=8,
+    )
+
+    assert actions
+    action = actions[0]
+    assert set(action.decision) == {"candidate_index", "left_mask", "right_mask"}
+    assert action.score_decision is not None
+    assert action.score_decision["left_mask"] == []
+    child = comp.clone()
+    child.apply_decision_with_space(space, action.decision)
+    assert np.isfinite(float(action_log_prob(model, features, action)))
