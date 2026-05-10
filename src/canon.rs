@@ -82,6 +82,7 @@ pub fn canon_term(
     }
 
     let indices = choose_min_term_indices(&candidates)?;
+    verify_term_coeff_consistency(&candidates, &indices)?;
     Ok(candidates[indices[0]].clone())
 }
 
@@ -749,6 +750,7 @@ fn canon_split_orientation(
     }
 
     let follower_indices = choose_min_term_indices(&follower_terms)?;
+    verify_split_coeff_consistency(&split_candidates, &follower_indices)?;
     Ok(split_candidates[follower_indices[0]].clone())
 }
 
@@ -777,16 +779,6 @@ fn choose_min_term_indices(candidates: &[Term]) -> Result<Vec<usize>, CanonError
         return Err(CanonError::EmptyCanonicalCandidates);
     }
 
-    for left in 0..candidates.len() {
-        for right in (left + 1)..candidates.len() {
-            if compare_term_structure(&candidates[left], &candidates[right]) == Ordering::Equal
-                && candidates[left].coeff != candidates[right].coeff
-            {
-                return Err(CanonError::InconsistentSymmetryCoefficient);
-            }
-        }
-    }
-
     let mut best = 0;
     for index in 1..candidates.len() {
         if compare_term_structure(&candidates[index], &candidates[best]) == Ordering::Less {
@@ -799,6 +791,39 @@ fn choose_min_term_indices(candidates: &[Term]) -> Result<Vec<usize>, CanonError
             compare_term_structure(&candidates[index], &candidates[best]) == Ordering::Equal
         })
         .collect())
+}
+
+fn verify_term_coeff_consistency(candidates: &[Term], indices: &[usize]) -> Result<(), CanonError> {
+    if let Some((&first_index, rest)) = indices.split_first() {
+        let coeff = candidates[first_index].coeff;
+        for &index in rest {
+            if candidates[index].coeff != coeff {
+                return Err(CanonError::InconsistentSymmetryCoefficient);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_split_coeff_consistency(
+    candidates: &[Split],
+    indices: &[usize],
+) -> Result<(), CanonError> {
+    if let Some((&first_index, rest)) = indices.split_first() {
+        let coeff = split_coeff(&candidates[first_index]);
+        for &index in rest {
+            if split_coeff(&candidates[index]) != coeff {
+                return Err(CanonError::InconsistentSymmetryCoefficient);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn split_coeff(split: &Split) -> Rational {
+    split.left.coeff * split.right.coeff
 }
 
 fn compare_term_structure(left: &Term, right: &Term) -> Ordering {
