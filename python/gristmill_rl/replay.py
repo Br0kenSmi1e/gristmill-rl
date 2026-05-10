@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,21 +36,20 @@ class EpisodeTrace:
     records: list[RootTraceRecord] = field(default_factory=list)
 
     def append(self, record: RootTraceRecord) -> None:
-        total = float(np.sum(record.visit_distribution))
-        if total <= 0.0:
-            raise ValueError("visit_distribution must have positive mass")
+        _validated_visit_distribution(record)
         self.records.append(record)
 
     def complete(self, *, final_log_flops: float) -> list[ReplayItem]:
         completed = []
         for record in self.records:
-            policy_target = np.asarray(record.visit_distribution, dtype=np.float32)
-            policy_target = policy_target / np.sum(policy_target)
+            visit_distribution = _validated_visit_distribution(record)
+            total = float(np.sum(visit_distribution))
+            policy_target = visit_distribution.astype(np.float32, copy=True) / total
             completed.append(
                 ReplayItem(
-                    state_snapshot=record.state_snapshot,
-                    action_space_snapshot=record.action_space_snapshot,
-                    sampled_actions=record.sampled_actions,
+                    state_snapshot=copy.deepcopy(record.state_snapshot),
+                    action_space_snapshot=copy.deepcopy(record.action_space_snapshot),
+                    sampled_actions=copy.deepcopy(record.sampled_actions),
                     policy_target=policy_target,
                     value_target=record.state_log_flops - final_log_flops,
                     state_log_flops=record.state_log_flops,
@@ -56,6 +57,22 @@ class EpisodeTrace:
                 )
             )
         return completed
+
+
+def _validated_visit_distribution(record: RootTraceRecord) -> np.ndarray:
+    visit_distribution = np.asarray(record.visit_distribution, dtype=np.float64)
+    if len(visit_distribution) == 0:
+        raise ValueError("visit_distribution must not be empty")
+    if len(visit_distribution) != len(record.sampled_actions):
+        raise ValueError("visit_distribution length must match sampled_actions")
+    if not np.all(np.isfinite(visit_distribution)):
+        raise ValueError("visit_distribution must contain only finite values")
+    if np.any(visit_distribution < 0.0):
+        raise ValueError("visit_distribution must not contain negative values")
+    total = float(np.sum(visit_distribution))
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError("visit_distribution must have positive finite mass")
+    return visit_distribution
 
 
 class ReplayBuffer:
@@ -69,7 +86,7 @@ class ReplayBuffer:
     def __len__(self) -> int:
         return len(self._items)
 
-    def extend(self, items: list[ReplayItem]) -> None:
+    def extend(self, items: Iterable[ReplayItem]) -> None:
         self._items.extend(items)
         overflow = len(self._items) - self.capacity
         if overflow > 0:
