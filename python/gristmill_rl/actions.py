@@ -107,28 +107,65 @@ def _sample_mask_from_logits(
     valid_mask: np.ndarray,
     rng: np.random.Generator,
 ) -> tuple[list[bool], float]:
-    choices = []
+    represented_count = min(logits.shape[0], valid_mask.shape[0])
+    choices = [False] * represented_count
+    valid_indices = np.flatnonzero(valid_mask[:represented_count])
+    if not valid_indices.size:
+        return choices, 1.0
+
+    probabilities = np.asarray(
+        [_sigmoid(float(logits[index])) for index in valid_indices],
+        dtype=np.float64,
+    )
+    empty_probability = float(np.prod(1.0 - probabilities))
+    nonempty_probability = 1.0 - empty_probability
+    if not np.isfinite(nonempty_probability) or nonempty_probability <= 0.0:
+        choices[int(rng.choice(valid_indices))] = True
+        return choices, 1.0 / float(valid_indices.size)
+
+    suffix_empty_probabilities = np.ones(valid_indices.size + 1, dtype=np.float64)
+    for offset in range(valid_indices.size - 1, -1, -1):
+        suffix_empty_probabilities[offset] = (
+            suffix_empty_probabilities[offset + 1] * (1.0 - probabilities[offset])
+        )
+
+    selected_any = False
+    for offset, index in enumerate(valid_indices):
+        probability = probabilities[offset]
+        if selected_any:
+            keep_probability = probability
+        else:
+            remaining_nonempty_probability = 1.0 - suffix_empty_probabilities[offset]
+            keep_probability = probability / remaining_nonempty_probability
+        keep = bool(rng.random() < min(max(keep_probability, 0.0), 1.0))
+        choices[int(index)] = keep
+        selected_any = selected_any or keep
+
     prior = 1.0
-    valid_indices = np.flatnonzero(valid_mask)
-    for index, logit in enumerate(logits[: valid_mask.shape[0]]):
-        if not bool(valid_mask[index]):
-            choices.append(False)
-            continue
-        probability = _sigmoid(float(logit))
-        keep = bool(rng.random() < probability)
-        choices.append(keep)
-        prior *= probability if keep else (1.0 - probability)
-    if valid_indices.size and not any(choices):
-        forced = int(rng.choice(valid_indices))
-        choices[forced] = True
-        prior = max(prior, 1.0e-8)
-    return choices, max(prior, 1.0e-8)
+    for offset, index in enumerate(valid_indices):
+        probability = probabilities[offset]
+        prior *= probability if choices[int(index)] else (1.0 - probability)
+    prior = prior / nonempty_probability
+    return choices, max(float(prior), float(np.finfo(np.float64).tiny))
 
 
 def _fit_mask_to_term_count(mask: list[bool], term_count: int) -> list[bool]:
     if len(mask) >= term_count:
         return mask[:term_count]
     return [*mask, *([False] * (term_count - len(mask)))]
+
+
+def _fit_mask_to_term_count_with_fallback(
+    mask: list[bool], term_count: int, rng: np.random.Generator
+) -> tuple[list[bool], float]:
+    fitted = _fit_mask_to_term_count(mask, term_count)
+    if term_count <= 0 or any(fitted):
+        return fitted, 1.0
+    return _sample_mask_from_logits(
+        np.zeros(term_count, dtype=np.float64),
+        np.ones(term_count, dtype=bool),
+        rng,
+    )
 
 
 def make_model_proposal_fn(
@@ -173,17 +210,25 @@ def make_model_proposal_fn(
             np.asarray(features.right_term_mask[candidate_index], dtype=bool),
             rng,
         )
+        left_mask, left_fit_prior = _fit_mask_to_term_count_with_fallback(
+            left_mask, len(candidate["left_definition"]["terms"]), rng
+        )
+        right_mask, right_fit_prior = _fit_mask_to_term_count_with_fallback(
+            right_mask, len(candidate["right_definition"]["terms"]), rng
+        )
         return SampledAction(
             decision={
                 "candidate_index": candidate_index,
-                "left_mask": _fit_mask_to_term_count(
-                    left_mask, len(candidate["left_definition"]["terms"])
-                ),
-                "right_mask": _fit_mask_to_term_count(
-                    right_mask, len(candidate["right_definition"]["terms"])
-                ),
+                "left_mask": left_mask,
+                "right_mask": right_mask,
             },
-            prior=float(probabilities[candidate_index] * left_prior * right_prior),
+            prior=float(
+                probabilities[candidate_index]
+                * left_prior
+                * left_fit_prior
+                * right_prior
+                * right_fit_prior
+            ),
         )
 
     return propose
