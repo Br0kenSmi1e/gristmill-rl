@@ -30,7 +30,7 @@ def _nonempty_mask(length: int, rng: np.random.Generator) -> list[bool]:
 
 
 def first_full_mask_action(
-    action_space_snapshot: dict[str, Any], *, candidate_index: int = 0, prior: float = 1.0
+    action_space_snapshot: dict[str, Any], candidate_index: int = 0, prior: float = 1.0
 ) -> SampledAction:
     candidate = action_space_snapshot["candidate_templates"][candidate_index]
     return SampledAction(
@@ -45,7 +45,6 @@ def first_full_mask_action(
 
 def uniform_random_action(
     action_space_snapshot: dict[str, Any],
-    *,
     rng: np.random.Generator,
     prior: float,
 ) -> SampledAction:
@@ -72,7 +71,6 @@ def is_valid_action(comp: Any, space: Any, action: SampledAction) -> bool:
 
 
 def sample_valid_actions(
-    *,
     comp: Any,
     space: Any,
     proposal_fn: Callable[[], SampledAction],
