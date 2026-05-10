@@ -113,14 +113,17 @@ class PolicyValueModel:
 
 
 def _mask_log_prob(logits: jax.Array, mask: list[bool]) -> jax.Array:
-    size = min(logits.shape[0], len(mask))
-    if size == 0:
+    if len(mask) != logits.shape[0]:
+        raise ValueError(
+            f"mask length {len(mask)} does not match represented logits length "
+            f"{logits.shape[0]}"
+        )
+    if logits.shape[0] == 0:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    sliced_logits = logits[:size]
-    bits = jnp.asarray(mask[:size], dtype=jnp.float32)
+    bits = jnp.asarray(mask, dtype=jnp.float32)
     return jnp.sum(
-        jax.nn.log_sigmoid(sliced_logits) * bits
-        + jax.nn.log_sigmoid(-sliced_logits) * (1.0 - bits)
+        jax.nn.log_sigmoid(logits) * bits
+        + jax.nn.log_sigmoid(-logits) * (1.0 - bits)
     )
 
 
@@ -133,6 +136,14 @@ def action_log_prob(
     outputs = module(features)
     decision = action.decision
     candidate_index = int(decision["candidate_index"])
+    candidate_mask = features.candidate_mask
+    if candidate_index < 0 or candidate_index >= candidate_mask.shape[0]:
+        raise ValueError(
+            f"candidate_index {candidate_index} is outside represented candidates "
+            f"0..{candidate_mask.shape[0] - 1}"
+        )
+    if not bool(candidate_mask[candidate_index]):
+        raise ValueError(f"candidate_index {candidate_index} is not represented")
     candidate_log_probs = jax.nn.log_softmax(outputs.candidate_logits)
     return (
         candidate_log_probs[candidate_index]
