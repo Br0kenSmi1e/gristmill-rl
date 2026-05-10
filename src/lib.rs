@@ -1,6 +1,7 @@
 pub mod biclique;
 pub mod canon;
 pub mod graph;
+pub mod io;
 pub mod repr;
 pub mod rewrite;
 pub mod split;
