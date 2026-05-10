@@ -81,6 +81,33 @@ def test_search_node_expands_once_and_stores_space():
     assert len(node.children) == 1
 
 
+def test_search_node_exposes_current_action_space_during_proposal():
+    class CountingComp:
+        def __init__(self, inner):
+            self.inner = inner
+            self.next_action_space_calls = 0
+
+        def next_action_space(self, start_from):
+            self.next_action_space_calls += 1
+            return self.inner.next_action_space(start_from)
+
+    comp = CountingComp(actionable_comp())
+    node = SearchNode(comp=comp, start_from=0)
+
+    def proposal(snapshot):
+        assert node.action_space is not None
+        assert node.action_space_snapshot is not None
+        assert snapshot == node.action_space_snapshot
+        assert snapshot is not node.action_space_snapshot
+        return [first_full_mask_action(snapshot, prior=1.0)]
+
+    node.expand(proposal_fn=proposal)
+
+    assert comp.next_action_space_calls == 1
+    assert node.expanded
+    assert len(node.children) == 1
+
+
 def test_search_node_stored_snapshot_is_isolated_from_proposal_mutation():
     comp = actionable_comp()
     node = SearchNode(comp=comp, start_from=0)

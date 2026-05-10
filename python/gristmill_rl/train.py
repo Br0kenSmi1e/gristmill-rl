@@ -136,9 +136,9 @@ def _proposal_for_node(
     sample_attempts: int,
 ) -> Callable[[dict[str, Any]], list[SampledAction]]:
     def proposal(action_space_snapshot: dict[str, Any]) -> list[SampledAction]:
-        validation_space = node.comp.next_action_space(node.start_from)
+        validation_space = node.action_space
         if validation_space is None:
-            return []
+            raise RuntimeError("search node action space is unavailable during proposal")
         features = extract_features(
             comp_snapshot=node.comp.snapshot(),
             action_space_snapshot=action_space_snapshot,
