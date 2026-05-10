@@ -61,6 +61,8 @@ class EpisodeTrace:
 
 def _validated_visit_distribution(record: RootTraceRecord) -> np.ndarray:
     visit_distribution = np.asarray(record.visit_distribution, dtype=np.float64)
+    if visit_distribution.ndim != 1:
+        raise ValueError("visit_distribution must be a 1-D vector")
     if len(visit_distribution) == 0:
         raise ValueError("visit_distribution must not be empty")
     if len(visit_distribution) != len(record.sampled_actions):
@@ -87,7 +89,7 @@ class ReplayBuffer:
         return len(self._items)
 
     def extend(self, items: Iterable[ReplayItem]) -> None:
-        self._items.extend(items)
+        self._items.extend(copy.deepcopy(item) for item in items)
         overflow = len(self._items) - self.capacity
         if overflow > 0:
             del self._items[:overflow]
@@ -99,4 +101,4 @@ class ReplayBuffer:
             raise ValueError("cannot sample from an empty replay buffer")
         count = min(batch_size, len(self._items))
         indices = self._rng.choice(len(self._items), size=count, replace=False)
-        return [self._items[int(index)] for index in indices]
+        return [copy.deepcopy(self._items[int(index)]) for index in indices]

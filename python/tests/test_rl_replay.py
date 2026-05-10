@@ -82,6 +82,21 @@ def test_episode_trace_rejects_invalid_direct_constructor_records(visit_distribu
         EpisodeTrace([invalid_record]).complete(final_log_flops=7.0)
 
 
+def test_episode_trace_rejects_non_vector_visit_distribution():
+    record = root_record(10.0)
+    invalid_record = RootTraceRecord(
+        state_snapshot=record.state_snapshot,
+        action_space_snapshot=record.action_space_snapshot,
+        sampled_actions=record.sampled_actions,
+        visit_distribution=np.asarray([[1.0]], dtype=np.float32),
+        state_log_flops=record.state_log_flops,
+        start_from=record.start_from,
+    )
+
+    with pytest.raises(ValueError):
+        EpisodeTrace([invalid_record]).complete(final_log_flops=7.0)
+
+
 def test_episode_trace_completed_items_do_not_share_record_mutables():
     record = multi_action_root_record()
     items = EpisodeTrace([record]).complete(final_log_flops=7.0)
@@ -113,3 +128,39 @@ def test_replay_buffer_evicts_oldest_and_samples_without_replacement():
     batch = replay.sample(batch_size=2)
 
     assert {item.sampled_actions[0].decision["candidate_index"] for item in batch} == {1, 2}
+
+
+def test_replay_buffer_extend_copies_items():
+    replay = ReplayBuffer(capacity=1, seed=0)
+    item = EpisodeTrace([multi_action_root_record()]).complete(final_log_flops=7.0)[0]
+
+    replay.extend([item])
+    item.state_snapshot["definitions"].append({"name": "mutated"})
+    item.action_space_snapshot["candidate_templates"].append({"id": 2})
+    item.sampled_actions[0].decision["candidate_index"] = 99
+    item.policy_target[0] = 1.0
+
+    stored_item = replay.sample(batch_size=1)[0]
+
+    assert stored_item.state_snapshot == {"definitions": [{"name": "x"}]}
+    assert stored_item.action_space_snapshot == {"candidate_templates": [{"id": 0}, {"id": 1}]}
+    assert stored_item.sampled_actions[0].decision["candidate_index"] == 0
+    np.testing.assert_allclose(stored_item.policy_target, [0.25, 0.75])
+
+
+def test_replay_buffer_sample_copies_items():
+    replay = ReplayBuffer(capacity=1, seed=0)
+    replay.extend(EpisodeTrace([multi_action_root_record()]).complete(final_log_flops=7.0))
+
+    sampled_item = replay.sample(batch_size=1)[0]
+    sampled_item.state_snapshot["definitions"].append({"name": "mutated"})
+    sampled_item.action_space_snapshot["candidate_templates"].append({"id": 2})
+    sampled_item.sampled_actions[0].decision["candidate_index"] = 99
+    sampled_item.policy_target[0] = 1.0
+
+    next_sample = replay.sample(batch_size=1)[0]
+
+    assert next_sample.state_snapshot == {"definitions": [{"name": "x"}]}
+    assert next_sample.action_space_snapshot == {"candidate_templates": [{"id": 0}, {"id": 1}]}
+    assert next_sample.sampled_actions[0].decision["candidate_index"] == 0
+    np.testing.assert_allclose(next_sample.policy_target, [0.25, 0.75])
