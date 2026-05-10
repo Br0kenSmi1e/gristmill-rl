@@ -1,7 +1,13 @@
 use clap::Parser;
-use gristmill_symbolics::rewrite::{Decision, Factorization};
-use rand::Rng;
-use std::path::PathBuf;
+use gristmill_symbolics::io::{self, IoJsonError};
+use gristmill_symbolics::repr::TensorComputation;
+use gristmill_symbolics::rewrite::{self, ActionSpace, Decision, Factorization, RewriteError};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+use std::error::Error;
+use std::fmt;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 #[command(name = "random-rewrite")]
@@ -20,6 +26,91 @@ struct Args {
 
     input: PathBuf,
     output: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    ReachedStepLimit,
+    NoActionSpace,
+}
+
+impl fmt::Display for StopReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StopReason::ReachedStepLimit => write!(f, "reached step limit"),
+            StopReason::NoActionSpace => write!(f, "no action space remained"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunSummary {
+    seed: u64,
+    requested_steps: usize,
+    applied_rewrites: usize,
+    stop_reason: StopReason,
+}
+
+#[derive(Debug)]
+enum CliError {
+    ReadInput {
+        path: PathBuf,
+        source: IoJsonError,
+    },
+    WriteOutput {
+        path: PathBuf,
+        source: IoJsonError,
+    },
+    CreateSnapshotDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    WriteSnapshot {
+        path: PathBuf,
+        source: IoJsonError,
+    },
+    Rewrite {
+        step: usize,
+        source: RewriteError,
+    },
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CliError::ReadInput { path, source } => {
+                write!(f, "error reading {}: {source}", path.display())
+            }
+            CliError::WriteOutput { path, source } => {
+                write!(f, "error writing {}: {source}", path.display())
+            }
+            CliError::CreateSnapshotDir { path, source } => {
+                write!(
+                    f,
+                    "error creating snapshot directory {}: {source}",
+                    path.display()
+                )
+            }
+            CliError::WriteSnapshot { path, source } => {
+                write!(f, "error writing snapshot {}: {source}", path.display())
+            }
+            CliError::Rewrite { step, source } => {
+                write!(f, "rewrite error at step {step}: {source:?}")
+            }
+        }
+    }
+}
+
+impl Error for CliError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            CliError::ReadInput { source, .. } => Some(source),
+            CliError::WriteOutput { source, .. } => Some(source),
+            CliError::CreateSnapshotDir { source, .. } => Some(source),
+            CliError::WriteSnapshot { source, .. } => Some(source),
+            CliError::Rewrite { .. } => None,
+        }
+    }
 }
 
 fn choose_candidate_index(candidate_count: usize, rng: &mut impl Rng) -> usize {
@@ -71,7 +162,99 @@ fn decision_for_template(
     }
 }
 
-fn main() {}
+fn random_decision(space: &ActionSpace, random_subsets: bool, rng: &mut impl Rng) -> Decision {
+    let candidate_index = choose_candidate_index(space.candidate_templates.len(), rng);
+    decision_for_template(
+        candidate_index,
+        &space.candidate_templates[candidate_index],
+        random_subsets,
+        rng,
+    )
+}
+
+fn snapshot_path(dir: &Path, step: usize) -> PathBuf {
+    dir.join(format!("step-{step:03}.json"))
+}
+
+fn write_snapshot(dir: &Path, step: usize, comp: &TensorComputation) -> Result<(), CliError> {
+    let path = snapshot_path(dir, step);
+    io::write_json(&path, comp).map_err(|source| CliError::WriteSnapshot { path, source })
+}
+
+fn run(args: Args) -> Result<RunSummary, CliError> {
+    let mut comp = io::read_json(&args.input).map_err(|source| CliError::ReadInput {
+        path: args.input.clone(),
+        source,
+    })?;
+
+    if let Some(snapshot_dir) = &args.snapshot_dir {
+        fs::create_dir_all(snapshot_dir).map_err(|source| CliError::CreateSnapshotDir {
+            path: snapshot_dir.clone(),
+            source,
+        })?;
+        write_snapshot(snapshot_dir, 0, &comp)?;
+    }
+
+    let mut rng = StdRng::seed_from_u64(args.seed);
+    let mut start_from = 0;
+    let mut applied_rewrites = 0;
+    let mut stop_reason = StopReason::ReachedStepLimit;
+
+    for step in 0..args.steps {
+        let Some(space) = rewrite::next_action_space(&comp, start_from)
+            .map_err(|source| CliError::Rewrite { step, source })?
+        else {
+            stop_reason = StopReason::NoActionSpace;
+            break;
+        };
+
+        let decision = random_decision(&space, args.random_subsets, &mut rng);
+        let factorization_rewrite = rewrite::build_rewrite(&comp, &space, &decision)
+            .map_err(|source| CliError::Rewrite { step, source })?;
+        let next_start_from = space.def_index;
+
+        rewrite::apply_rewrite(&mut comp, factorization_rewrite)
+            .map_err(|source| CliError::Rewrite { step, source })?;
+
+        applied_rewrites += 1;
+        start_from = next_start_from;
+
+        if let Some(snapshot_dir) = &args.snapshot_dir {
+            write_snapshot(snapshot_dir, applied_rewrites, &comp)?;
+        }
+    }
+
+    io::write_json(&args.output, &comp).map_err(|source| CliError::WriteOutput {
+        path: args.output.clone(),
+        source,
+    })?;
+
+    Ok(RunSummary {
+        seed: args.seed,
+        requested_steps: args.steps,
+        applied_rewrites,
+        stop_reason,
+    })
+}
+
+fn main() {
+    let args = Args::parse();
+    match run(args) {
+        Ok(summary) => {
+            eprintln!(
+                "random-rewrite: seed={} steps={} applied={} stop={}",
+                summary.seed,
+                summary.requested_steps,
+                summary.applied_rewrites,
+                summary.stop_reason
+            );
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -198,5 +381,17 @@ mod tests {
         assert_eq!(decision.right_mask.len(), 2);
         assert!(decision.left_mask.iter().any(|keep| *keep));
         assert!(decision.right_mask.iter().any(|keep| *keep));
+    }
+
+    #[test]
+    fn snapshot_path_uses_zero_padded_step_numbers() {
+        assert_eq!(
+            snapshot_path(Path::new("snapshots"), 7),
+            PathBuf::from("snapshots").join("step-007.json")
+        );
+        assert_eq!(
+            snapshot_path(Path::new("snapshots"), 1234),
+            PathBuf::from("snapshots").join("step-1234.json")
+        );
     }
 }
