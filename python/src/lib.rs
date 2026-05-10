@@ -148,12 +148,24 @@ fn parse_bool_mask(value: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<bool>>
     Ok(mask)
 }
 
+fn parse_candidate_index(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+    if value.is_exact_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "decision field 'candidate_index' must be an integer, not bool",
+        ));
+    }
+
+    value.extract::<usize>().map_err(|_| {
+        PyValueError::new_err("decision field 'candidate_index' must be a non-negative integer")
+    })
+}
+
 fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
     let dict = value
         .cast::<PyDict>()
         .map_err(|_| PyTypeError::new_err("decision must be a dict"))?;
 
-    let candidate_index = required_dict_item(dict, "candidate_index")?.extract::<usize>()?;
+    let candidate_index = parse_candidate_index(&required_dict_item(dict, "candidate_index")?)?;
     let left_mask = parse_bool_mask(&required_dict_item(dict, "left_mask")?, "left_mask")?;
     let right_mask = parse_bool_mask(&required_dict_item(dict, "right_mask")?, "right_mask")?;
 

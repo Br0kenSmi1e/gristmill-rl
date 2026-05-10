@@ -210,6 +210,36 @@ def test_malformed_decision_shape_raises_type_or_value_error():
             {"candidate_index": 0, "left_mask": [True]},
         )
 
+    with pytest.raises(TypeError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": True, "left_mask": [True], "right_mask": [True]},
+        )
+
+    with pytest.raises(ValueError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": -1, "left_mask": [True], "right_mask": [True]},
+        )
+
+    with pytest.raises(ValueError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": 2**128, "left_mask": [True], "right_mask": [True]},
+        )
+
+    with pytest.raises(TypeError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": 0, "left_mask": True, "right_mask": [True]},
+        )
+
+    with pytest.raises(TypeError):
+        comp.clone().apply_decision_with_space(
+            space,
+            {"candidate_index": 0, "left_mask": [1], "right_mask": [True]},
+        )
+
 
 def test_action_space_handle_is_reusable_on_multiple_clones():
     comp = TensorComputation.from_json_string(actionable_json())
