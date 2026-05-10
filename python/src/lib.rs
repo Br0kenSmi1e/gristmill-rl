@@ -4,7 +4,7 @@ use ::gristmill_symbolics::repr::{
     Factor, Index, Range, Rational, SymAction, SymGenerator,
     TensorComputation as RustTensorComputation, TensorDef, TensorInfo, Term,
 };
-use ::gristmill_symbolics::rewrite::ActionSpace as RustActionSpace;
+use ::gristmill_symbolics::rewrite::{self, ActionSpace as RustActionSpace, Factorization};
 use pyo3::prelude::*;
 use pythonize::pythonize;
 use serde_json::{Value, json};
@@ -103,6 +103,25 @@ fn computation_value(comp: &RustTensorComputation) -> Value {
     })
 }
 
+fn factorization_value(factorization: &Factorization) -> Value {
+    json!({
+        "left_definition": tensor_def_value(&factorization.left_definition),
+        "right_definition": tensor_def_value(&factorization.right_definition),
+        "rewritten_definition": tensor_def_value(&factorization.rewritten_definition),
+    })
+}
+
+fn action_space_value(space: &RustActionSpace) -> Value {
+    json!({
+        "def_index": space.def_index,
+        "candidate_templates": space
+            .candidate_templates
+            .iter()
+            .map(factorization_value)
+            .collect::<Vec<_>>(),
+    })
+}
+
 #[pyclass(name = "TensorComputation")]
 struct PyTensorComputation {
     inner: RustTensorComputation,
@@ -135,16 +154,35 @@ impl PyTensorComputation {
     fn log_total_flops(&self) -> PyResult<f64> {
         cost::log_total_flops(&self.inner).map_err(py_gristmill_error)
     }
+
+    fn next_action_space(&self, start_from: usize) -> PyResult<Option<PyActionSpace>> {
+        rewrite::next_action_space(&self.inner, start_from)
+            .map(|space| space.map(|inner| PyActionSpace { inner }))
+            .map_err(py_gristmill_error)
+    }
 }
 
 #[pyclass(name = "ActionSpace")]
 struct PyActionSpace {
-    #[allow(dead_code)]
     inner: RustActionSpace,
 }
 
 #[pymethods]
-impl PyActionSpace {}
+impl PyActionSpace {
+    #[getter]
+    fn def_index(&self) -> usize {
+        self.inner.def_index
+    }
+
+    #[getter]
+    fn candidate_count(&self) -> usize {
+        self.inner.candidate_templates.len()
+    }
+
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pythonize(py, &action_space_value(&self.inner)).map_err(py_gristmill_display_error)
+    }
+}
 
 #[pymodule]
 fn gristmill_symbolics(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
