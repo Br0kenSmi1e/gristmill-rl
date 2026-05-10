@@ -6,6 +6,7 @@ def test_module_exports_core_types():
     assert hasattr(gristmill_symbolics, "GristmillSymbolicsError")
 
 
+import math
 from pathlib import Path
 
 import pytest
@@ -80,4 +81,4 @@ def test_log_total_flops_returns_python_float():
     value = comp.log_total_flops()
 
     assert isinstance(value, float)
-    assert value > 0.0
+    assert value == pytest.approx(math.log(6.0))
