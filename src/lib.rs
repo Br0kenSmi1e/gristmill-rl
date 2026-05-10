@@ -1,5 +1,6 @@
 pub mod biclique;
 pub mod canon;
+pub mod cost;
 pub mod graph;
 pub mod io;
 pub mod repr;
