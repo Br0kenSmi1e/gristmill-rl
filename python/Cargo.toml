@@ -1,0 +1,15 @@
+[package]
+name = "gristmill-symbolics-python"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "gristmill_symbolics"
+crate-type = ["cdylib"]
+
+[dependencies]
+gristmill-symbolics = { path = ".." }
+pyo3 = { version = "0.28.3", features = ["extension-module"] }
+pythonize = "0.28"
+serde_json = "1"

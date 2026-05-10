@@ -1,3 +1,6 @@
 /target
 .worktrees/
 /tmp
+/python/.venv
+/python/target
+/python/.pytest_cache

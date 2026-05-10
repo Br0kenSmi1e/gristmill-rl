@@ -1,0 +1,21 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "gristmill-symbolics"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "Python bindings for the gristmill-symbolics rewrite kernel"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "maturin>=1.0,<2.0",
+    "pytest>=8.0",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "gristmill_symbolics"
+manifest-path = "Cargo.toml"
