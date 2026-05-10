@@ -127,6 +127,27 @@ def test_search_node_stored_snapshot_is_isolated_from_proposal_mutation():
     ]
 
 
+def test_search_node_stored_snapshot_is_isolated_from_node_mutation_during_proposal():
+    comp = actionable_comp()
+    node = SearchNode(comp=comp, start_from=0)
+
+    def proposal(snapshot):
+        action = first_full_mask_action(snapshot, prior=1.0)
+        node.action_space_snapshot["mutated_marker"] = True
+        node.action_space_snapshot["candidate_templates"][0]["left_definition"][
+            "terms"
+        ].clear()
+        return [action]
+
+    node.expand(proposal_fn=proposal)
+
+    assert node.action_space_snapshot is not None
+    assert "mutated_marker" not in node.action_space_snapshot
+    assert node.action_space_snapshot["candidate_templates"][0]["left_definition"][
+        "terms"
+    ]
+
+
 def test_search_node_failed_proposal_does_not_commit_expansion_state():
     comp = actionable_comp()
     node = SearchNode(comp=comp, start_from=0)
@@ -151,6 +172,26 @@ def test_search_node_failed_proposal_does_not_commit_expansion_state():
     assert not node.terminal
     assert len(node.sampled_actions) == 1
     assert len(node.children) == 1
+
+
+def test_search_node_failed_proposal_rolls_back_list_mutations():
+    comp = actionable_comp()
+    node = SearchNode(comp=comp, start_from=0)
+
+    def failing_proposal(snapshot):
+        action = first_full_mask_action(snapshot, prior=1.0)
+        node.sampled_actions.append(action)
+        node.children.append(SearchChild(action=action, prior=1.0))
+        raise RuntimeError("proposal failed after mutation")
+
+    with pytest.raises(RuntimeError, match="proposal failed after mutation"):
+        node.expand(proposal_fn=failing_proposal)
+
+    assert not node.expanded
+    assert not node.terminal
+    assert node.action_space_snapshot is None
+    assert node.sampled_actions == []
+    assert node.children == []
 
 
 def test_search_result_is_frozen_spec_contract():

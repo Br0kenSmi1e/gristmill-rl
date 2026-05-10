@@ -53,9 +53,13 @@ class SearchNode:
             return self
 
         previous_action_space = self.action_space
-        previous_action_space_snapshot = self.action_space_snapshot
-        previous_sampled_actions = self.sampled_actions
-        previous_children = self.children
+        previous_action_space_snapshot = (
+            deepcopy(self.action_space_snapshot)
+            if self.action_space_snapshot is not None
+            else None
+        )
+        previous_sampled_actions = list(self.sampled_actions)
+        previous_children = list(self.children)
         previous_expanded = self.expanded
         previous_terminal = self.terminal
 
@@ -67,11 +71,10 @@ class SearchNode:
             return self
 
         snapshot = space.snapshot()
-        stored_snapshot = deepcopy(snapshot)
         self.action_space = space
-        self.action_space_snapshot = stored_snapshot
+        self.action_space_snapshot = deepcopy(snapshot)
         try:
-            proposed = list(proposal_fn(deepcopy(stored_snapshot)))
+            proposed = list(proposal_fn(deepcopy(snapshot)))
             normalized = _normalize_action_priors(proposed)
             children = [
                 SearchChild(action=action, prior=float(action.prior))
@@ -88,6 +91,8 @@ class SearchNode:
 
         self.sampled_actions = normalized
         self.children = children
+        self.action_space = space
+        self.action_space_snapshot = deepcopy(snapshot)
         self.expanded = True
         self.terminal = not children
         return self
