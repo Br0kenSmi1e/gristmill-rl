@@ -22,6 +22,10 @@ dev = [
 
 [tool.maturin]
 bindings = "pyo3"
+exclude = [
+    "gristmill_rl/**/__pycache__",
+    "gristmill_rl/**/*.pyc",
+]
 module-name = "gristmill_symbolics"
 manifest-path = "Cargo.toml"
 python-packages = ["gristmill_rl"]
