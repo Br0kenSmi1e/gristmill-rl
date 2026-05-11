@@ -66,6 +66,14 @@ def _positive_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _non_negative_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(
+            f"checkpoint metadata.{field_name} must be a non-negative integer"
+        )
+    return value
+
+
 def _write_metadata(
     path: Path,
     *,
@@ -118,10 +126,10 @@ def _read_metadata(path: Path) -> CheckpointMetadata:
         max_candidates=_positive_int(
             features.get("max_candidates"), "features.max_candidates"
         ),
-        max_left_terms=_positive_int(
+        max_left_terms=_non_negative_int(
             features.get("max_left_terms"), "features.max_left_terms"
         ),
-        max_right_terms=_positive_int(
+        max_right_terms=_non_negative_int(
             features.get("max_right_terms"), "features.max_right_terms"
         ),
     )

@@ -60,6 +60,25 @@ def test_checkpoint_load_restores_model_outputs_on_fixed_features(tmp_path):
     assert_outputs_close(loaded.model(features), expected)
 
 
+def test_checkpoint_load_allows_zero_term_feature_caps(tmp_path):
+    feature_config = FeatureConfig(
+        max_candidates=4, max_left_terms=0, max_right_terms=0
+    )
+    model = PolicyValueModel(hidden_dim=16, rng_seed=123)
+
+    save_checkpoint(
+        tmp_path / "checkpoint",
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+    )
+
+    loaded = load_checkpoint(tmp_path / "checkpoint")
+
+    assert loaded.feature_config == feature_config
+    assert loaded.metadata.feature_config == feature_config
+
+
 def test_checkpoint_load_restores_trained_parameters(tmp_path):
     features, action, feature_config = checkpoint_features()
     model = PolicyValueModel(hidden_dim=16, rng_seed=0)
@@ -326,13 +345,78 @@ def test_save_checkpoint_rejects_hidden_dim_mismatch_before_writing(tmp_path):
                 "schema_version": 1,
                 "model": {"class": "PolicyValueModel", "hidden_dim": 16},
                 "features": {
+                    "max_candidates": -1,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_candidates must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": True,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_candidates must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
                     "max_candidates": 4,
                     "max_left_terms": False,
                     "max_right_terms": 2,
                 },
                 "metadata": {},
             },
-            "checkpoint metadata.features.max_left_terms must be a positive integer",
+            "checkpoint metadata.features.max_left_terms must be a non-negative integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": -1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_left_terms must be a non-negative integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": False,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_right_terms must be a non-negative integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": -1,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_right_terms must be a non-negative integer",
         ),
         (
             {
@@ -345,7 +429,7 @@ def test_save_checkpoint_rejects_hidden_dim_mismatch_before_writing(tmp_path):
                 },
                 "metadata": {},
             },
-            "checkpoint metadata.features.max_right_terms must be a positive integer",
+            "checkpoint metadata.features.max_right_terms must be a non-negative integer",
         ),
     ],
 )
