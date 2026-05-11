@@ -6,8 +6,8 @@ import numpy as np
 
 from gristmill_rl.features import FeatureConfig
 from gristmill_rl.model import PolicyValueModel
+from gristmill_rl.rollout import _proposal_for_node
 from gristmill_rl.search import SearchNode
-from gristmill_rl.train import _proposal_for_node
 
 from .rl_fixtures import actionable_json
 from .rl_fixtures import actionable_comp
