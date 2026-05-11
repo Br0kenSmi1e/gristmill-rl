@@ -275,6 +275,111 @@ def test_save_checkpoint_rejects_hidden_dim_mismatch_before_writing(tmp_path):
     assert not path.exists()
 
 
+def test_save_checkpoint_rejects_invalid_feature_config_before_writing(tmp_path):
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "missing-parent" / "checkpoint"
+    feature_config = FeatureConfig(
+        max_candidates=0, max_left_terms=0, max_right_terms=0
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="checkpoint metadata.features.max_candidates must be a positive integer",
+    ):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+        )
+
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_save_checkpoint_rejects_invalid_metadata_before_writing(tmp_path):
+    _, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "missing-parent" / "checkpoint"
+
+    with pytest.raises(ValueError, match="checkpoint metadata.metadata must be an object"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+            metadata=42,
+        )
+
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
+def test_save_checkpoint_rejects_invalid_feature_config_and_preserves_existing_checkpoint(
+    tmp_path,
+):
+    features, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+    save_checkpoint(
+        path,
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+        metadata={"tag": "first"},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="checkpoint metadata.features.max_candidates must be a positive integer",
+    ):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=FeatureConfig(
+                max_candidates=0, max_left_terms=0, max_right_terms=0
+            ),
+            hidden_dim=16,
+            metadata={"tag": "second"},
+            overwrite=True,
+        )
+
+    loaded = load_checkpoint(path)
+    assert loaded.metadata.metadata == {"tag": "first"}
+    assert loaded.metadata.feature_config == feature_config
+    assert_outputs_close(loaded.model(features), model(features))
+
+
+def test_save_checkpoint_rejects_invalid_metadata_and_preserves_existing_checkpoint(
+    tmp_path,
+):
+    features, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+    save_checkpoint(
+        path,
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+        metadata={"tag": "first"},
+    )
+
+    with pytest.raises(ValueError, match="checkpoint metadata.metadata must be an object"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+            metadata=42,
+            overwrite=True,
+        )
+
+    loaded = load_checkpoint(path)
+    assert loaded.metadata.metadata == {"tag": "first"}
+    assert loaded.metadata.feature_config == feature_config
+    assert_outputs_close(loaded.model(features), model(features))
+
+
 @pytest.mark.parametrize(
     ("metadata_payload", "message"),
     [

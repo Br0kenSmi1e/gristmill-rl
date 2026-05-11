@@ -74,6 +74,20 @@ def _non_negative_int(value: Any, field_name: str) -> int:
     return value
 
 
+def _validate_feature_config(feature_config: FeatureConfig) -> None:
+    _positive_int(feature_config.max_candidates, "features.max_candidates")
+    _non_negative_int(feature_config.max_left_terms, "features.max_left_terms")
+    _non_negative_int(feature_config.max_right_terms, "features.max_right_terms")
+
+
+def _validate_user_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if metadata is None:
+        return {}
+    if not isinstance(metadata, dict):
+        raise ValueError("checkpoint metadata.metadata must be an object")
+    return metadata
+
+
 def _write_metadata(
     path: Path,
     *,
@@ -186,6 +200,9 @@ def save_checkpoint(
     if checkpoint_path.exists() and not overwrite:
         raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
 
+    _validate_feature_config(feature_config)
+    metadata_payload = _validate_user_metadata(metadata)
+
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = _temporary_checkpoint_path(checkpoint_path)
     try:
@@ -196,7 +213,7 @@ def save_checkpoint(
             temp_path,
             feature_config=feature_config,
             hidden_dim=hidden_dim,
-            metadata=metadata or {},
+            metadata=metadata_payload,
         )
         _publish_checkpoint(temp_path, checkpoint_path, overwrite=overwrite)
     except Exception:
