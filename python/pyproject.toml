@@ -11,6 +11,7 @@ dependencies = [
     "flax>=0.12",
     "jax>=0.5",
     "numpy>=2.0",
+    "orbax-checkpoint>=0.11",
     "optax>=0.2",
 ]
 
