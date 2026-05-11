@@ -34,13 +34,13 @@ class RolloutResult:
     valid_action_counts: list[int]
 
 
-def _log_total_flops_or_zero(comp: Any) -> float:
+def _log_total_flops(comp: Any, *, allow_zero: bool = False) -> float:
     try:
         return float(comp.log_total_flops())
     except GristmillSymbolicsError as error:
-        if "ZeroTotalFlops" not in str(error):
-            raise
-        return 0.0
+        if allow_zero and "ZeroTotalFlops" in str(error):
+            return 0.0
+        raise
 
 
 def _sample_from_visit_counts(
@@ -90,7 +90,7 @@ def _proposal_for_node(
             comp_snapshot=node.comp.snapshot(),
             action_space_snapshot=action_space_snapshot,
             start_from=node.start_from,
-            log_total_flops=node.comp.log_total_flops(),
+            log_total_flops=_log_total_flops(node.comp),
             config=feature_config,
         )
         model_proposal = make_model_proposal_fn(
@@ -138,13 +138,12 @@ def run_policy_rollout(
         def get_state_log_flops() -> float:
             nonlocal initial_log_flops, state_log_flops
             if state_log_flops is None:
-                state_log_flops = float(current_comp.log_total_flops())
+                state_log_flops = _log_total_flops(current_comp)
                 if initial_log_flops is None:
                     initial_log_flops = state_log_flops
             return state_log_flops
 
         def value_fn(node: SearchNode) -> float:
-            child_log_flops = float(node.comp.log_total_flops())
             node.expand(
                 proposal_fn=_proposal_for_node(
                     node,
@@ -154,6 +153,9 @@ def run_policy_rollout(
                     actions_per_node=config.actions_per_node,
                     sample_attempts=config.sample_attempts,
                 )
+            )
+            child_log_flops = _log_total_flops(
+                node.comp, allow_zero=bool(node.terminal)
             )
             if node.terminal or node.action_space_snapshot is None:
                 return get_state_log_flops() - child_log_flops
@@ -206,13 +208,22 @@ def run_policy_rollout(
             temperature=config.temperature,
             rng=rng,
         )
+        chosen_child = next(
+            (child for child in root.children if child.action == chosen),
+            None,
+        )
         current_comp.apply_decision_with_space(root.action_space, chosen.decision)
+        terminal = bool(
+            chosen_child is not None
+            and chosen_child.node is not None
+            and chosen_child.node.terminal
+        )
         start_from = int(root.action_space.def_index)
         steps += 1
 
     if initial_log_flops is None:
-        initial_log_flops = _log_total_flops_or_zero(current_comp)
-    final_log_flops = _log_total_flops_or_zero(current_comp)
+        initial_log_flops = _log_total_flops(current_comp, allow_zero=terminal)
+    final_log_flops = _log_total_flops(current_comp, allow_zero=terminal)
     return RolloutResult(
         comp=current_comp,
         trace=trace,
