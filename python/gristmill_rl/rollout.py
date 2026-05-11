@@ -111,7 +111,7 @@ def run_policy_rollout(
     current_comp = comp.clone()
     trace = EpisodeTrace()
     start_from = 0
-    initial_log_flops: float | None = None
+    initial_log_flops = float(current_comp.log_total_flops())
     steps = 0
     terminal = False
     valid_action_counts: list[int] = []
@@ -126,11 +126,9 @@ def run_policy_rollout(
         root = SearchNode(comp=current_comp.clone(), start_from=start_from)
 
         def get_state_log_flops() -> float:
-            nonlocal initial_log_flops, state_log_flops
+            nonlocal state_log_flops
             if state_log_flops is None:
                 state_log_flops = float(current_comp.log_total_flops())
-                if initial_log_flops is None:
-                    initial_log_flops = state_log_flops
             return state_log_flops
 
         def value_fn(node: SearchNode) -> float:
@@ -200,13 +198,7 @@ def run_policy_rollout(
         start_from = int(root.action_space.def_index)
         steps += 1
 
-    if initial_log_flops is None:
-        initial_log_flops = 0.0 if terminal else float(current_comp.log_total_flops())
-    final_log_flops = (
-        initial_log_flops
-        if steps == 0 and terminal
-        else float(current_comp.log_total_flops())
-    )
+    final_log_flops = float(current_comp.log_total_flops())
     return RolloutResult(
         comp=current_comp,
         trace=trace,
