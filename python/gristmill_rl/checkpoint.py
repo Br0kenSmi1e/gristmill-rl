@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,31 @@ def _state_path(path: Path) -> Path:
     return path / "state"
 
 
+def _temporary_checkpoint_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+
+
+def _backup_checkpoint_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.bak-{uuid.uuid4().hex}")
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _model_hidden_dim(model: PolicyValueModel) -> int:
+    return int(model.module.state_1.out_features)
+
+
+def _positive_int(value: Any, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"checkpoint metadata.{field_name} must be a positive integer")
+    return value
+
+
 def _write_metadata(
     path: Path,
     *,
@@ -64,25 +90,41 @@ def _read_metadata(path: Path) -> CheckpointMetadata:
     if not metadata_file.exists():
         raise FileNotFoundError(f"checkpoint metadata not found: {metadata_file}")
 
-    payload = json.loads(metadata_file.read_text())
+    try:
+        payload = json.loads(metadata_file.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError("checkpoint metadata must be valid JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("checkpoint metadata must be an object")
+
     schema_version = payload.get("schema_version")
     if schema_version != SCHEMA_VERSION:
         raise ValueError(f"Unsupported checkpoint schema_version {schema_version}")
 
     model = payload.get("model")
     if not isinstance(model, dict):
-        raise ValueError("checkpoint metadata is missing model information")
+        raise ValueError("checkpoint metadata.model must be an object")
     model_class = model.get("class")
     if model_class != _MODEL_CLASS:
         raise ValueError(f"Unsupported checkpoint model class {model_class!r}")
 
-    hidden_dim = model.get("hidden_dim")
-    if not isinstance(hidden_dim, int):
-        raise ValueError("checkpoint metadata model.hidden_dim must be an integer")
+    hidden_dim = _positive_int(model.get("hidden_dim"), "model.hidden_dim")
 
     features = payload.get("features")
     if not isinstance(features, dict):
-        raise ValueError("checkpoint metadata is missing feature configuration")
+        raise ValueError("checkpoint metadata.features must be an object")
+    feature_config = FeatureConfig(
+        max_candidates=_positive_int(
+            features.get("max_candidates"), "features.max_candidates"
+        ),
+        max_left_terms=_positive_int(
+            features.get("max_left_terms"), "features.max_left_terms"
+        ),
+        max_right_terms=_positive_int(
+            features.get("max_right_terms"), "features.max_right_terms"
+        ),
+    )
 
     user_metadata = payload.get("metadata", {})
     if not isinstance(user_metadata, dict):
@@ -91,9 +133,28 @@ def _read_metadata(path: Path) -> CheckpointMetadata:
     return CheckpointMetadata(
         schema_version=schema_version,
         hidden_dim=hidden_dim,
-        feature_config=FeatureConfig(**features),
+        feature_config=feature_config,
         metadata=user_metadata,
     )
+
+
+def _publish_checkpoint(temp_path: Path, checkpoint_path: Path, *, overwrite: bool) -> None:
+    backup_path: Path | None = None
+    try:
+        if checkpoint_path.exists():
+            if not overwrite:
+                raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
+            backup_path = _backup_checkpoint_path(checkpoint_path)
+            checkpoint_path.rename(backup_path)
+
+        temp_path.rename(checkpoint_path)
+    except Exception:
+        if backup_path is not None and backup_path.exists() and not checkpoint_path.exists():
+            backup_path.rename(checkpoint_path)
+        raise
+    else:
+        if backup_path is not None:
+            _remove_path(backup_path)
 
 
 def save_checkpoint(
@@ -107,25 +168,32 @@ def save_checkpoint(
 ) -> None:
     if not isinstance(model, PolicyValueModel):
         raise TypeError("model must be a PolicyValueModel")
+    actual_hidden_dim = _model_hidden_dim(model)
+    if hidden_dim != actual_hidden_dim:
+        raise ValueError(
+            f"hidden_dim {hidden_dim} does not match model hidden_dim {actual_hidden_dim}"
+        )
 
     checkpoint_path = Path(path)
-    if checkpoint_path.exists():
-        if not overwrite:
-            raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
-        if checkpoint_path.is_dir():
-            shutil.rmtree(checkpoint_path)
-        else:
-            checkpoint_path.unlink()
+    if checkpoint_path.exists() and not overwrite:
+        raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
 
-    checkpoint_path.mkdir(parents=True)
-    _, state = nnx.split(model.module)
-    ocp.PyTreeCheckpointer().save(_state_path(checkpoint_path), state, force=True)
-    _write_metadata(
-        checkpoint_path,
-        feature_config=feature_config,
-        hidden_dim=hidden_dim,
-        metadata=metadata or {},
-    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = _temporary_checkpoint_path(checkpoint_path)
+    try:
+        temp_path.mkdir()
+        _, state = nnx.split(model.module)
+        ocp.PyTreeCheckpointer().save(_state_path(temp_path), state, force=True)
+        _write_metadata(
+            temp_path,
+            feature_config=feature_config,
+            hidden_dim=hidden_dim,
+            metadata=metadata or {},
+        )
+        _publish_checkpoint(temp_path, checkpoint_path, overwrite=overwrite)
+    except Exception:
+        _remove_path(temp_path)
+        raise
 
 
 def load_checkpoint(path: str | Path) -> LoadedCheckpoint:

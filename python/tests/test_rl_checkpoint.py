@@ -3,6 +3,7 @@ import json
 import numpy as np
 import pytest
 
+import gristmill_rl.checkpoint as checkpoint_module
 from gristmill_rl.actions import first_full_mask_action
 from gristmill_rl.checkpoint import load_checkpoint, save_checkpoint
 from gristmill_rl.features import FeatureConfig, extract_features
@@ -148,6 +149,215 @@ def test_save_checkpoint_overwrite_replaces_metadata(tmp_path):
     assert loaded.metadata.hidden_dim == 16
     assert loaded.metadata.feature_config == feature_config
     assert loaded.metadata.metadata == {"tag": "second"}
+
+
+def test_save_checkpoint_overwrite_state_failure_preserves_existing_checkpoint(
+    tmp_path, monkeypatch
+):
+    _, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+    save_checkpoint(
+        path,
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+        metadata={"tag": "first"},
+    )
+
+    def fail_save(*args, **kwargs):
+        raise RuntimeError("state save failed")
+
+    monkeypatch.setattr(checkpoint_module.ocp.PyTreeCheckpointer, "save", fail_save)
+
+    with pytest.raises(RuntimeError, match="state save failed"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+            metadata={"tag": "second"},
+            overwrite=True,
+        )
+
+    loaded = load_checkpoint(path)
+    assert loaded.metadata.metadata == {"tag": "first"}
+
+
+def test_save_checkpoint_overwrite_metadata_failure_preserves_existing_checkpoint(
+    tmp_path, monkeypatch
+):
+    _, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+    save_checkpoint(
+        path,
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+        metadata={"tag": "first"},
+    )
+
+    def fail_write_metadata(*args, **kwargs):
+        raise RuntimeError("metadata write failed")
+
+    monkeypatch.setattr(checkpoint_module, "_write_metadata", fail_write_metadata)
+
+    with pytest.raises(RuntimeError, match="metadata write failed"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+            metadata={"tag": "second"},
+            overwrite=True,
+        )
+
+    loaded = load_checkpoint(path)
+    assert loaded.metadata.metadata == {"tag": "first"}
+
+
+def test_save_checkpoint_removes_new_checkpoint_when_metadata_write_fails(
+    tmp_path, monkeypatch
+):
+    _, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+
+    def fail_write_metadata(*args, **kwargs):
+        raise RuntimeError("metadata write failed")
+
+    monkeypatch.setattr(checkpoint_module, "_write_metadata", fail_write_metadata)
+
+    with pytest.raises(RuntimeError, match="metadata write failed"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=16,
+        )
+
+    assert not path.exists()
+
+
+def test_save_checkpoint_rejects_hidden_dim_mismatch_before_writing(tmp_path):
+    _, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=0)
+    path = tmp_path / "checkpoint"
+
+    with pytest.raises(ValueError, match="hidden_dim 32 does not match model hidden_dim 16"):
+        save_checkpoint(
+            path,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=32,
+        )
+
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("metadata_payload", "message"),
+    [
+        ([], "checkpoint metadata must be an object"),
+        (
+            {
+                "schema_version": 1,
+                "model": [],
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.model must be an object",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 0},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.model.hidden_dim must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": True},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.model.hidden_dim must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": [],
+                "metadata": {},
+            },
+            "checkpoint metadata.features must be an object",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 0,
+                    "max_left_terms": 1,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_candidates must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": False,
+                    "max_right_terms": 2,
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_left_terms must be a positive integer",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "model": {"class": "PolicyValueModel", "hidden_dim": 16},
+                "features": {
+                    "max_candidates": 4,
+                    "max_left_terms": 1,
+                    "max_right_terms": "2",
+                },
+                "metadata": {},
+            },
+            "checkpoint metadata.features.max_right_terms must be a positive integer",
+        ),
+    ],
+)
+def test_load_checkpoint_rejects_malformed_metadata_with_value_error(
+    tmp_path, metadata_payload, message
+):
+    path = tmp_path / "checkpoint"
+    path.mkdir()
+    (path / "metadata.json").write_text(json.dumps(metadata_payload))
+
+    with pytest.raises(ValueError, match=message):
+        load_checkpoint(path)
 
 
 def test_load_checkpoint_rejects_unknown_schema(tmp_path):
