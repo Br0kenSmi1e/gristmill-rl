@@ -29,7 +29,7 @@ class CheckpointMetadata:
 class LoadedCheckpoint:
     model: PolicyValueModel
     feature_config: FeatureConfig
-    metadata: dict[str, Any]
+    metadata: CheckpointMetadata
 
 
 def _metadata_path(path: Path) -> Path:
@@ -143,5 +143,5 @@ def load_checkpoint(path: str | Path) -> LoadedCheckpoint:
     return LoadedCheckpoint(
         model=model,
         feature_config=checkpoint_metadata.feature_config,
-        metadata=checkpoint_metadata.metadata,
+        metadata=checkpoint_metadata,
     )

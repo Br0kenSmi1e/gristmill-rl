@@ -52,7 +52,10 @@ def test_checkpoint_load_restores_model_outputs_on_fixed_features(tmp_path):
     loaded = load_checkpoint(tmp_path / "checkpoint")
 
     assert loaded.feature_config == feature_config
-    assert loaded.metadata == {"tag": "initial"}
+    assert loaded.metadata.schema_version == 1
+    assert loaded.metadata.hidden_dim == 16
+    assert loaded.metadata.feature_config == feature_config
+    assert loaded.metadata.metadata == {"tag": "initial"}
     assert_outputs_close(loaded.model(features), expected)
 
 
@@ -110,7 +113,10 @@ def test_save_checkpoint_refuses_existing_directory_without_overwrite(tmp_path):
         )
 
     loaded = load_checkpoint(path)
-    assert loaded.metadata == {"tag": "first"}
+    assert loaded.metadata.schema_version == 1
+    assert loaded.metadata.hidden_dim == 16
+    assert loaded.metadata.feature_config == feature_config
+    assert loaded.metadata.metadata == {"tag": "first"}
     assert_outputs_close(loaded.model(features), model(features))
 
 
@@ -137,7 +143,11 @@ def test_save_checkpoint_overwrite_replaces_metadata(tmp_path):
 
     metadata = json.loads((path / "metadata.json").read_text())
     assert metadata["metadata"] == {"tag": "second"}
-    assert load_checkpoint(path).metadata == {"tag": "second"}
+    loaded = load_checkpoint(path)
+    assert loaded.metadata.schema_version == 1
+    assert loaded.metadata.hidden_dim == 16
+    assert loaded.metadata.feature_config == feature_config
+    assert loaded.metadata.metadata == {"tag": "second"}
 
 
 def test_load_checkpoint_rejects_unknown_schema(tmp_path):
