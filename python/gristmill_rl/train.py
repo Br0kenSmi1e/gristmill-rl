@@ -10,6 +10,7 @@ import numpy as np
 
 from gristmill_symbolics import TensorComputation
 
+from gristmill_rl.checkpoint import load_checkpoint, save_checkpoint
 from gristmill_rl.features import FeatureConfig, extract_features
 from gristmill_rl.model import PolicyValueModel, TrainConfig, train_step
 from gristmill_rl.replay import ReplayBuffer, ReplayItem
@@ -30,6 +31,10 @@ class RunnerConfig:
     temperature: float = 1.0
     c_puct: float = 1.5
     seed: int = 0
+    hidden_dim: int | None = None
+    checkpoint_in: Path | None = None
+    checkpoint_out: Path | None = None
+    checkpoint_overwrite: bool = False
 
 
 def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
@@ -54,6 +59,16 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
     parser.add_argument("--temperature", type=float, default=RunnerConfig.temperature)
     parser.add_argument("--c-puct", type=float, default=RunnerConfig.c_puct)
     parser.add_argument("--seed", type=int, default=RunnerConfig.seed)
+    parser.add_argument("--hidden-dim", type=int, default=RunnerConfig.hidden_dim)
+    parser.add_argument("--checkpoint-in", type=Path, default=RunnerConfig.checkpoint_in)
+    parser.add_argument(
+        "--checkpoint-out", type=Path, default=RunnerConfig.checkpoint_out
+    )
+    parser.add_argument(
+        "--checkpoint-overwrite",
+        action="store_true",
+        default=RunnerConfig.checkpoint_overwrite,
+    )
     args = parser.parse_args(argv)
     return RunnerConfig(
         input=args.input,
@@ -68,6 +83,10 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
         temperature=args.temperature,
         c_puct=args.c_puct,
         seed=args.seed,
+        hidden_dim=args.hidden_dim,
+        checkpoint_in=args.checkpoint_in,
+        checkpoint_out=args.checkpoint_out,
+        checkpoint_overwrite=args.checkpoint_overwrite,
     )
 
 
@@ -95,11 +114,25 @@ def _load_comp(path: Path) -> TensorComputation:
     return TensorComputation.from_json_string(path.read_text())
 
 
-def run(config: RunnerConfig) -> dict[str, float | int | bool]:
+def run(config: RunnerConfig) -> dict[str, float | int | bool | str | None]:
     rng = np.random.default_rng(config.seed)
-    model = PolicyValueModel(rng_seed=config.seed)
+    checkpoint_in: str | None = None
+    if config.checkpoint_in is None:
+        hidden_dim = config.hidden_dim if config.hidden_dim is not None else 32
+        model = PolicyValueModel(hidden_dim=hidden_dim, rng_seed=config.seed)
+        feature_config = FeatureConfig()
+    else:
+        loaded = load_checkpoint(config.checkpoint_in)
+        hidden_dim = loaded.metadata.hidden_dim
+        if config.hidden_dim is not None and config.hidden_dim != hidden_dim:
+            raise ValueError(
+                f"--hidden-dim {config.hidden_dim} does not match checkpoint "
+                f"hidden_dim {hidden_dim}"
+            )
+        model = loaded.model
+        feature_config = loaded.feature_config
+        checkpoint_in = str(config.checkpoint_in)
     replay = ReplayBuffer(capacity=config.replay_capacity, seed=config.seed)
-    feature_config = FeatureConfig()
     train_config = TrainConfig()
     rollout_config = RolloutConfig(
         max_steps=config.max_steps,
@@ -164,6 +197,17 @@ def run(config: RunnerConfig) -> dict[str, float | int | bool]:
         }
         print(json.dumps(episode_metrics, sort_keys=True))
 
+    checkpoint_out = str(config.checkpoint_out) if config.checkpoint_out else None
+    if config.checkpoint_out is not None:
+        save_checkpoint(
+            config.checkpoint_out,
+            model=model,
+            feature_config=feature_config,
+            hidden_dim=hidden_dim,
+            metadata={"seed": config.seed, "episodes": config.episodes},
+            overwrite=config.checkpoint_overwrite,
+        )
+
     return {
         "episodes": config.episodes,
         "replay_size": len(replay),
@@ -175,6 +219,8 @@ def run(config: RunnerConfig) -> dict[str, float | int | bool]:
         "last_value_loss": last_value_loss,
         "last_total_loss": last_total_loss,
         "params_changed": params_changed,
+        "checkpoint_in": checkpoint_in,
+        "checkpoint_out": checkpoint_out,
     }
 
 
