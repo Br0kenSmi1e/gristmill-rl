@@ -155,6 +155,31 @@ def test_policy_rollout_allows_zero_flop_terminal_child(monkeypatch):
     assert result.comp.state == "zero_terminal"
 
 
+def test_policy_rollout_allows_zero_flop_terminal_child_without_simulations(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        rollout_module, "_proposal_for_node", _single_fake_action_proposal
+    )
+
+    result = run_policy_rollout(
+        _FakeComp(),
+        model=object(),
+        feature_config=FeatureConfig(
+            max_candidates=1, max_left_terms=0, max_right_terms=0
+        ),
+        config=RolloutConfig(
+            max_steps=1, simulations=0, actions_per_node=1, sample_attempts=1
+        ),
+        rng=np.random.default_rng(0),
+    )
+
+    assert result.steps == 1
+    assert result.terminal
+    assert result.final_log_flops == 0.0
+    assert result.comp.state == "zero_terminal"
+
+
 def test_policy_rollout_propagates_zero_flop_nonterminal_metric_error():
     with pytest.raises(GristmillSymbolicsError, match="ZeroTotalFlops"):
         run_policy_rollout(

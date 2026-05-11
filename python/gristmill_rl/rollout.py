@@ -43,6 +43,11 @@ def _log_total_flops(comp: Any, *, allow_zero: bool = False) -> float:
         raise
 
 
+def _probe_has_no_action_space(node: SearchNode) -> bool:
+    node.expand(proposal_fn=lambda _snapshot: [])
+    return node.action_space is None
+
+
 def _sample_from_visit_counts(
     actions: Sequence[SampledAction],
     visit_distribution: np.ndarray,
@@ -212,13 +217,17 @@ def run_policy_rollout(
             (child for child in root.children if child.action == chosen),
             None,
         )
-        current_comp.apply_decision_with_space(root.action_space, chosen.decision)
-        terminal = bool(
-            chosen_child is not None
-            and chosen_child.node is not None
-            and chosen_child.node.terminal
-        )
-        start_from = int(root.action_space.def_index)
+        next_start_from = int(root.action_space.def_index)
+        if chosen_child is not None and chosen_child.node is not None:
+            current_comp = chosen_child.node.comp.clone()
+            terminal = bool(chosen_child.node.terminal)
+        else:
+            current_comp.apply_decision_with_space(root.action_space, chosen.decision)
+            terminal_probe = SearchNode(
+                comp=current_comp.clone(), start_from=next_start_from
+            )
+            terminal = _probe_has_no_action_space(terminal_probe)
+        start_from = next_start_from
         steps += 1
 
     if initial_log_flops is None:
