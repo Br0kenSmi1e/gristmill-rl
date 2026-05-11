@@ -88,14 +88,13 @@ def _validate_user_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     return metadata
 
 
-def _write_metadata(
-    path: Path,
+def _serialized_metadata(
     *,
     feature_config: FeatureConfig,
     hidden_dim: int,
     metadata: dict[str, Any],
-) -> None:
-    payload = {
+) -> str:
+    payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "model": {
             "class": _MODEL_CLASS,
@@ -104,7 +103,14 @@ def _write_metadata(
         "features": asdict(feature_config),
         "metadata": metadata,
     }
-    _metadata_path(path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+    try:
+        return json.dumps(payload, indent=2, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("checkpoint metadata must be JSON serializable") from exc
+
+
+def _write_metadata(path: Path, metadata_json: str) -> None:
+    _metadata_path(path).write_text(metadata_json)
 
 
 def _read_metadata(path: Path) -> CheckpointMetadata:
@@ -190,6 +196,7 @@ def save_checkpoint(
 ) -> None:
     if not isinstance(model, PolicyValueModel):
         raise TypeError("model must be a PolicyValueModel")
+    hidden_dim = _positive_int(hidden_dim, "model.hidden_dim")
     actual_hidden_dim = _model_hidden_dim(model)
     if hidden_dim != actual_hidden_dim:
         raise ValueError(
@@ -202,6 +209,11 @@ def save_checkpoint(
 
     _validate_feature_config(feature_config)
     metadata_payload = _validate_user_metadata(metadata)
+    metadata_json = _serialized_metadata(
+        feature_config=feature_config,
+        hidden_dim=hidden_dim,
+        metadata=metadata_payload,
+    )
 
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = _temporary_checkpoint_path(checkpoint_path)
@@ -209,12 +221,7 @@ def save_checkpoint(
         temp_path.mkdir()
         _, state = nnx.split(model.module)
         ocp.PyTreeCheckpointer().save(_state_path(temp_path), state, force=True)
-        _write_metadata(
-            temp_path,
-            feature_config=feature_config,
-            hidden_dim=hidden_dim,
-            metadata=metadata_payload,
-        )
+        _write_metadata(temp_path, metadata_json)
         _publish_checkpoint(temp_path, checkpoint_path, overwrite=overwrite)
     except Exception:
         _remove_path(temp_path)
