@@ -252,3 +252,43 @@ def test_action_space_handle_is_reusable_on_multiple_clones():
     right.apply_decision_with_space(space, decision)
 
     assert left.snapshot() == right.snapshot()
+
+
+def test_to_json_string_round_trips_basic_fixture():
+    comp = TensorComputation.load_json(BASIC_FIXTURE)
+
+    text = comp.to_json_string()
+    loaded = TensorComputation.from_json_string(text)
+
+    assert loaded.snapshot() == comp.snapshot()
+
+
+def test_write_json_round_trips_basic_fixture(tmp_path):
+    comp = TensorComputation.load_json(BASIC_FIXTURE)
+    output = tmp_path / "written.json"
+
+    comp.write_json(output)
+    loaded = TensorComputation.load_json(output)
+
+    assert loaded.snapshot() == comp.snapshot()
+
+
+def test_write_json_round_trips_rewritten_computation(tmp_path):
+    comp = TensorComputation.from_json_string(actionable_json())
+    space = comp.next_action_space(0)
+    assert space is not None
+    template = space.snapshot()["candidate_templates"][0]
+    comp.apply_decision_with_space(
+        space,
+        {
+            "candidate_index": 0,
+            "left_mask": [True] * len(template["left_definition"]["terms"]),
+            "right_mask": [True] * len(template["right_definition"]["terms"]),
+        },
+    )
+    output = tmp_path / "rewritten.json"
+
+    comp.write_json(output)
+    loaded = TensorComputation.load_json(output)
+
+    assert loaded.snapshot() == comp.snapshot()

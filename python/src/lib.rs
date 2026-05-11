@@ -195,6 +195,14 @@ impl PyTensorComputation {
         validate_loaded(comp)
     }
 
+    fn to_json_string(&self) -> PyResult<String> {
+        io::to_json(&self.inner).map_err(py_gristmill_display_error)
+    }
+
+    fn write_json(&self, path: PathBuf) -> PyResult<()> {
+        io::write_json(path, &self.inner).map_err(py_gristmill_display_error)
+    }
+
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
