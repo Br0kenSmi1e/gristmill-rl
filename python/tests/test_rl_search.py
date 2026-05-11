@@ -108,6 +108,20 @@ def test_search_node_exposes_current_action_space_during_proposal():
     assert len(node.children) == 1
 
 
+def test_search_node_with_action_space_and_no_sampled_actions_is_not_terminal():
+    comp = actionable_comp()
+    node = SearchNode(comp=comp, start_from=0)
+
+    node.expand(proposal_fn=lambda snapshot: [])
+
+    assert node.expanded
+    assert node.action_space is not None
+    assert node.action_space_snapshot is not None
+    assert not node.terminal
+    assert node.sampled_actions == []
+    assert node.children == []
+
+
 def test_search_node_stored_snapshot_is_isolated_from_proposal_mutation():
     comp = actionable_comp()
     node = SearchNode(comp=comp, start_from=0)
@@ -346,6 +360,26 @@ def test_run_sampled_puct_terminal_return_is_empty_float32_arrays():
     assert result.valid_action_count == 0
     assert result.visit_counts.dtype == np.float32
     assert result.visit_distribution.dtype == np.float32
+    assert result.visit_counts.tolist() == []
+    assert result.visit_distribution.tolist() == []
+
+
+def test_run_sampled_puct_no_sampled_actions_is_not_terminal():
+    comp = actionable_comp()
+    root = SearchNode(comp=comp, start_from=0)
+
+    result = run_sampled_puct(
+        root,
+        config=SearchConfig(simulations=1, actions_per_node=1),
+        proposal_fn=lambda snapshot: [],
+        value_fn=lambda node: pytest.fail("no child should be evaluated"),
+    )
+
+    assert root.action_space is not None
+    assert root.action_space_snapshot is not None
+    assert not root.terminal
+    assert result.selected_action is None
+    assert result.valid_action_count == 0
     assert result.visit_counts.tolist() == []
     assert result.visit_distribution.tolist() == []
 

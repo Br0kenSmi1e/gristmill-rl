@@ -83,6 +83,13 @@ def _single_fake_action_proposal(*args, **kwargs):
     return proposal
 
 
+def _empty_fake_action_proposal(*args, **kwargs):
+    def proposal(snapshot):
+        return []
+
+    return proposal
+
+
 def test_policy_rollout_returns_trace_and_rewritten_comp():
     comp = actionable_comp()
     model = PolicyValueModel(hidden_dim=16, rng_seed=0)
@@ -191,6 +198,28 @@ def test_policy_rollout_propagates_zero_flop_nonterminal_metric_error():
             config=RolloutConfig(max_steps=0),
             rng=np.random.default_rng(0),
         )
+
+
+def test_policy_rollout_with_no_sampled_actions_stops_nonterminal(monkeypatch):
+    comp = actionable_comp()
+    monkeypatch.setattr(
+        rollout_module, "_proposal_for_node", _empty_fake_action_proposal
+    )
+
+    result = run_policy_rollout(
+        comp,
+        model=object(),
+        feature_config=FeatureConfig(),
+        config=RolloutConfig(
+            max_steps=1, simulations=1, actions_per_node=1, sample_attempts=1
+        ),
+        rng=np.random.default_rng(0),
+    )
+
+    assert result.steps == 0
+    assert len(result.trace.records) == 0
+    assert not result.terminal
+    assert result.comp.snapshot() == comp.snapshot()
 
 
 def test_policy_rollout_preserves_terminal_fixture_log_flops():

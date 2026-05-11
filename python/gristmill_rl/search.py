@@ -94,7 +94,7 @@ class SearchNode:
         self.action_space = space
         self.action_space_snapshot = deepcopy(snapshot)
         self.expanded = True
-        self.terminal = not children
+        self.terminal = False
         return self
 
 
@@ -196,7 +196,7 @@ def run_sampled_puct(
         return list(proposal_fn(snapshot))[: config.actions_per_node]
 
     root.expand(proposal_fn=limited_proposal)
-    if root.terminal:
+    if root.terminal or not root.children:
         empty = np.asarray([], dtype=np.float32)
         return SearchResult(
             selected_action=None,
