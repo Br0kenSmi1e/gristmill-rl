@@ -123,3 +123,31 @@ def test_sample_cli_refuses_existing_sample_directory_without_overwrite(tmp_path
 
     assert result.returncode != 0
     assert "sample-000" in result.stderr
+
+
+def test_sample_cli_preflights_existing_sample_directories_before_writing(tmp_path):
+    input_path, checkpoint_path = make_checkpoint(tmp_path)
+    output_dir = tmp_path / "samples"
+    (output_dir / "sample-001").mkdir(parents=True)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gristmill_rl.sample",
+            "--checkpoint",
+            str(checkpoint_path),
+            "--input",
+            str(input_path),
+            "--samples",
+            "2",
+            "--output-dir",
+            str(output_dir),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "sample-001" in result.stderr
+    assert not (output_dir / "sample-000").exists()

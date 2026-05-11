@@ -71,10 +71,25 @@ def parse_args(argv: Sequence[str] | None = None) -> SampleConfig:
     )
 
 
+def _sample_dir(output_dir: Path, sample: int) -> Path:
+    return output_dir / f"sample-{sample:03d}"
+
+
+def _preflight_sample_dirs(
+    output_dir: Path, *, samples: int, overwrite: bool
+) -> list[Path]:
+    sample_dirs = [_sample_dir(output_dir, sample) for sample in range(samples)]
+    if not overwrite:
+        for sample_dir in sample_dirs:
+            if sample_dir.exists():
+                raise FileExistsError(
+                    f"sample output directory already exists: {sample_dir}"
+                )
+    return sample_dirs
+
+
 def _prepare_sample_dir(path: Path, *, overwrite: bool) -> None:
     if path.exists():
-        if not overwrite:
-            raise FileExistsError(f"sample output directory already exists: {path}")
         shutil.rmtree(path)
     path.mkdir(parents=True)
 
@@ -94,9 +109,13 @@ def run(config: SampleConfig) -> dict[str, float | int | str | None]:
     total_steps = 0
     best_final_log_flops: float | None = None
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    sample_dirs = _preflight_sample_dirs(
+        config.output_dir,
+        samples=config.samples,
+        overwrite=config.overwrite_output,
+    )
 
-    for sample in range(config.samples):
-        sample_dir = config.output_dir / f"sample-{sample:03d}"
+    for sample, sample_dir in enumerate(sample_dirs):
         _prepare_sample_dir(sample_dir, overwrite=config.overwrite_output)
         rollout = run_policy_rollout(
             TensorComputation.load_json(config.input),
