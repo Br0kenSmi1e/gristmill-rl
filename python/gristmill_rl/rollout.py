@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 import numpy as np
+from gristmill_symbolics import GristmillSymbolicsError
 
 from gristmill_rl.actions import SampledAction, make_model_proposal_fn, sample_valid_actions
 from gristmill_rl.features import FeatureConfig, extract_features
@@ -31,6 +32,15 @@ class RolloutResult:
     steps: int
     terminal: bool
     valid_action_counts: list[int]
+
+
+def _log_total_flops_or_zero(comp: Any) -> float:
+    try:
+        return float(comp.log_total_flops())
+    except GristmillSymbolicsError as error:
+        if "ZeroTotalFlops" not in str(error):
+            raise
+        return 0.0
 
 
 def _sample_from_visit_counts(
@@ -111,7 +121,7 @@ def run_policy_rollout(
     current_comp = comp.clone()
     trace = EpisodeTrace()
     start_from = 0
-    initial_log_flops = float(current_comp.log_total_flops())
+    initial_log_flops: float | None = None
     steps = 0
     terminal = False
     valid_action_counts: list[int] = []
@@ -126,9 +136,11 @@ def run_policy_rollout(
         root = SearchNode(comp=current_comp.clone(), start_from=start_from)
 
         def get_state_log_flops() -> float:
-            nonlocal state_log_flops
+            nonlocal initial_log_flops, state_log_flops
             if state_log_flops is None:
                 state_log_flops = float(current_comp.log_total_flops())
+                if initial_log_flops is None:
+                    initial_log_flops = state_log_flops
             return state_log_flops
 
         def value_fn(node: SearchNode) -> float:
@@ -198,7 +210,9 @@ def run_policy_rollout(
         start_from = int(root.action_space.def_index)
         steps += 1
 
-    final_log_flops = float(current_comp.log_total_flops())
+    if initial_log_flops is None:
+        initial_log_flops = _log_total_flops_or_zero(current_comp)
+    final_log_flops = _log_total_flops_or_zero(current_comp)
     return RolloutResult(
         comp=current_comp,
         trace=trace,
