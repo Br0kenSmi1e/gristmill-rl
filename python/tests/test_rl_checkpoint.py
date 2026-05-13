@@ -60,6 +60,24 @@ def test_checkpoint_load_restores_model_outputs_on_fixed_features(tmp_path):
     assert_outputs_close(loaded.model(features), expected)
 
 
+def test_checkpoint_save_and_load_accept_relative_paths(tmp_path, monkeypatch):
+    features, _, feature_config = checkpoint_features()
+    model = PolicyValueModel(hidden_dim=16, rng_seed=123)
+    expected = model(features)
+    monkeypatch.chdir(tmp_path)
+
+    save_checkpoint(
+        "relative-checkpoint",
+        model=model,
+        feature_config=feature_config,
+        hidden_dim=16,
+    )
+    loaded = load_checkpoint("relative-checkpoint")
+
+    assert (tmp_path / "relative-checkpoint" / "metadata.json").exists()
+    assert_outputs_close(loaded.model(features), expected)
+
+
 def test_checkpoint_load_allows_zero_term_feature_caps(tmp_path):
     feature_config = FeatureConfig(
         max_candidates=4, max_left_terms=0, max_right_terms=0

@@ -49,6 +49,10 @@ def _backup_checkpoint_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.bak-{uuid.uuid4().hex}")
 
 
+def _checkpoint_path(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
 def _remove_path(path: Path) -> None:
     if path.is_dir():
         shutil.rmtree(path)
@@ -203,7 +207,7 @@ def save_checkpoint(
             f"hidden_dim {hidden_dim} does not match model hidden_dim {actual_hidden_dim}"
         )
 
-    checkpoint_path = Path(path)
+    checkpoint_path = _checkpoint_path(path)
     if checkpoint_path.exists() and not overwrite:
         raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
 
@@ -229,7 +233,7 @@ def save_checkpoint(
 
 
 def load_checkpoint(path: str | Path) -> LoadedCheckpoint:
-    checkpoint_path = Path(path)
+    checkpoint_path = _checkpoint_path(path)
     checkpoint_metadata = _read_metadata(checkpoint_path)
     model = PolicyValueModel(hidden_dim=checkpoint_metadata.hidden_dim, rng_seed=0)
     _, abstract_state = nnx.split(model.module)
