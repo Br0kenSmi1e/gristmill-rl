@@ -16,7 +16,7 @@ def test_parse_baseline_arg_accepts_name_and_path():
     assert str(path) == "outputs/greedy/final.json"
 
 
-@pytest.mark.parametrize("value", ["greedy", "=path.json", "   =path.json"])
+@pytest.mark.parametrize("value", ["greedy", "=path.json", "   =path.json", "greedy="])
 def test_parse_baseline_arg_rejects_malformed_values(value):
     with pytest.raises(ValueError):
         parse_baseline_arg(value)
@@ -54,21 +54,20 @@ def test_monitor_writer_writes_baselines_and_metrics_jsonl(tmp_path):
 
     writer = MonitorWriter(tmp_path / "run", baselines=baselines)
     writer.write_baselines()
-    writer.append_metrics(
-        {
-            "episode": 1,
-            "episodes": 2,
-            "replay_size": 1,
-            "episode_steps": 1,
-            "episode_records": 1,
-            "initial_log_flops": 13.0,
-            "final_log_flops": 12.25,
-            "last_policy_loss": 0.5,
-            "last_value_loss": 0.25,
-            "last_total_loss": 0.75,
-            "params_changed": True,
-        }
-    )
+    episode_metrics = {
+        "episode": 1,
+        "episodes": 2,
+        "replay_size": 1,
+        "episode_steps": 1,
+        "episode_records": 1,
+        "initial_log_flops": 13.0,
+        "final_log_flops": 12.25,
+        "last_policy_loss": 0.5,
+        "last_value_loss": 0.25,
+        "last_total_loss": 0.75,
+        "params_changed": True,
+    }
+    writer.append_metrics(episode_metrics)
 
     baseline_doc = json.loads((tmp_path / "run" / "baselines.json").read_text())
     assert baseline_doc["baselines"][0]["name"] == "greedy"
@@ -78,5 +77,6 @@ def test_monitor_writer_writes_baselines_and_metrics_jsonl(tmp_path):
     lines = (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
     assert len(lines) == 1
     metrics = json.loads(lines[0])
-    assert metrics["episode"] == 1
+    for key, value in episode_metrics.items():
+        assert metrics[key] == value
     assert metrics["flops_improvement"] == pytest.approx(0.75)
