@@ -1,7 +1,10 @@
 import json
+import urllib.error
+import urllib.request
 
 import pytest
 
+from gristmill_rl.monitor import MonitorServer
 from gristmill_rl.monitor import MonitorWriter
 from gristmill_rl.monitor import load_baselines
 from gristmill_rl.monitor import parse_baseline_arg
@@ -80,3 +83,58 @@ def test_monitor_writer_writes_baselines_and_metrics_jsonl(tmp_path):
     for key, value in episode_metrics.items():
         assert metrics[key] == value
     assert metrics["flops_improvement"] == pytest.approx(0.75)
+
+
+def test_monitor_server_serves_dashboard_and_json_api(tmp_path):
+    writer = MonitorWriter(tmp_path / "run", baselines=[])
+    writer.write_baselines()
+    writer.append_metrics(
+        {
+            "episode": 1,
+            "episodes": 1,
+            "replay_size": 1,
+            "episode_steps": 1,
+            "episode_records": 1,
+            "initial_log_flops": 13.0,
+            "final_log_flops": 12.0,
+            "last_policy_loss": 0.4,
+            "last_value_loss": 0.2,
+            "last_total_loss": 0.6,
+            "params_changed": True,
+        }
+    )
+
+    server = MonitorServer(tmp_path / "run")
+    server.start()
+    try:
+        with urllib.request.urlopen(server.url, timeout=5) as response:
+            html = response.read().decode("utf-8")
+        assert "Gristmill RL Training Monitor" in html
+        assert "/api/metrics" in html
+
+        with urllib.request.urlopen(f"{server.url}/api/metrics", timeout=5) as response:
+            metrics_doc = json.loads(response.read().decode("utf-8"))
+        assert metrics_doc["metrics"][0]["episode"] == 1
+        assert metrics_doc["metrics"][0]["flops_improvement"] == 1.0
+
+        with urllib.request.urlopen(f"{server.url}/api/baselines", timeout=5) as response:
+            baseline_doc = json.loads(response.read().decode("utf-8"))
+        assert baseline_doc == {"baselines": []}
+    finally:
+        server.stop()
+
+
+def test_monitor_server_metrics_api_reports_malformed_jsonl(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "metrics.jsonl").write_text("{bad json\n")
+    (run_dir / "baselines.json").write_text('{"baselines": []}')
+
+    server = MonitorServer(run_dir)
+    server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{server.url}/api/metrics", timeout=5)
+        assert exc_info.value.code == 500
+    finally:
+        server.stop()
