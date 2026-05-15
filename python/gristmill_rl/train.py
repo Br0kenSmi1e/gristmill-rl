@@ -12,6 +12,8 @@ from gristmill_symbolics import TensorComputation
 
 from gristmill_rl.checkpoint import load_checkpoint, save_checkpoint
 from gristmill_rl.features import FeatureConfig, extract_features
+from gristmill_rl.monitor import MonitorServer, MonitorWriter
+from gristmill_rl.monitor import load_baselines, parse_baseline_arg
 from gristmill_rl.model import PolicyValueModel, TrainConfig, train_step
 from gristmill_rl.replay import ReplayBuffer, ReplayItem
 from gristmill_rl.rollout import RolloutConfig, run_policy_rollout
@@ -35,6 +37,9 @@ class RunnerConfig:
     checkpoint_in: Path | None = None
     checkpoint_out: Path | None = None
     checkpoint_overwrite: bool = False
+    monitor: bool = False
+    log_dir: Path | None = None
+    baselines: tuple[tuple[str, Path], ...] = ()
 
 
 def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
@@ -69,7 +74,30 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
         action="store_true",
         default=RunnerConfig.checkpoint_overwrite,
     )
+    parser.add_argument(
+        "--monitor",
+        action="store_true",
+        default=RunnerConfig.monitor,
+        help="Start a local browser monitor and write metrics under --log-dir.",
+    )
+    parser.add_argument("--log-dir", type=Path, default=RunnerConfig.log_dir)
+    parser.add_argument(
+        "--baseline",
+        action="append",
+        default=[],
+        help="Named baseline final JSON in NAME=PATH form. May be repeated.",
+    )
     args = parser.parse_args(argv)
+    if args.monitor and args.log_dir is None:
+        parser.error("--monitor requires --log-dir")
+    if args.log_dir is not None and not args.monitor:
+        parser.error("--log-dir requires --monitor")
+    if args.baseline and not args.monitor:
+        parser.error("--baseline requires --monitor")
+    try:
+        baselines = tuple(parse_baseline_arg(value) for value in args.baseline)
+    except ValueError as error:
+        parser.error(str(error))
     return RunnerConfig(
         input=args.input,
         episodes=args.episodes,
@@ -87,6 +115,9 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerConfig:
         checkpoint_in=args.checkpoint_in,
         checkpoint_out=args.checkpoint_out,
         checkpoint_overwrite=args.checkpoint_overwrite,
+        monitor=args.monitor,
+        log_dir=args.log_dir,
+        baselines=baselines,
     )
 
 
@@ -143,6 +174,18 @@ def run(config: RunnerConfig) -> dict[str, float | int | bool | str | None]:
         c_puct=config.c_puct,
     )
 
+    monitor_writer: MonitorWriter | None = None
+    monitor_server: MonitorServer | None = None
+    if config.monitor:
+        if config.log_dir is None:
+            raise ValueError("monitoring requires log_dir")
+        baselines = load_baselines(config.baselines)
+        monitor_writer = MonitorWriter(config.log_dir, baselines=baselines)
+        monitor_writer.write_baselines()
+        monitor_server = MonitorServer(config.log_dir)
+        monitor_server.start()
+        print(f"monitor_url={monitor_server.url}")
+
     last_total_loss = 0.0
     last_policy_loss = 0.0
     last_value_loss = 0.0
@@ -152,76 +195,84 @@ def run(config: RunnerConfig) -> dict[str, float | int | bool | str | None]:
     last_episode_steps = 0
     last_episode_records = 0
 
-    for episode in range(config.episodes):
-        rollout = run_policy_rollout(
-            _load_comp(config.input),
-            model=model,
-            feature_config=feature_config,
-            config=rollout_config,
-            rng=rng,
-        )
-        last_initial_log_flops = rollout.initial_log_flops
-        last_final_log_flops = rollout.final_log_flops
-        last_episode_steps = rollout.steps
-        completed_items = rollout.trace.complete(final_log_flops=last_final_log_flops)
-        replay.extend(completed_items)
-        last_episode_records = len(completed_items)
-
-        for _ in range(config.train_steps):
-            if len(replay) == 0:
-                break
-            metrics = train_step(
-                model,
-                batch=_item_batch(
-                    replay.sample(batch_size=config.batch_size), feature_config
-                ),
-                config=train_config,
+    try:
+        for episode in range(config.episodes):
+            rollout = run_policy_rollout(
+                _load_comp(config.input),
+                model=model,
+                feature_config=feature_config,
+                config=rollout_config,
+                rng=rng,
             )
-            last_policy_loss = float(metrics["policy_loss"])
-            last_value_loss = float(metrics["value_loss"])
-            last_total_loss = float(metrics["total_loss"])
-            params_changed = bool(params_changed or metrics["params_changed"])
+            last_initial_log_flops = rollout.initial_log_flops
+            last_final_log_flops = rollout.final_log_flops
+            last_episode_steps = rollout.steps
+            completed_items = rollout.trace.complete(
+                final_log_flops=last_final_log_flops
+            )
+            replay.extend(completed_items)
+            last_episode_records = len(completed_items)
 
-        episode_metrics: dict[str, float | int | bool] = {
-            "episode": episode + 1,
+            for _ in range(config.train_steps):
+                if len(replay) == 0:
+                    break
+                metrics = train_step(
+                    model,
+                    batch=_item_batch(
+                        replay.sample(batch_size=config.batch_size), feature_config
+                    ),
+                    config=train_config,
+                )
+                last_policy_loss = float(metrics["policy_loss"])
+                last_value_loss = float(metrics["value_loss"])
+                last_total_loss = float(metrics["total_loss"])
+                params_changed = bool(params_changed or metrics["params_changed"])
+
+            episode_metrics: dict[str, float | int | bool] = {
+                "episode": episode + 1,
+                "episodes": config.episodes,
+                "replay_size": len(replay),
+                "episode_steps": last_episode_steps,
+                "episode_records": last_episode_records,
+                "initial_log_flops": last_initial_log_flops,
+                "final_log_flops": last_final_log_flops,
+                "last_policy_loss": last_policy_loss,
+                "last_value_loss": last_value_loss,
+                "last_total_loss": last_total_loss,
+                "params_changed": params_changed,
+            }
+            print(json.dumps(episode_metrics, sort_keys=True))
+            if monitor_writer is not None:
+                monitor_writer.append_metrics(episode_metrics)
+
+        checkpoint_out = str(config.checkpoint_out) if config.checkpoint_out else None
+        if config.checkpoint_out is not None:
+            save_checkpoint(
+                config.checkpoint_out,
+                model=model,
+                feature_config=feature_config,
+                hidden_dim=hidden_dim,
+                metadata={"seed": config.seed, "episodes": config.episodes},
+                overwrite=config.checkpoint_overwrite,
+            )
+
+        return {
             "episodes": config.episodes,
             "replay_size": len(replay),
-            "episode_steps": last_episode_steps,
-            "episode_records": last_episode_records,
+            "last_episode_steps": last_episode_steps,
+            "last_episode_records": last_episode_records,
             "initial_log_flops": last_initial_log_flops,
             "final_log_flops": last_final_log_flops,
             "last_policy_loss": last_policy_loss,
             "last_value_loss": last_value_loss,
             "last_total_loss": last_total_loss,
             "params_changed": params_changed,
+            "checkpoint_in": checkpoint_in,
+            "checkpoint_out": checkpoint_out,
         }
-        print(json.dumps(episode_metrics, sort_keys=True))
-
-    checkpoint_out = str(config.checkpoint_out) if config.checkpoint_out else None
-    if config.checkpoint_out is not None:
-        save_checkpoint(
-            config.checkpoint_out,
-            model=model,
-            feature_config=feature_config,
-            hidden_dim=hidden_dim,
-            metadata={"seed": config.seed, "episodes": config.episodes},
-            overwrite=config.checkpoint_overwrite,
-        )
-
-    return {
-        "episodes": config.episodes,
-        "replay_size": len(replay),
-        "last_episode_steps": last_episode_steps,
-        "last_episode_records": last_episode_records,
-        "initial_log_flops": last_initial_log_flops,
-        "final_log_flops": last_final_log_flops,
-        "last_policy_loss": last_policy_loss,
-        "last_value_loss": last_value_loss,
-        "last_total_loss": last_total_loss,
-        "params_changed": params_changed,
-        "checkpoint_in": checkpoint_in,
-        "checkpoint_out": checkpoint_out,
-    }
+    finally:
+        if monitor_server is not None:
+            monitor_server.stop()
 
 
 def main(argv: Sequence[str] | None = None) -> None:

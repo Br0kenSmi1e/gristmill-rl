@@ -1,9 +1,12 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import numpy as np
+import pytest
 
+import gristmill_rl.train as train
 from gristmill_rl.checkpoint import load_checkpoint
 from gristmill_rl.features import FeatureConfig, extract_features
 from gristmill_rl.model import PolicyValueModel
@@ -281,3 +284,100 @@ def test_train_cli_loads_checkpoint_and_continues_training(tmp_path):
     fresh_output = _checkpoint_output_vector(fresh_checkpoint_path)
     assert not np.allclose(resumed_output, input_output)
     assert not np.allclose(resumed_output, fresh_output)
+
+
+def test_train_parse_args_accepts_monitor_options(tmp_path):
+    config = train.parse_args(
+        [
+            "--input",
+            str(tmp_path / "input.json"),
+            "--monitor",
+            "--log-dir",
+            str(tmp_path / "run"),
+            "--baseline",
+            "greedy=greedy.json",
+            "--baseline",
+            "random=random.json",
+        ]
+    )
+
+    assert config.monitor
+    assert config.log_dir == tmp_path / "run"
+    assert config.baselines == (
+        ("greedy", Path("greedy.json")),
+        ("random", Path("random.json")),
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--input", "input.json", "--monitor"],
+        ["--input", "input.json", "--log-dir", "run"],
+        ["--input", "input.json", "--baseline", "greedy=out.json"],
+    ],
+)
+def test_train_parse_args_rejects_invalid_monitor_combinations(argv):
+    with pytest.raises(SystemExit):
+        train.parse_args(argv)
+
+
+def test_train_cli_monitor_writes_run_artifacts(tmp_path):
+    input_path = tmp_path / "input.json"
+    baseline_path = tmp_path / "baseline.json"
+    log_dir = tmp_path / "run"
+    input_path.write_text(actionable_json())
+    baseline_path.write_text(actionable_json())
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gristmill_rl.train",
+            "--input",
+            str(input_path),
+            "--episodes",
+            "1",
+            "--max-steps",
+            "1",
+            "--simulations",
+            "2",
+            "--actions-per-node",
+            "1",
+            "--sample-attempts",
+            "4",
+            "--train-steps",
+            "1",
+            "--batch-size",
+            "1",
+            "--seed",
+            "0",
+            "--monitor",
+            "--log-dir",
+            str(log_dir),
+            "--baseline",
+            f"greedy={baseline_path}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    stdout_lines = result.stdout.strip().splitlines()
+    assert any(line.startswith("monitor_url=") for line in stdout_lines)
+
+    final_metrics = json.loads(stdout_lines[-1])
+    assert final_metrics["episodes"] == 1
+
+    baseline_doc = json.loads((log_dir / "baselines.json").read_text())
+    assert baseline_doc["baselines"][0]["name"] == "greedy"
+    assert baseline_doc["baselines"][0]["path"] == str(baseline_path)
+    assert baseline_doc["baselines"][0]["log_flops"] > 0.0
+
+    metrics_lines = (log_dir / "metrics.jsonl").read_text().splitlines()
+    assert len(metrics_lines) == 1
+    episode_metrics = json.loads(metrics_lines[0])
+    assert episode_metrics["episode"] == 1
+    assert episode_metrics["flops_improvement"] == pytest.approx(
+        episode_metrics["initial_log_flops"] - episode_metrics["final_log_flops"]
+    )
