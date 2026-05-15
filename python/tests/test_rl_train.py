@@ -315,6 +315,15 @@ def test_train_parse_args_accepts_monitor_options(tmp_path):
         ["--input", "input.json", "--monitor"],
         ["--input", "input.json", "--log-dir", "run"],
         ["--input", "input.json", "--baseline", "greedy=out.json"],
+        [
+            "--input",
+            "input.json",
+            "--monitor",
+            "--log-dir",
+            "run",
+            "--baseline",
+            "malformed",
+        ],
     ],
 )
 def test_train_parse_args_rejects_invalid_monitor_combinations(argv):
@@ -381,3 +390,91 @@ def test_train_cli_monitor_writes_run_artifacts(tmp_path):
     assert episode_metrics["flops_improvement"] == pytest.approx(
         episode_metrics["initial_log_flops"] - episode_metrics["final_log_flops"]
     )
+
+
+def test_train_cli_monitor_rejects_reused_metrics_log(tmp_path):
+    input_path = tmp_path / "input.json"
+    log_dir = tmp_path / "run"
+    input_path.write_text(actionable_json())
+    log_dir.mkdir()
+    (log_dir / "metrics.jsonl").write_text('{"episode": 99}\n')
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gristmill_rl.train",
+            "--input",
+            str(input_path),
+            "--episodes",
+            "1",
+            "--max-steps",
+            "1",
+            "--simulations",
+            "2",
+            "--actions-per-node",
+            "1",
+            "--sample-attempts",
+            "4",
+            "--train-steps",
+            "1",
+            "--batch-size",
+            "1",
+            "--seed",
+            "0",
+            "--monitor",
+            "--log-dir",
+            str(log_dir),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "metrics log already exists" in result.stderr
+    assert "monitor_url=" not in result.stdout
+    assert (log_dir / "metrics.jsonl").read_text() == '{"episode": 99}\n'
+
+
+def test_train_cli_monitor_rejects_invalid_baseline_before_artifacts(tmp_path):
+    input_path = tmp_path / "input.json"
+    missing_baseline_path = tmp_path / "missing-baseline.json"
+    log_dir = tmp_path / "run"
+    input_path.write_text(actionable_json())
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "gristmill_rl.train",
+            "--input",
+            str(input_path),
+            "--episodes",
+            "1",
+            "--max-steps",
+            "1",
+            "--simulations",
+            "2",
+            "--actions-per-node",
+            "1",
+            "--sample-attempts",
+            "4",
+            "--train-steps",
+            "1",
+            "--batch-size",
+            "1",
+            "--seed",
+            "0",
+            "--monitor",
+            "--log-dir",
+            str(log_dir),
+            "--baseline",
+            f"missing={missing_baseline_path}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "monitor_url=" not in result.stdout
+    assert not log_dir.exists()

@@ -11,6 +11,8 @@ from urllib.parse import urlparse
 
 from gristmill_symbolics import TensorComputation
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
+
 
 @dataclass(frozen=True)
 class BaselineMetric:
@@ -85,6 +87,8 @@ class MonitorWriter:
         self.metrics_path = self.log_dir / "metrics.jsonl"
         self.baselines_path = self.log_dir / "baselines.json"
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        if self.metrics_path.exists():
+            raise FileExistsError(f"metrics log already exists: {self.metrics_path}")
 
     def write_baselines(self) -> None:
         payload = {"baselines": [baseline.to_json() for baseline in self.baselines]}
@@ -199,6 +203,8 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 class MonitorServer:
     def __init__(self, log_dir: Path, *, host: str = "127.0.0.1", port: int = 0):
+        if host not in _LOOPBACK_HOSTS:
+            raise ValueError(f"monitor host must be loopback, got {host!r}")
         self.log_dir = Path(log_dir)
         self.host = host
         self.port = port

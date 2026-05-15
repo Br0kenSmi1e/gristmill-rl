@@ -86,6 +86,15 @@ def test_monitor_writer_writes_baselines_and_metrics_jsonl(tmp_path):
     assert metrics["flops_improvement"] == pytest.approx(0.75)
 
 
+def test_monitor_writer_rejects_existing_metrics_jsonl(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "metrics.jsonl").write_text('{"episode": 99}\n')
+
+    with pytest.raises(FileExistsError, match="metrics log already exists"):
+        MonitorWriter(run_dir, baselines=[])
+
+
 def test_monitor_server_serves_dashboard_and_json_api(tmp_path):
     writer = MonitorWriter(tmp_path / "run", baselines=[])
     writer.write_baselines()
@@ -146,6 +155,11 @@ def test_monitor_server_url_requires_started_server(tmp_path):
 
     with pytest.raises(RuntimeError, match="monitor server has not started"):
         _ = server.url
+
+
+def test_monitor_server_rejects_non_loopback_host(tmp_path):
+    with pytest.raises(ValueError, match="monitor host must be loopback"):
+        MonitorServer(tmp_path / "run", host="0.0.0.0")
 
 
 def test_monitor_server_unknown_path_returns_not_found(tmp_path):

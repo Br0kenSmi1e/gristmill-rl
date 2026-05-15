@@ -184,7 +184,7 @@ def run(config: RunnerConfig) -> dict[str, float | int | bool | str | None]:
         monitor_writer.write_baselines()
         monitor_server = MonitorServer(config.log_dir)
         monitor_server.start()
-        print(f"monitor_url={monitor_server.url}")
+        print(f"monitor_url={monitor_server.url}", flush=True)
 
     last_total_loss = 0.0
     last_policy_loss = 0.0
