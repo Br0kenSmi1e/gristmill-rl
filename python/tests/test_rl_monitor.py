@@ -4,6 +4,7 @@ import urllib.request
 
 import pytest
 
+from gristmill_rl.monitor import DASHBOARD_HTML
 from gristmill_rl.monitor import MonitorServer
 from gristmill_rl.monitor import MonitorWriter
 from gristmill_rl.monitor import load_baselines
@@ -138,3 +139,55 @@ def test_monitor_server_metrics_api_reports_malformed_jsonl(tmp_path):
         assert exc_info.value.code == 500
     finally:
         server.stop()
+
+
+def test_monitor_server_url_requires_started_server(tmp_path):
+    server = MonitorServer(tmp_path / "run")
+
+    with pytest.raises(RuntimeError, match="monitor server has not started"):
+        _ = server.url
+
+
+def test_monitor_server_unknown_path_returns_not_found(tmp_path):
+    server = MonitorServer(tmp_path / "run")
+    server.start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(f"{server.url}/missing", timeout=5)
+        assert exc_info.value.code == 404
+    finally:
+        server.stop()
+
+
+def test_monitor_server_metrics_api_handles_missing_jsonl(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    server = MonitorServer(run_dir)
+    server.start()
+    try:
+        with urllib.request.urlopen(f"{server.url}/api/metrics", timeout=5) as response:
+            metrics_doc = json.loads(response.read().decode("utf-8"))
+        assert metrics_doc["log_dir"] == str(run_dir)
+        assert metrics_doc["metrics"] == []
+    finally:
+        server.stop()
+
+
+def test_monitor_server_baselines_api_handles_missing_json(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    server = MonitorServer(run_dir)
+    server.start()
+    try:
+        with urllib.request.urlopen(f"{server.url}/api/baselines", timeout=5) as response:
+            baseline_doc = json.loads(response.read().decode("utf-8"))
+        assert baseline_doc == {"baselines": []}
+    finally:
+        server.stop()
+
+
+def test_dashboard_baseline_legend_uses_text_nodes_for_user_names():
+    assert "key.innerHTML" not in DASHBOARD_HTML
+    assert 'document.createTextNode(`${baseline.name} baseline`)' in DASHBOARD_HTML
