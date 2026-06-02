@@ -333,7 +333,6 @@ fn replace_definition_with_factorization(
     definitions.insert(def_index, left_definition);
 }
 
-#[allow(dead_code)]
 fn build_factorization(
     def: &TensorDef,
     graph: &ConstrGraph,
@@ -376,12 +375,10 @@ fn build_factorization(
     }
 }
 
-#[allow(dead_code)]
 fn contracted_indices(graph: &ConstrGraph) -> Vec<Index> {
     graph.interface.contracted.clone()
 }
 
-#[allow(dead_code)]
 fn side_external_indices(graph: &ConstrGraph) -> (Vec<Index>, Vec<Index>) {
     (
         graph.interface.left_external.clone(),
@@ -389,12 +386,10 @@ fn side_external_indices(graph: &ConstrGraph) -> (Vec<Index>, Vec<Index>) {
     )
 }
 
-#[allow(dead_code)]
 fn consumed_term_indices(biclique: &Biclique) -> Vec<usize> {
     bits_to_vec(biclique.terms_used)
 }
 
-#[allow(dead_code)]
 fn build_side_definition(
     source_nodes: &[Term],
     node_ids: &[usize],
@@ -417,14 +412,12 @@ fn build_side_definition(
     }
 }
 
-#[allow(dead_code)]
 fn build_side_term(source_nodes: &[Term], node_id: usize, coeff: &Rational) -> Term {
     let mut term = source_nodes[node_id].clone();
     term.coeff *= *coeff;
     term
 }
 
-#[allow(dead_code)]
 fn build_rewritten_definition(
     def: &TensorDef,
     left_def: &TensorDef,
@@ -467,14 +460,12 @@ fn build_rewritten_definition(
     }
 }
 
-#[allow(dead_code)]
 fn bits_to_vec(mask: u64) -> Vec<usize> {
     (0..64)
         .filter(|position| mask & (1_u64 << position) != 0)
         .collect()
 }
 
-#[allow(dead_code)]
 fn sub_biclique_from_decision(
     graph: &ConstrGraph,
     biclique: &Biclique,
