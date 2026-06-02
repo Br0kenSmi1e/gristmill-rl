@@ -17,6 +17,11 @@ Rust remains authoritative for state mutation, legal definition masks, and exact
 action-space generation. The Python policy layer only parameterizes the
 probability distribution over legal choices.
 
+Stage 1 must not enumerate exact action spaces for every definition before
+sampling. It uses the current `RewriteState::definition_mask()` as a cheap,
+lazy-refined mask and asks Rust for an exact `ActionSpace` only after a
+definition has been sampled.
+
 This design is issue #4's first slice. It replaces the current hand-built
 summary feature path conceptually, but it does not specify the RL training
 algorithm that will consume the policy.
@@ -30,7 +35,7 @@ algorithm that will consume the policy.
 - Parameterize a sampleable rewrite policy with a Transformer-style
   autoregressive model.
 - Include `STOP` as a first-class terminal rewrite-path action.
-- Enforce legal samples with dynamic next-token masks derived from
+- Enforce legal final decisions with dynamic next-token masks derived from
   `RewriteState` and `ActionSpace`.
 - Expose sampling and scoring interfaces suitable for REINFORCE or other RL
   algorithms.
@@ -71,13 +76,19 @@ PolicySample {
   action_space: ActionSpace | None,
   decision: dict | None,
   log_prob: float,
+  def_attempts: list[stage-1 trace item],
   decision_tokens: optional debug data,
 }
 ```
 
+`def_attempts` records any stage-1 definition probes that were sampled before
+the final `STOP` or accepted definition. This is needed because
+`definition_mask()` can have cheap false positives.
+
 `score_step` reruns the same masked decoding transitions against a provided
-choice and returns the sum of masked next-token log probabilities. It raises a
-clear error when the choice is illegal for the supplied state.
+sample trace or choice and returns the sum of masked next-token log
+probabilities. It raises a clear error when the final accepted choice is illegal
+for the supplied state.
 
 The policy boundary is stable. Token IDs, token order, model size, and internal
 decoder details may change across token schema versions.
@@ -97,31 +108,34 @@ The first call conditions on the current `RewriteState` computation:
 [STATE context] -> DEF@i | STOP
 ```
 
-Before this call, the policy runtime builds exact definition choices from the
-current `RewriteState`:
+The stage-1 mask is built from the current `RewriteState::definition_mask()`:
 
 ```text
-for each i where definition_mask[i] is true:
-  query action_space_for_def(i)
-  keep i only if Rust returns Some(ActionSpace)
+legal next tokens = STOP plus DEF@i for every i where definition_mask[i] is true
 ```
 
-This prepass lets Rust refine cheap false positives before the model samples a
-definition. It may cache the returned `ActionSpace` values for the second stage.
-
-`DEF@i` is legal only when this exact prepass found an action space for `i`.
-`STOP` is always legal. If no exact action spaces exist, `STOP` is the only
-legal token.
+The policy runtime must not query exact action spaces for every true mask entry.
+`STOP` is always legal. If the cheap definition mask has no true entries,
+`STOP` is the only legal token.
 
 If `STOP` is sampled, the rewrite path ends and no local action decision is
-decoded. Any action spaces discovered by the exact prepass are discarded.
+decoded.
 
-If `DEF@i` is sampled, the caller uses the cached action space from the prepass
-or asks Rust again for:
+If `DEF@i` is sampled, the caller asks Rust for only that definition:
 
 ```text
 state.action_space_for_def(i)
 ```
+
+If Rust returns `Some(ActionSpace)`, the definition choice is accepted and the
+policy proceeds to stage 2.
+
+If Rust returns `None`, the chosen definition was a cheap-mask false positive.
+The runtime records the rejected `DEF@i` and its log probability, keeps the
+refined mask update made by Rust, and restarts stage 1 on the same computation.
+This preserves lazy exactness without scanning the whole state. The final
+`PolicySample.log_prob` includes the rejected definition probes plus the final
+accepted `DEF@i` or `STOP`.
 
 The second call conditions on the state plus the generated local action space:
 
@@ -310,14 +324,18 @@ At each phase, the decoder asks the state machine for legal next tokens, sets
 all illegal token logits to negative infinity, and samples from the masked,
 renormalized distribution.
 
-This makes invalid samples impossible by construction:
+This makes invalid final decisions impossible by construction:
 
-- no out-of-range or exact-unavailable definition index
+- no out-of-range definition index
 - no out-of-range candidate index
 - no malformed candidate sequence
 - no duplicate mask term
 - no missing mask bits
 - no empty mask when a nonempty mask is required
+
+A cheap-mask false positive may be sampled during stage 1, but it is not
+returned as a rewrite decision. It is recorded as a rejected probe, the mask is
+refined, and decoding continues.
 
 The same state machine is used for scoring. A provided choice is replayed token
 by token through the masks. If any token is illegal at its phase, scoring fails
@@ -328,19 +346,25 @@ with a concrete error.
 For a terminal path step:
 
 ```text
-log_prob = log p(STOP | state)
+log_prob =
+  sum rejected DEF probe log_probs
+  + log p(STOP | state, current refined mask)
 ```
 
 For a rewrite path step:
 
 ```text
 log_prob =
-  log p(DEF@i | state)
+  sum rejected DEF probe log_probs
+  + log p(accepted DEF@i | state, current refined mask)
   + log p(CAND@j | action_space context)
   + sum_t log p(left_bit_t | prefix, action_space context)
   + sum_u log p(right_bit_u | prefix, action_space context)
   + log p(END | prefix)
 ```
+
+Each rejected probe log probability is computed under the stage-1 mask active
+for that attempt.
 
 In v1, `END` is deterministic after all mask bits have been emitted, so its log
 probability may be recorded as zero. Keeping `END` in the decision token stream
@@ -370,12 +394,10 @@ to cache activations. Caching is an optimization, not part of v1.
 ## Error Handling
 
 - Empty definition mask: `STOP` is the only legal token.
-- `action_space_for_def(i)` returns `None` during exact definition discovery:
-  exclude `i` from the stage-1 mask and keep the refined Rust mask.
-- `action_space_for_def(i)` returns `None` after a sampled `DEF@i`: this should
-  be unreachable when the cached prepass result is used. If it occurs during
-  scoring or because a caller supplied stale state, raise
-  `ValueError("invalid def_index ...")`.
+- `action_space_for_def(i)` returns `None` after a sampled `DEF@i`: record a
+  rejected stage-1 probe, keep Rust's refined mask, and restart stage 1.
+- `action_space_for_def(i)` returns `None` while scoring a trace that marks the
+  definition as accepted: raise `ValueError("invalid def_index ...")`.
 - Invalid `def_index` during scoring: raise `ValueError("invalid def_index ...")`.
 - Invalid `candidate_index` during scoring: raise
   `ValueError("invalid candidate_index ...")`.
@@ -401,9 +423,12 @@ Tokenizer tests:
 Mask and decoder tests:
 
 - `STOP` is available at the definition stage.
-- `STOP` is the only legal token when no exact action spaces exist.
+- `STOP` is the only legal token when the cheap definition mask is empty.
 - invalid definition and candidate tokens are masked out.
-- cheap definition-mask false positives are refined out before stage-1 sampling.
+- stage-1 sampling does not enumerate exact action spaces for every definition.
+- cheap definition-mask false positives are recorded as rejected probes and
+  refined lazily.
+- scoring a sample trace includes rejected stage-1 probe log probabilities.
 - fixed-order left and right mask bits are emitted for the selected candidate.
 - nonempty side masks are forced or rejected according to Rust decision
   requirements.
