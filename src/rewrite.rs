@@ -135,18 +135,6 @@ impl From<GraphError> for RewriteError {
     }
 }
 
-pub fn next_action_space(
-    comp: &TensorComputation,
-    start_from: usize,
-) -> Result<Option<ActionSpace>, RewriteError> {
-    for def_index in start_from..comp.definitions().len() {
-        if let Some(space) = action_space_for_definition(comp, def_index)? {
-            return Ok(Some(space));
-        }
-    }
-    Ok(None)
-}
-
 fn action_space_for_definition(
     comp: &TensorComputation,
     def_index: usize,

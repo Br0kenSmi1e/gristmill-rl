@@ -5,7 +5,7 @@ use gristmill_symbolics::repr::{
 };
 use gristmill_symbolics::rewrite::{
     Decision, Factorization, FactorizationRewrite, RewriteError, RewriteState, apply_rewrite,
-    build_rewrite, next_action_space,
+    build_rewrite,
 };
 use gristmill_symbolics::split::SplitError;
 
@@ -198,35 +198,30 @@ fn rewrite_state_step_with_space_mutates_computation_and_updates_mask() {
 }
 
 #[test]
-fn next_action_space_returns_none_when_no_definition_is_actionable() {
+fn rewrite_state_returns_none_when_no_definition_is_actionable() {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
     let a = comp.add_tensor(vec![]);
     let out = comp.add_tensor(vec![]);
     comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
+    let mut state = RewriteState::new(comp);
 
-    assert_eq!(next_action_space(&comp, 0), Ok(None));
+    assert_eq!(state.action_space_for_def(0), Ok(None));
 }
 
 #[test]
-fn next_action_space_returns_first_actionable_definition() {
-    let mut comp = comp_with_shared_left_candidate();
-    let extra_base = comp.add_tensor(vec![]);
-    let skipped = gristmill_symbolics::repr::TensorDef {
-        base: extra_base,
-        ext_indices: vec![idx(0)],
-        terms: vec![term(vec![], vec![factor(TensorId(0), &[0])])],
-    };
-    comp.definitions_mut().insert(0, skipped);
+fn rewrite_state_returns_action_space_for_selected_definition() {
+    let mut state = RewriteState::new(comp_with_unsplittable_then_actionable_definition());
 
-    let space = next_action_space(&comp, 0).unwrap().unwrap();
+    assert_eq!(state.action_space_for_def(0), Ok(None));
+    let space = state.action_space_for_def(1).unwrap().unwrap();
 
     assert_eq!(space.def_index, 1);
     assert!(!space.candidate_templates.is_empty());
 }
 
 #[test]
-fn next_action_space_propagates_split_errors() {
+fn action_space_for_def_propagates_split_errors() {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
     let a = comp.add_tensor(vec![]);
@@ -241,9 +236,10 @@ fn next_action_space_propagates_split_errors() {
             term(vec![], vec![factor(a, &[])]),
         ],
     );
+    let mut state = RewriteState::new(comp);
 
     assert_eq!(
-        next_action_space(&comp, 0),
+        state.action_space_for_def(0),
         Err(RewriteError::Split(SplitError::TooManyFactors {
             len: 65,
             max: 64,
@@ -252,7 +248,7 @@ fn next_action_space_propagates_split_errors() {
 }
 
 #[test]
-fn next_action_space_propagates_canon_errors() {
+fn action_space_for_def_propagates_canon_errors() {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
     let out = comp.add_tensor(vec![]);
@@ -266,9 +262,10 @@ fn next_action_space_propagates_canon_errors() {
             term(vec![], vec![factor(missing, &[]), factor(missing, &[])]),
         ],
     );
+    let mut state = RewriteState::new(comp);
 
     assert_eq!(
-        next_action_space(&comp, 0),
+        state.action_space_for_def(0),
         Err(RewriteError::Canon(CanonError::MissingTensorSymmetry {
             tensor: missing,
         }))
@@ -276,7 +273,7 @@ fn next_action_space_propagates_canon_errors() {
 }
 
 #[test]
-fn next_action_space_propagates_graph_errors() {
+fn action_space_for_def_propagates_graph_errors() {
     let mut comp = TensorComputation::new();
     comp.add_range(128);
     let a = comp.add_tensor(vec![]);
@@ -293,9 +290,10 @@ fn next_action_space_propagates_graph_errors() {
         .collect();
 
     comp.add_definition(out, vec![idx(0), idx(1)], terms);
+    let mut state = RewriteState::new(comp);
 
     assert_eq!(
-        next_action_space(&comp, 0),
+        state.action_space_for_def(0),
         Err(RewriteError::Graph(GraphError::TooManyTerms {
             len: 65,
             max: 64,
@@ -308,7 +306,8 @@ fn apply_rewrite_registers_tensors_inserts_definitions_and_validates() {
     let mut comp = comp_with_shared_left_candidate();
     let original_tensors = comp.tensors().len();
     let original_definitions = comp.definitions().len();
-    let space = next_action_space(&comp, 0).unwrap().unwrap();
+    let mut state = RewriteState::new(comp.clone());
+    let space = state.action_space_for_def(0).unwrap().unwrap();
     let decision = first_full_decision(&space);
     let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
     let def_index = rewrite.def_index;
@@ -349,7 +348,8 @@ fn apply_rewrite_rejects_out_of_range_definition_index_before_mutation() {
 #[test]
 fn apply_rewrite_only_checks_definition_index_after_rewrite_construction() {
     let mut comp = comp_with_shared_left_candidate();
-    let space = next_action_space(&comp, 0).unwrap().unwrap();
+    let mut state = RewriteState::new(comp.clone());
+    let space = state.action_space_for_def(0).unwrap().unwrap();
     let decision = first_full_decision(&space);
     let rewrite = build_rewrite(&comp, &space, &decision).unwrap();
 

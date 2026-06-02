@@ -23,6 +23,8 @@ def test_module_exports_core_types():
     assert hasattr(gristmill_symbolics, "RewriteState")
     assert hasattr(gristmill_symbolics, "ActionSpace")
     assert hasattr(gristmill_symbolics, "GristmillSymbolicsError")
+    assert not hasattr(TensorComputation, "next_" "action_space")
+    assert not hasattr(TensorComputation, "apply_decision_" "with_space")
 
 
 def test_load_json_validates_and_snapshots_basic_fixture():
