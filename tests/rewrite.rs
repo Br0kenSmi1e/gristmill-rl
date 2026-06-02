@@ -4,8 +4,8 @@ use gristmill_symbolics::repr::{
     Factor, Index, IndexId, RangeId, Rational, TensorComputation, TensorId, Term,
 };
 use gristmill_symbolics::rewrite::{
-    Decision, Factorization, FactorizationRewrite, RewriteError, apply_rewrite, build_rewrite,
-    next_action_space,
+    Decision, Factorization, FactorizationRewrite, RewriteError, RewriteState, apply_rewrite,
+    build_rewrite, next_action_space,
 };
 use gristmill_symbolics::split::SplitError;
 
@@ -55,6 +55,41 @@ fn comp_with_shared_left_candidate() -> TensorComputation {
     comp
 }
 
+fn comp_with_two_unsplittable_terms() -> TensorComputation {
+    let mut comp = TensorComputation::new();
+    comp.add_range(8);
+    let a = comp.add_tensor(vec![]);
+    let out = comp.add_tensor(vec![]);
+
+    comp.add_definition(
+        out,
+        vec![idx(0)],
+        vec![
+            term(vec![], vec![factor(a, &[0])]),
+            term(vec![], vec![factor(a, &[0])]),
+        ],
+    );
+
+    comp
+}
+
+fn comp_with_unsplittable_then_actionable_definition() -> TensorComputation {
+    let mut comp = comp_with_shared_left_candidate();
+    let extra_base = comp.add_tensor(vec![]);
+    comp.definitions_mut().insert(
+        0,
+        gristmill_symbolics::repr::TensorDef {
+            base: extra_base,
+            ext_indices: vec![idx(0)],
+            terms: vec![
+                term(vec![], vec![factor(TensorId(0), &[0])]),
+                term(vec![], vec![factor(TensorId(0), &[0])]),
+            ],
+        },
+    );
+    comp
+}
+
 fn empty_def(base: TensorId) -> gristmill_symbolics::repr::TensorDef {
     gristmill_symbolics::repr::TensorDef {
         base,
@@ -70,6 +105,96 @@ fn first_full_decision(space: &gristmill_symbolics::rewrite::ActionSpace) -> Dec
         left_mask: vec![true; template.left_definition.terms.len()],
         right_mask: vec![true; template.right_definition.terms.len()],
     }
+}
+
+#[test]
+fn rewrite_state_initializes_definition_mask_from_term_count() {
+    let basic = {
+        let mut comp = TensorComputation::new();
+        comp.add_range(8);
+        let a = comp.add_tensor(vec![]);
+        let out = comp.add_tensor(vec![]);
+        comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
+        comp
+    };
+    let exact_empty = comp_with_two_unsplittable_terms();
+    let actionable = comp_with_shared_left_candidate();
+
+    assert_eq!(RewriteState::new(basic).definition_mask(), &[false]);
+    assert_eq!(RewriteState::new(exact_empty).definition_mask(), &[true]);
+    assert_eq!(RewriteState::new(actionable).definition_mask(), &[true]);
+}
+
+#[test]
+fn action_space_for_def_returns_none_for_false_mask_entry() {
+    let mut comp = TensorComputation::new();
+    comp.add_range(8);
+    let a = comp.add_tensor(vec![]);
+    let out = comp.add_tensor(vec![]);
+    comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
+    let mut state = RewriteState::new(comp);
+
+    assert_eq!(state.definition_mask(), &[false]);
+    assert_eq!(state.action_space_for_def(0), Ok(None));
+    assert_eq!(state.definition_mask(), &[false]);
+}
+
+#[test]
+fn action_space_for_def_refines_exact_empty_definition_to_false() {
+    let mut state = RewriteState::new(comp_with_two_unsplittable_terms());
+
+    assert_eq!(state.definition_mask(), &[true]);
+    assert_eq!(state.action_space_for_def(0), Ok(None));
+    assert_eq!(state.definition_mask(), &[false]);
+}
+
+#[test]
+fn action_space_for_def_returns_requested_definition_without_scanning() {
+    let mut state = RewriteState::new(comp_with_unsplittable_then_actionable_definition());
+
+    assert_eq!(state.definition_mask(), &[true, true]);
+    assert_eq!(state.action_space_for_def(0), Ok(None));
+    assert_eq!(state.definition_mask(), &[false, true]);
+
+    let space = state.action_space_for_def(1).unwrap().unwrap();
+
+    assert_eq!(space.def_index, 1);
+    assert!(!space.candidate_templates.is_empty());
+}
+
+#[test]
+fn action_space_for_def_rejects_out_of_range_definition_index() {
+    let mut state = RewriteState::new(comp_with_shared_left_candidate());
+
+    assert_eq!(
+        state.action_space_for_def(7),
+        Err(RewriteError::DefinitionIndexOutOfRange { index: 7, len: 1 })
+    );
+}
+
+#[test]
+fn rewrite_state_step_with_space_mutates_computation_and_updates_mask() {
+    let original = comp_with_unsplittable_then_actionable_definition();
+    let original_tensors = original.tensors().len();
+    let original_definitions = original.definitions().len();
+    let mut state = RewriteState::new(original);
+    assert_eq!(state.action_space_for_def(0), Ok(None));
+    let space = state.action_space_for_def(1).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+
+    state.step_with_space(&space, &decision).unwrap();
+
+    assert_eq!(state.computation().tensors().len(), original_tensors + 2);
+    assert_eq!(
+        state.computation().definitions().len(),
+        original_definitions + 2
+    );
+    assert_eq!(state.computation().validate(), Ok(()));
+    assert_eq!(
+        state.definition_mask().len(),
+        state.computation().definitions().len()
+    );
+    assert!(!state.definition_mask()[0]);
 }
 
 #[test]

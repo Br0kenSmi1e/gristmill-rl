@@ -30,6 +30,75 @@ pub struct Decision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RewriteState {
+    comp: TensorComputation,
+    def_mask: Vec<bool>,
+}
+
+impl RewriteState {
+    pub fn new(comp: TensorComputation) -> Self {
+        let def_mask = comp.definitions().iter().map(cheap_possible).collect();
+        Self { comp, def_mask }
+    }
+
+    pub fn computation(&self) -> &TensorComputation {
+        &self.comp
+    }
+
+    pub fn into_computation(self) -> TensorComputation {
+        self.comp
+    }
+
+    pub fn definition_mask(&self) -> &[bool] {
+        &self.def_mask
+    }
+
+    pub fn action_space_for_def(
+        &mut self,
+        def_index: usize,
+    ) -> Result<Option<ActionSpace>, RewriteError> {
+        if def_index >= self.def_mask.len() {
+            return Err(RewriteError::DefinitionIndexOutOfRange {
+                index: def_index,
+                len: self.def_mask.len(),
+            });
+        }
+        if !self.def_mask[def_index] {
+            return Ok(None);
+        }
+
+        let Some(space) = action_space_for_definition(&self.comp, def_index)? else {
+            self.def_mask[def_index] = false;
+            return Ok(None);
+        };
+        Ok(Some(space))
+    }
+
+    pub fn step_with_space(
+        &mut self,
+        space: &ActionSpace,
+        decision: &Decision,
+    ) -> Result<(), RewriteError> {
+        let rewrite = build_rewrite(&self.comp, space, decision)?;
+        let def_index = rewrite.def_index;
+        apply_rewrite(&mut self.comp, rewrite)?;
+        self.refresh_mask_after_rewrite(def_index);
+        Ok(())
+    }
+
+    fn refresh_mask_after_rewrite(&mut self, def_index: usize) {
+        let replacement_mask: Vec<bool> = self.comp.definitions()[def_index..def_index + 3]
+            .iter()
+            .map(cheap_possible)
+            .collect();
+        self.def_mask.remove(def_index);
+        for (offset, mask_value) in replacement_mask.into_iter().enumerate() {
+            self.def_mask.insert(def_index + offset, mask_value);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactorizationRewrite {
     pub def_index: usize,
     pub factorization: Factorization,
@@ -70,33 +139,50 @@ pub fn next_action_space(
     comp: &TensorComputation,
     start_from: usize,
 ) -> Result<Option<ActionSpace>, RewriteError> {
-    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
-
-    for (def_index, def) in comp.definitions().iter().enumerate().skip(start_from) {
-        if def.terms.len() < 2 {
-            continue;
+    for def_index in start_from..comp.definitions().len() {
+        if let Some(space) = action_space_for_definition(comp, def_index)? {
+            return Ok(Some(space));
         }
+    }
+    Ok(None)
+}
 
-        let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
-        if candidate_bicliques.is_empty() {
-            continue;
-        }
-
-        let candidate_templates = candidate_graphs
-            .iter()
-            .zip(&candidate_bicliques)
-            .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
-            .collect();
-
-        return Ok(Some(ActionSpace {
-            def_index,
-            candidate_templates,
-            candidate_graphs,
-            candidate_bicliques,
-        }));
+fn action_space_for_definition(
+    comp: &TensorComputation,
+    def_index: usize,
+) -> Result<Option<ActionSpace>, RewriteError> {
+    let Some(def) = comp.definitions().get(def_index) else {
+        return Err(RewriteError::DefinitionIndexOutOfRange {
+            index: def_index,
+            len: comp.definitions().len(),
+        });
+    };
+    if !cheap_possible(def) {
+        return Ok(None);
     }
 
-    Ok(None)
+    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
+    let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
+    if candidate_bicliques.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate_templates = candidate_graphs
+        .iter()
+        .zip(&candidate_bicliques)
+        .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
+        .collect();
+
+    Ok(Some(ActionSpace {
+        def_index,
+        candidate_templates,
+        candidate_graphs,
+        candidate_bicliques,
+    }))
+}
+
+fn cheap_possible(def: &TensorDef) -> bool {
+    def.terms.len() >= 2
 }
 
 fn enumerate_candidates(
