@@ -236,6 +236,19 @@ def test_rewrite_state_action_space_handle_and_public_snapshot():
     assert first["rewritten_definition"]["terms"]
 
 
+def test_rewrite_state_cost_and_json_delegate_to_inner_computation():
+    comp = TensorComputation.from_json_string(actionable_json())
+    state = RewriteState.from_computation(comp)
+
+    value = state.log_total_flops()
+    text = state.to_json_string()
+    loaded = TensorComputation.from_json_string(text)
+
+    assert isinstance(value, float)
+    assert value == pytest.approx(comp.log_total_flops())
+    assert loaded.snapshot() == state.snapshot()
+
+
 def test_rewrite_state_step_with_space_mutates_state_and_returns_none():
     comp = TensorComputation.from_json_string(actionable_json())
     state = RewriteState.from_computation(comp)
