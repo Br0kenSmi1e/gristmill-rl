@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from gristmill_symbolics import ActionSpace, GristmillSymbolicsError, TensorComputation
+from gristmill_symbolics import (
+    ActionSpace,
+    GristmillSymbolicsError,
+    RewriteState,
+    TensorComputation,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -15,6 +20,7 @@ def test_module_exports_core_types():
     import gristmill_symbolics
 
     assert hasattr(gristmill_symbolics, "TensorComputation")
+    assert hasattr(gristmill_symbolics, "RewriteState")
     assert hasattr(gristmill_symbolics, "ActionSpace")
     assert hasattr(gristmill_symbolics, "GristmillSymbolicsError")
 
@@ -126,16 +132,89 @@ def actionable_json() -> str:
     )
 
 
-def test_next_action_space_returns_none_for_basic_fixture():
-    comp = TensorComputation.load_json(BASIC_FIXTURE)
+def exact_empty_json() -> str:
+    return json.dumps(
+        {
+            "ranges": [{"id": 0, "size": 8}],
+            "tensors": [
+                {"id": 0, "symmetry": []},
+                {"id": 1, "symmetry": []},
+            ],
+            "definitions": [
+                {
+                    "base": 1,
+                    "ext_indices": [{"id": 0, "range": 0}],
+                    "terms": [
+                        {
+                            "coeff": [1, 1],
+                            "sum_indices": [],
+                            "factors": [{"tensor": 0, "indices": [0]}],
+                        },
+                        {
+                            "coeff": [1, 1],
+                            "sum_indices": [],
+                            "factors": [{"tensor": 0, "indices": [0]}],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
 
-    assert comp.next_action_space(0) is None
+
+def first_full_decision(space):
+    template = space.snapshot()["candidate_templates"][0]
+    return {
+        "candidate_index": 0,
+        "left_mask": [True] * len(template["left_definition"]["terms"]),
+        "right_mask": [True] * len(template["right_definition"]["terms"]),
+    }
 
 
-def test_next_action_space_returns_handle_and_public_snapshot():
+def test_rewrite_state_from_computation_clones_input_computation():
     comp = TensorComputation.from_json_string(actionable_json())
+    before = comp.snapshot()
+    state = RewriteState.from_computation(comp)
+    space = state.action_space_for_def(0)
 
-    space = comp.next_action_space(0)
+    state.step_with_space(space, first_full_decision(space))
+
+    assert comp.snapshot() == before
+    assert state.snapshot() != before
+
+
+def test_rewrite_state_returns_none_for_basic_fixture():
+    comp = TensorComputation.load_json(BASIC_FIXTURE)
+    state = RewriteState.from_computation(comp)
+
+    assert state.definition_mask() == [False]
+    assert state.action_space_for_def(0) is None
+
+
+def test_rewrite_state_definition_mask_returns_copy():
+    comp = TensorComputation.from_json_string(actionable_json())
+    state = RewriteState.from_computation(comp)
+    mask = state.definition_mask()
+
+    mask[0] = False
+
+    assert state.definition_mask() == [True]
+
+
+def test_rewrite_state_refines_exact_empty_mask_to_false():
+    comp = TensorComputation.from_json_string(exact_empty_json())
+    state = RewriteState.from_computation(comp)
+
+    assert state.definition_mask() == [True]
+    assert state.action_space_for_def(0) is None
+    assert state.definition_mask() == [False]
+
+
+def test_rewrite_state_action_space_handle_and_public_snapshot():
+    comp = TensorComputation.from_json_string(actionable_json())
+    state = RewriteState.from_computation(comp)
+
+    space = state.action_space_for_def(0)
     snapshot = space.snapshot()
 
     assert isinstance(space, ActionSpace)
@@ -155,36 +234,28 @@ def test_next_action_space_returns_handle_and_public_snapshot():
     assert first["rewritten_definition"]["terms"]
 
 
-def first_full_decision(space):
-    template = space.snapshot()["candidate_templates"][0]
-    return {
-        "candidate_index": 0,
-        "left_mask": [True] * len(template["left_definition"]["terms"]),
-        "right_mask": [True] * len(template["right_definition"]["terms"]),
-    }
-
-
-def test_apply_decision_with_space_mutates_clone_and_returns_none():
+def test_rewrite_state_step_with_space_mutates_state_and_returns_none():
     comp = TensorComputation.from_json_string(actionable_json())
-    space = comp.next_action_space(0)
-    child = comp.clone()
-    before = child.snapshot()
+    state = RewriteState.from_computation(comp)
+    space = state.action_space_for_def(0)
+    before = state.snapshot()
     decision = first_full_decision(space)
 
-    result = child.apply_decision_with_space(space, decision)
-    after = child.snapshot()
+    result = state.step_with_space(space, decision)
+    after = state.snapshot()
 
     assert result is None
     assert len(after["tensors"]) == len(before["tensors"]) + 2
     assert len(after["definitions"]) == len(before["definitions"]) + 2
     assert after != before
+    assert len(state.definition_mask()) == len(after["definitions"])
 
 
 def test_invalid_decision_raises_and_does_not_mutate():
     comp = TensorComputation.from_json_string(actionable_json())
-    space = comp.next_action_space(0)
-    child = comp.clone()
-    before = child.snapshot()
+    state = RewriteState.from_computation(comp)
+    space = state.action_space_for_def(0)
+    before = state.snapshot()
     bad_decision = {
         "candidate_index": 0,
         "left_mask": [],
@@ -192,64 +263,66 @@ def test_invalid_decision_raises_and_does_not_mutate():
     }
 
     with pytest.raises(GristmillSymbolicsError):
-        child.apply_decision_with_space(space, bad_decision)
+        state.step_with_space(space, bad_decision)
 
-    assert child.snapshot() == before
+    assert state.snapshot() == before
 
 
 def test_malformed_decision_shape_raises_type_or_value_error():
     comp = TensorComputation.from_json_string(actionable_json())
-    space = comp.next_action_space(0)
+    state = RewriteState.from_computation(comp)
+    space = state.action_space_for_def(0)
 
     with pytest.raises(TypeError):
-        comp.clone().apply_decision_with_space(space, "not a dict")
+        state.step_with_space(space, "not a dict")
 
     with pytest.raises(ValueError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": 0, "left_mask": [True]},
         )
 
     with pytest.raises(TypeError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": True, "left_mask": [True], "right_mask": [True]},
         )
 
     with pytest.raises(ValueError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": -1, "left_mask": [True], "right_mask": [True]},
         )
 
     with pytest.raises(ValueError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": 2**128, "left_mask": [True], "right_mask": [True]},
         )
 
     with pytest.raises(TypeError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": 0, "left_mask": True, "right_mask": [True]},
         )
 
     with pytest.raises(TypeError):
-        comp.clone().apply_decision_with_space(
+        state.step_with_space(
             space,
             {"candidate_index": 0, "left_mask": [1], "right_mask": [True]},
         )
 
 
-def test_action_space_handle_is_reusable_on_multiple_clones():
+def test_action_space_handle_is_reusable_on_multiple_states():
     comp = TensorComputation.from_json_string(actionable_json())
-    space = comp.next_action_space(0)
+    source_state = RewriteState.from_computation(comp)
+    space = source_state.action_space_for_def(0)
     decision = first_full_decision(space)
-    left = comp.clone()
-    right = comp.clone()
+    left = RewriteState.from_computation(comp)
+    right = RewriteState.from_computation(comp)
 
-    left.apply_decision_with_space(space, decision)
-    right.apply_decision_with_space(space, decision)
+    left.step_with_space(space, decision)
+    right.step_with_space(space, decision)
 
     assert left.snapshot() == right.snapshot()
 
@@ -275,10 +348,11 @@ def test_write_json_round_trips_basic_fixture(tmp_path):
 
 def test_write_json_round_trips_rewritten_computation(tmp_path):
     comp = TensorComputation.from_json_string(actionable_json())
-    space = comp.next_action_space(0)
+    state = RewriteState.from_computation(comp)
+    space = state.action_space_for_def(0)
     assert space is not None
     template = space.snapshot()["candidate_templates"][0]
-    comp.apply_decision_with_space(
+    state.step_with_space(
         space,
         {
             "candidate_index": 0,
@@ -288,7 +362,7 @@ def test_write_json_round_trips_rewritten_computation(tmp_path):
     )
     output = tmp_path / "rewritten.json"
 
-    comp.write_json(output)
+    state.write_json(output)
     loaded = TensorComputation.load_json(output)
 
-    assert loaded.snapshot() == comp.snapshot()
+    assert loaded.snapshot() == state.snapshot()
