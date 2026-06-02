@@ -2,7 +2,7 @@
 
 ## Summary
 
-Add a v1 network representation for symbolic tensor rewrite policies.
+Add a first-pass network representation for symbolic tensor rewrite policies.
 
 The policy is a grammar-constrained autoregressive Transformer over faithful
 tokens derived from `TensorComputation`, `TensorDef`, and `ActionSpace`
@@ -30,8 +30,7 @@ algorithm that will consume the policy.
 
 - Tokenize symbolic tensor expressions as deterministic, faithful token
   sequences.
-- Add a versioned `TensorDef` token schema reusable by state and action-space
-  contexts.
+- Add a `TensorDef` tokenizer reusable by state and action-space contexts.
 - Parameterize a sampleable rewrite policy with a Transformer-style
   autoregressive model.
 - Include `STOP` as a first-class terminal rewrite-path action.
@@ -39,14 +38,14 @@ algorithm that will consume the policy.
   `RewriteState` and `ActionSpace`.
 - Expose sampling and scoring interfaces suitable for REINFORCE or other RL
   algorithms.
-- Keep vocabulary and token schema details network-internal and versioned.
+- Keep vocabulary and token details network-internal.
 
 ## Non-Goals
 
 - Choosing or implementing REINFORCE, MCTS, replay, rollout control, or
   objective-target construction.
 - Implementing a typed graph encoder.
-- Implementing DeepSets-style set pooling as the v1 representation.
+- Implementing DeepSets-style set pooling as this representation.
 - Canonicalizing, renaming, or normalizing tensor, range, or index IDs.
 - Moving action legality into Python-side symbolic logic.
 - Changing Rust symbolic JSON or `TensorDef` semantics.
@@ -91,7 +90,8 @@ probabilities. It raises a clear error when the final accepted choice is illegal
 for the supplied state.
 
 The policy boundary is stable. Token IDs, token order, model size, and internal
-decoder details may change across token schema versions.
+decoder details may change without changing Rust symbolic JSON or the semantic
+sampling and scoring operations.
 
 ## Two-Stage Sampling
 
@@ -147,23 +147,6 @@ The second call conditions on the state plus the generated local action space:
 Left and right mask bits are emitted in deterministic term order for the
 selected candidate.
 
-## Token Schema Versioning
-
-The v1 schema is:
-
-```text
-TokenSchemaVersion = 1
-```
-
-Checkpoints must save this version. Loading a checkpoint with a different token
-schema version either uses an explicit migration or fails with a clear
-incompatibility error.
-
-The exact token vocabulary is not a Rust or symbolic JSON contract. It is a
-network-internal representation. Future versions may change token order, token
-types, payload encoding, mask encoding, or even the encoder family as long as
-the semantic policy boundary remains clear.
-
 ## TensorDef Tokenization
 
 The core reusable unit is a faithful `TensorDef` tokenizer:
@@ -172,7 +155,7 @@ The core reusable unit is a faithful `TensorDef` tokenizer:
 TensorDef snapshot -> deterministic token sequence
 ```
 
-V1 tokenization preserves the existing snapshot fields and order:
+The tokenizer preserves the existing snapshot fields and order:
 
 ```text
 base
@@ -223,8 +206,8 @@ strings, but the conversion must stay faithful:
 - no reordering beyond the snapshot's deterministic order
 - no semantic simplification
 
-Raw integer IDs are allowed as token payloads in v1. If arbitrary IDs later
-hurt generalization, a future token schema can introduce canonicalized roles or
+Raw integer IDs are allowed as token payloads in this design. If arbitrary IDs
+later hurt generalization, a later design can introduce canonicalized roles or
 another representation.
 
 ## Context Wrappers
@@ -284,7 +267,8 @@ END
 `DEF@i` and `CAND@j` may be represented as token type plus integer payload
 rather than as separate vocabulary entries for every integer.
 
-Fixed-order mask bits are the v1 mask representation. For a selected candidate:
+Fixed-order mask bits are the mask representation for this design. For a
+selected candidate:
 
 ```text
 left terms:  t0, t1, ..., tn
@@ -309,8 +293,8 @@ for that side is forced to `KEEP`.
 
 ## Dynamic Token Masks
 
-V1 uses a small decoder state machine instead of a general context-free grammar
-engine:
+This design uses a small decoder state machine instead of a general
+context-free grammar engine:
 
 ```text
 choose_def_or_stop
@@ -366,13 +350,13 @@ log_prob =
 Each rejected probe log probability is computed under the stage-1 mask active
 for that attempt.
 
-In v1, `END` is deterministic after all mask bits have been emitted, so its log
-probability may be recorded as zero. Keeping `END` in the decision token stream
-preserves room for future variable-length decision encodings.
+In this design, `END` is deterministic after all mask bits have been emitted,
+so its log probability may be recorded as zero. Keeping `END` in the decision
+token stream preserves room for future variable-length decision encodings.
 
 ## Model Architecture
 
-V1 uses a small causal Transformer policy module. The model receives:
+This design uses a small causal Transformer policy module. The model receives:
 
 ```text
 context tokens + generated decision prefix
@@ -381,7 +365,7 @@ context tokens + generated decision prefix
 and returns next-token logits.
 
 The two stages may be separate forward calls, but they should share one policy
-model family and token schema:
+model family and tokenizer:
 
 ```text
 Call 1: STATE context -> DEF@i | STOP
@@ -389,7 +373,7 @@ Call 2: STATE + ACTION_SPACE context -> CAND@j, mask bits, END
 ```
 
 The implementation may rebuild the context between calls rather than attempting
-to cache activations. Caching is an optimization, not part of v1.
+to cache activations. Caching is an optimization, not part of this design.
 
 ## Error Handling
 
@@ -405,8 +389,8 @@ to cache activations. Caching is an optimization, not part of v1.
   `ValueError("invalid left_mask length ...")` or the right-side equivalent.
 - Invalid all-drop mask when a nonempty side is required: raise a side-specific
   `ValueError`.
-- Token budget exceeded: raise a tokenizer error. V1 does not silently truncate
-  state or action-space tokens.
+- Token budget exceeded: raise a tokenizer error. This design does not silently
+  truncate state or action-space tokens.
 
 ## Testing
 
@@ -418,7 +402,6 @@ Tokenizer tests:
 - state context wraps multiple definitions deterministically.
 - action-space context wraps candidates and nested `TensorDef` values
   deterministically.
-- schema version is present in tokenizer or checkpoint metadata.
 
 Mask and decoder tests:
 
@@ -455,7 +438,7 @@ Typed graph encoder:
 - Pros: stronger symbolic inductive bias and explicit contraction/index-sharing
   structure.
 - Cons: larger feature plumbing and graph batching step. It is better treated
-  as a future representation version.
+  as a future representation.
 
 DeepSets-style set embedding:
 
@@ -466,7 +449,7 @@ DeepSets-style set embedding:
 
 ## Acceptance Criteria
 
-- The design defines a v1 faithful `TensorDef` tokenizer.
+- The design defines a faithful `TensorDef` tokenizer.
 - The design defines state and action-space context wrappers.
 - The design includes `STOP` as a terminal path action.
 - The design defines a two-stage masked autoregressive policy.
@@ -474,7 +457,7 @@ DeepSets-style set embedding:
 - The design keeps Rust authoritative for legal rewrite state and action-space
   generation.
 - The design explicitly excludes ID canonicalization, graph encoding, and RL
-  algorithm changes from v1.
+  algorithm changes.
 
 ## References
 
