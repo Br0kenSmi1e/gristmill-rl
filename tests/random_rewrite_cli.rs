@@ -193,3 +193,27 @@ fn random_subsets_run_writes_valid_json() {
     let rewritten = read_json(&output).unwrap();
     assert_eq!(rewritten.validate(), Ok(()));
 }
+
+#[test]
+fn seeded_runs_are_deterministic_under_random_definition_policy() {
+    let case = TempCase::new("seeded-determinism");
+    let input = case.path("input.json");
+    let left_output = case.path("left-output.json");
+    let right_output = case.path("right-output.json");
+    let comp = comp_with_shared_left_candidate();
+    write_json(&input, &comp).unwrap();
+
+    run_random_rewrite_with_options(
+        &["--random-subsets", "--seed", "17", "--steps", "2"],
+        &[&input, &left_output],
+    );
+    run_random_rewrite_with_options(
+        &["--random-subsets", "--seed", "17", "--steps", "2"],
+        &[&input, &right_output],
+    );
+
+    assert_eq!(
+        read_json(&left_output).unwrap(),
+        read_json(&right_output).unwrap()
+    );
+}

@@ -1,7 +1,9 @@
 use clap::Parser;
 use gristmill_symbolics::io::{self, IoJsonError};
 use gristmill_symbolics::repr::TensorComputation;
-use gristmill_symbolics::rewrite::{self, ActionSpace, Decision, Factorization, RewriteError};
+use gristmill_symbolics::rewrite::{
+    ActionSpace, Decision, Factorization, RewriteError, RewriteState,
+};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::error::Error;
@@ -162,6 +164,28 @@ fn decision_for_template(
     }
 }
 
+fn random_action_space_from_mask(
+    state: &mut RewriteState,
+    rng: &mut impl Rng,
+) -> Result<Option<ActionSpace>, RewriteError> {
+    loop {
+        let available: Vec<usize> = state
+            .definition_mask()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, possible)| possible.then_some(index))
+            .collect();
+        if available.is_empty() {
+            return Ok(None);
+        }
+
+        let def_index = available[rng.gen_range(0..available.len())];
+        if let Some(space) = state.action_space_for_def(def_index)? {
+            return Ok(Some(space));
+        }
+    }
+}
+
 fn random_decision(space: &ActionSpace, random_subsets: bool, rng: &mut impl Rng) -> Decision {
     let candidate_index = choose_candidate_index(space.candidate_templates.len(), rng);
     decision_for_template(
@@ -182,26 +206,26 @@ fn write_snapshot(dir: &Path, step: usize, comp: &TensorComputation) -> Result<(
 }
 
 fn run(args: Args) -> Result<RunSummary, CliError> {
-    let mut comp = io::read_json(&args.input).map_err(|source| CliError::ReadInput {
+    let comp = io::read_json(&args.input).map_err(|source| CliError::ReadInput {
         path: args.input.clone(),
         source,
     })?;
+    let mut state = RewriteState::new(comp);
 
     if let Some(snapshot_dir) = &args.snapshot_dir {
         fs::create_dir_all(snapshot_dir).map_err(|source| CliError::CreateSnapshotDir {
             path: snapshot_dir.clone(),
             source,
         })?;
-        write_snapshot(snapshot_dir, 0, &comp)?;
+        write_snapshot(snapshot_dir, 0, state.computation())?;
     }
 
     let mut rng = StdRng::seed_from_u64(args.seed);
-    let mut start_from = 0;
     let mut applied_rewrites = 0;
     let mut stop_reason = StopReason::ReachedStepLimit;
 
     for step in 0..args.steps {
-        let Some(space) = rewrite::next_action_space(&comp, start_from)
+        let Some(space) = random_action_space_from_mask(&mut state, &mut rng)
             .map_err(|source| CliError::Rewrite { step, source })?
         else {
             stop_reason = StopReason::NoActionSpace;
@@ -209,21 +233,18 @@ fn run(args: Args) -> Result<RunSummary, CliError> {
         };
 
         let decision = random_decision(&space, args.random_subsets, &mut rng);
-        let factorization_rewrite = rewrite::build_rewrite(&comp, &space, &decision)
-            .map_err(|source| CliError::Rewrite { step, source })?;
-        let next_start_from = space.def_index;
-
-        rewrite::apply_rewrite(&mut comp, factorization_rewrite)
+        state
+            .step_with_space(&space, &decision)
             .map_err(|source| CliError::Rewrite { step, source })?;
 
         applied_rewrites += 1;
-        start_from = next_start_from;
 
         if let Some(snapshot_dir) = &args.snapshot_dir {
-            write_snapshot(snapshot_dir, applied_rewrites, &comp)?;
+            write_snapshot(snapshot_dir, applied_rewrites, state.computation())?;
         }
     }
 
+    let comp = state.into_computation();
     io::write_json(&args.output, &comp).map_err(|source| CliError::WriteOutput {
         path: args.output.clone(),
         source,
@@ -259,7 +280,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gristmill_symbolics::repr::{Rational, TensorDef, TensorId, Term};
+    use gristmill_symbolics::repr::{
+        Factor, Index, IndexId, RangeId, Rational, TensorDef, TensorId, Term,
+    };
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -268,6 +291,28 @@ mod tests {
             coeff: Rational::new(1, 1),
             sum_indices: vec![],
             factors: vec![],
+        }
+    }
+
+    fn idx(id: u32) -> Index {
+        Index {
+            id: IndexId(id),
+            range: RangeId(0),
+        }
+    }
+
+    fn factor(tensor: TensorId, indices: &[u32]) -> Factor {
+        Factor {
+            tensor,
+            indices: indices.iter().copied().map(IndexId).collect(),
+        }
+    }
+
+    fn integration_term(sum_indices: Vec<Index>, factors: Vec<Factor>) -> Term {
+        Term {
+            coeff: Rational::new(1, 1),
+            sum_indices,
+            factors,
         }
     }
 
@@ -285,6 +330,51 @@ mod tests {
             right_definition: def(11, right_terms),
             rewritten_definition: def(0, 1),
         }
+    }
+
+    fn comp_without_exact_action_space() -> TensorComputation {
+        let mut comp = TensorComputation::new();
+        comp.add_range(8);
+        let a = comp.add_tensor(vec![]);
+        let out = comp.add_tensor(vec![]);
+        comp.add_definition(
+            out,
+            vec![idx(0)],
+            vec![
+                integration_term(vec![], vec![factor(a, &[0])]),
+                integration_term(vec![], vec![factor(a, &[0])]),
+            ],
+        );
+        comp
+    }
+
+    fn comp_with_empty_and_actionable_spaces() -> TensorComputation {
+        let mut comp = TensorComputation::new();
+        comp.add_range(8);
+        let a = comp.add_tensor(vec![]);
+        let b = comp.add_tensor(vec![]);
+        let c = comp.add_tensor(vec![]);
+        let empty_out = comp.add_tensor(vec![]);
+        let actionable_out = comp.add_tensor(vec![]);
+
+        comp.add_definition(
+            empty_out,
+            vec![idx(0)],
+            vec![
+                integration_term(vec![], vec![factor(a, &[0])]),
+                integration_term(vec![], vec![factor(a, &[0])]),
+            ],
+        );
+        comp.add_definition(
+            actionable_out,
+            vec![idx(0), idx(1)],
+            vec![
+                integration_term(vec![idx(2)], vec![factor(a, &[0, 2]), factor(b, &[2, 1])]),
+                integration_term(vec![idx(3)], vec![factor(a, &[0, 3]), factor(c, &[3, 1])]),
+            ],
+        );
+
+        comp
     }
 
     #[test]
@@ -381,6 +471,30 @@ mod tests {
         assert_eq!(decision.right_mask.len(), 2);
         assert!(decision.left_mask.iter().any(|keep| *keep));
         assert!(decision.right_mask.iter().any(|keep| *keep));
+    }
+
+    #[test]
+    fn random_action_space_from_mask_refines_empty_mask_entries() {
+        let mut state = RewriteState::new(comp_without_exact_action_space());
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let space = random_action_space_from_mask(&mut state, &mut rng).unwrap();
+
+        assert!(space.is_none());
+        assert_eq!(state.definition_mask(), &[false]);
+    }
+
+    #[test]
+    fn random_action_space_from_mask_returns_available_space() {
+        let mut state = RewriteState::new(comp_with_empty_and_actionable_spaces());
+        let mut rng = StdRng::seed_from_u64(4);
+
+        let space = random_action_space_from_mask(&mut state, &mut rng)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(space.def_index, 1);
+        assert!(!space.candidate_templates.is_empty());
     }
 
     #[test]
