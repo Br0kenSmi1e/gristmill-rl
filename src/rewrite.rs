@@ -99,9 +99,9 @@ impl RewriteState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FactorizationRewrite {
-    pub def_index: usize,
-    pub factorization: Factorization,
+struct FactorizationRewrite {
+    def_index: usize,
+    factorization: Factorization,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,7 +212,7 @@ fn enumerate_candidates(
     Ok((candidate_graphs, candidate_bicliques))
 }
 
-pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
+fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
     let Some(template) = space.candidate_templates.get(decision.candidate_index) else {
         return Err(RewriteError::CandidateIndexOutOfRange {
             index: decision.candidate_index,
@@ -247,7 +247,7 @@ pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(),
     Ok(())
 }
 
-pub fn build_rewrite(
+fn build_rewrite(
     comp: &TensorComputation,
     space: &ActionSpace,
     decision: &Decision,
@@ -286,33 +286,21 @@ pub fn build_rewrite(
     })
 }
 
-pub fn apply_rewrite(
+fn apply_rewrite(
     comp: &mut TensorComputation,
     rewrite: FactorizationRewrite,
 ) -> Result<(), RewriteError> {
-    verify_rewrite_def_index(comp, &rewrite)?;
-    register_rewrite_tensors(comp);
-    replace_definition_with_factorization(comp, rewrite);
-    Ok(())
-}
-
-fn verify_rewrite_def_index(
-    comp: &TensorComputation,
-    rewrite: &FactorizationRewrite,
-) -> Result<(), RewriteError> {
-    if rewrite.def_index < comp.definitions().len() {
-        Ok(())
-    } else {
-        Err(RewriteError::DefinitionIndexOutOfRange {
+    if rewrite.def_index >= comp.definitions().len() {
+        return Err(RewriteError::DefinitionIndexOutOfRange {
             index: rewrite.def_index,
             len: comp.definitions().len(),
-        })
+        });
     }
-}
 
-fn register_rewrite_tensors(comp: &mut TensorComputation) {
     comp.add_tensor(vec![]);
     comp.add_tensor(vec![]);
+    replace_definition_with_factorization(comp, rewrite);
+    Ok(())
 }
 
 fn replace_definition_with_factorization(
@@ -340,31 +328,30 @@ fn build_factorization(
     left_tid: TensorId,
     right_tid: TensorId,
 ) -> Factorization {
-    let contracted = contracted_indices(graph);
-    let (left_external, right_external) = side_external_indices(graph);
-
     let left_definition = build_side_definition(
         &graph.left_nodes,
         &biclique.left_node_ids,
         &biclique.left_coeffs,
-        &left_external,
-        &contracted,
+        &graph.interface.left_external,
+        &graph.interface.contracted,
         left_tid,
     );
     let right_definition = build_side_definition(
         &graph.right_nodes,
         &biclique.right_node_ids,
         &biclique.right_coeffs,
-        &right_external,
-        &contracted,
+        &graph.interface.right_external,
+        &graph.interface.contracted,
         right_tid,
     );
-    let consumed = consumed_term_indices(biclique);
+    let consumed: Vec<_> = (0..64)
+        .filter(|position| biclique.terms_used & (1_u64 << position) != 0)
+        .collect();
     let rewritten_definition = build_rewritten_definition(
         def,
         &left_definition,
         &right_definition,
-        &contracted,
+        &graph.interface.contracted,
         &consumed,
     );
 
@@ -373,21 +360,6 @@ fn build_factorization(
         right_definition,
         rewritten_definition,
     }
-}
-
-fn contracted_indices(graph: &ConstrGraph) -> Vec<Index> {
-    graph.interface.contracted.clone()
-}
-
-fn side_external_indices(graph: &ConstrGraph) -> (Vec<Index>, Vec<Index>) {
-    (
-        graph.interface.left_external.clone(),
-        graph.interface.right_external.clone(),
-    )
-}
-
-fn consumed_term_indices(biclique: &Biclique) -> Vec<usize> {
-    bits_to_vec(biclique.terms_used)
 }
 
 fn build_side_definition(
@@ -407,15 +379,13 @@ fn build_side_definition(
         terms: node_ids
             .iter()
             .zip(coeffs)
-            .map(|(&node_id, coeff)| build_side_term(source_nodes, node_id, coeff))
+            .map(|(&node_id, coeff)| {
+                let mut term = source_nodes[node_id].clone();
+                term.coeff *= *coeff;
+                term
+            })
             .collect(),
     }
-}
-
-fn build_side_term(source_nodes: &[Term], node_id: usize, coeff: &Rational) -> Term {
-    let mut term = source_nodes[node_id].clone();
-    term.coeff *= *coeff;
-    term
 }
 
 fn build_rewritten_definition(
@@ -458,12 +428,6 @@ fn build_rewritten_definition(
         ext_indices: def.ext_indices.clone(),
         terms,
     }
-}
-
-fn bits_to_vec(mask: u64) -> Vec<usize> {
-    (0..64)
-        .filter(|position| mask & (1_u64 << position) != 0)
-        .collect()
 }
 
 fn sub_biclique_from_decision(
