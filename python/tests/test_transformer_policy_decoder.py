@@ -206,6 +206,19 @@ def test_score_step_replays_rejected_probe_without_mutating_input_state():
     assert state.definition_mask() == before_score
 
 
+def test_sample_and_score_use_computation_state_not_pre_refined_mask():
+    state = reject_then_actionable_state()
+    assert state.action_space_for_def(0) is None
+    assert state.definition_mask() == [False, True]
+
+    sample = sample_step(state, RejectThenPreferenceScorer(), np.random.default_rng(0))
+    rescored = score_step(state, RejectThenPreferenceScorer(), sample)
+
+    assert [attempt.accepted for attempt in sample.def_attempts] == [False, True]
+    assert rescored == pytest.approx(sample.log_prob)
+    assert state.definition_mask() == [False, True]
+
+
 def test_score_step_rejects_invalid_mask_length():
     sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
     invalid = sample.__class__(

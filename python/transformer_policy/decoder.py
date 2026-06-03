@@ -206,12 +206,13 @@ def _decision_tokens(
 
 
 def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> PolicySample:
+    sample_state = _fresh_replay_state(state)
     attempts: list[Stage1Attempt] = []
     total_log_prob = 0.0
     while True:
-        state_context = build_state_context(state.snapshot())
+        state_context = build_state_context(sample_state.snapshot())
         stage1_token, stage1_log_prob = _sample_token(
-            scorer, state_context, (), _stage1_legal(state), rng
+            scorer, state_context, (), _stage1_legal(sample_state), rng
         )
         total_log_prob += stage1_log_prob
         if stage1_token.kind == "STOP":
@@ -222,7 +223,7 @@ def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> Pol
                 decision_tokens=(T("STOP"),),
             )
         def_index = int(stage1_token.payload_dict()["def_index"])
-        space = state.action_space_for_def(def_index)
+        space = sample_state.action_space_for_def(def_index)
         accepted = space is not None
         attempts.append(
             Stage1Attempt(
@@ -237,7 +238,7 @@ def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> Pol
     assert space is not None
     space_snapshot = space.snapshot()
     context = (
-        *build_state_context(state.snapshot()),
+        *build_state_context(sample_state.snapshot()),
         *build_action_space_context(space_snapshot),
     )
     prefix: list[Token] = []
