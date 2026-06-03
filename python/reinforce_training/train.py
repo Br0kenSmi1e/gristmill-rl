@@ -228,6 +228,11 @@ def _update_metrics(
 
 
 def run(args: argparse.Namespace) -> dict[str, object]:
+    if args.checkpoint_out is not None and not args.checkpoint_overwrite:
+        checkpoint_path = args.checkpoint_out.expanduser().resolve()
+        if checkpoint_path.exists():
+            raise FileExistsError(f"checkpoint path already exists: {checkpoint_path}")
+
     (
         scorer,
         optimizer,
@@ -240,10 +245,12 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     ) = _run_configs(args)
     input_json = args.input.read_text()
     checkpoint_out = str(args.checkpoint_out) if args.checkpoint_out is not None else None
+    target_update = start_update + args.updates
     last_metrics: dict[str, object] | None = None
 
     for offset in range(args.updates):
         update_index = start_update + offset
+        is_final_update = offset == args.updates - 1
         episodes = collect_episode_batch(
             input_json=input_json,
             scorer=scorer,
@@ -270,7 +277,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
         )
         last_metrics = _update_metrics(
             update=update_index + 1,
-            updates=args.updates,
+            updates=target_update,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             episodes=episodes,
@@ -278,22 +285,24 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             final_log_flops=final_log_flops,
             train_metrics=train_metrics,
             checkpoint_in=checkpoint_in,
-            checkpoint_out=checkpoint_out,
+            checkpoint_out=None,
         )
-        print(json.dumps(last_metrics, allow_nan=False, sort_keys=True), flush=True)
 
-    if args.checkpoint_out is not None:
-        save_checkpoint(
-            args.checkpoint_out,
-            scorer=scorer,
-            optimizer=optimizer,
-            policy_config=policy_config,
-            train_config=train_config,
-            rollout_config=rollout_config,
-            update_count=start_update + args.updates,
-            seed=seed,
-            overwrite=args.checkpoint_overwrite,
-        )
+        if args.checkpoint_out is not None and is_final_update:
+            save_checkpoint(
+                args.checkpoint_out,
+                scorer=scorer,
+                optimizer=optimizer,
+                policy_config=policy_config,
+                train_config=train_config,
+                rollout_config=rollout_config,
+                update_count=target_update,
+                seed=seed,
+                overwrite=args.checkpoint_overwrite,
+            )
+            last_metrics["checkpoint_out"] = checkpoint_out
+
+        print(json.dumps(last_metrics, allow_nan=False, sort_keys=True), flush=True)
 
     if last_metrics is None:
         raise ValueError("updates must be positive")
