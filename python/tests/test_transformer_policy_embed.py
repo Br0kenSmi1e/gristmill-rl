@@ -1,3 +1,8 @@
+import json
+import os
+import subprocess
+import sys
+
 import numpy as np
 from flax import nnx
 
@@ -22,6 +27,27 @@ def test_token_features_are_deterministic_float32_matrix():
     assert features.dtype == np.float32
     assert TOKEN_FEATURE_DIM == 2 + len(PAYLOAD_KEYS)
     np.testing.assert_array_equal(features, token_features(tokens))
+
+
+def test_token_features_encode_strings_deterministically_across_processes():
+    script = """
+import json
+
+from transformer_policy.embed import token_features
+from transformer_policy.types import T
+
+print(json.dumps(token_features((T("DEF", id="abc"),)).tolist()))
+"""
+
+    def run_with_hash_seed(seed: str) -> list[list[float]]:
+        output = subprocess.check_output(
+            [sys.executable, "-c", script],
+            env={**os.environ, "PYTHONHASHSEED": seed},
+            text=True,
+        )
+        return json.loads(output)
+
+    assert run_with_hash_seed("1") == run_with_hash_seed("2")
 
 
 def test_token_features_reject_unknown_kind():

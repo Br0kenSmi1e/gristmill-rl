@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -64,9 +66,8 @@ def _payload_value(value: PayloadValue) -> float:
         return 1.0 if value else 0.0
     if isinstance(value, (int, float)):
         return float(value)
-    return float(jax.random.bits(jax.random.key(abs(hash(value)) % (2**31)), ())) / float(
-        2**32
-    )
+    digest = hashlib.blake2s(value.encode("utf-8"), digest_size=4).digest()
+    return float(int.from_bytes(digest, byteorder="big")) / float(2**32)
 
 
 def token_features(tokens: tuple[Token, ...]) -> np.ndarray:
