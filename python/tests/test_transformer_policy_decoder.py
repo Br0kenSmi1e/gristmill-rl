@@ -39,6 +39,30 @@ class StopScorer:
         )
 
 
+class RejectThenPreferenceScorer:
+    def score_next(self, context_tokens, decision_prefix, legal_next_tokens):
+        def_indices = {
+            token.payload_dict()["def_index"]
+            for token in legal_next_tokens
+            if token.kind == "DEF"
+        }
+        preferred_def = 0 if 0 in def_indices else 1 if 1 in def_indices else None
+        scores = []
+        for token in legal_next_tokens:
+            payload = token.payload_dict()
+            if token.kind == "DEF" and payload.get("def_index") == preferred_def:
+                scores.append(1.0e6)
+            elif token.kind in {"DEF", "STOP"}:
+                scores.append(-1.0e6)
+            elif token.kind == "CAND" and payload.get("candidate_index") == 0:
+                scores.append(1.0e6)
+            elif token.kind.endswith("KEEP"):
+                scores.append(1.0e6)
+            else:
+                scores.append(-1.0e6)
+        return np.asarray(scores, dtype=np.float32)
+
+
 class WrongShapeScorer:
     def score_next(self, context_tokens, decision_prefix, legal_next_tokens):
         return np.zeros((1, len(legal_next_tokens)), dtype=np.float32)
@@ -65,6 +89,65 @@ def empty_state():
               "coeff": [1, 1],
               "sum_indices": [],
               "factors": [{"tensor": 0, "indices": [0]}]
+            }
+          ]
+        }
+      ]
+    }
+    """
+    return RewriteState.from_computation(TensorComputation.from_json_string(text))
+
+
+def reject_then_actionable_state():
+    text = """
+    {
+      "ranges": [{"id": 0, "size": 8}],
+      "tensors": [
+        {"id": 0, "symmetry": []},
+        {"id": 1, "symmetry": []},
+        {"id": 2, "symmetry": []},
+        {"id": 3, "symmetry": []},
+        {"id": 4, "symmetry": []}
+      ],
+      "definitions": [
+        {
+          "base": 4,
+          "ext_indices": [{"id": 0, "range": 0}],
+          "terms": [
+            {
+              "coeff": [1, 1],
+              "sum_indices": [],
+              "factors": [{"tensor": 0, "indices": [0]}]
+            },
+            {
+              "coeff": [1, 1],
+              "sum_indices": [],
+              "factors": [{"tensor": 0, "indices": [0]}]
+            }
+          ]
+        },
+        {
+          "base": 3,
+          "ext_indices": [
+            {"id": 0, "range": 0},
+            {"id": 1, "range": 0}
+          ],
+          "terms": [
+            {
+              "coeff": [1, 1],
+              "sum_indices": [{"id": 2, "range": 0}],
+              "factors": [
+                {"tensor": 0, "indices": [0, 2]},
+                {"tensor": 1, "indices": [2, 1]}
+              ]
+            },
+            {
+              "coeff": [1, 1],
+              "sum_indices": [{"id": 3, "range": 0}],
+              "factors": [
+                {"tensor": 0, "indices": [0, 3]},
+                {"tensor": 2, "indices": [3, 1]}
+              ]
             }
           ]
         }
@@ -106,6 +189,21 @@ def test_score_step_replays_sample_log_probability():
     rescored = score_step(actionable_state(), PreferenceScorer(), sample)
 
     assert rescored == pytest.approx(sample.log_prob)
+
+
+def test_score_step_replays_rejected_probe_without_mutating_input_state():
+    state = reject_then_actionable_state()
+    sample = sample_step(state, RejectThenPreferenceScorer(), np.random.default_rng(0))
+    before_score = state.definition_mask()
+
+    first = score_step(state, RejectThenPreferenceScorer(), sample)
+    second = score_step(state, RejectThenPreferenceScorer(), sample)
+
+    assert [attempt.accepted for attempt in sample.def_attempts] == [False, True]
+    assert [attempt.def_index for attempt in sample.def_attempts] == [0, 1]
+    assert first == pytest.approx(sample.log_prob)
+    assert second == pytest.approx(sample.log_prob)
+    assert state.definition_mask() == before_score
 
 
 def test_score_step_rejects_invalid_mask_length():
@@ -157,6 +255,51 @@ def test_score_step_rejects_attempt_after_accepted_attempt():
     )
 
     with pytest.raises(ValueError, match="accepted stage-1 attempt must be final"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_mismatched_sample_def_index():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=999,
+        action_space=sample.action_space,
+        decision=sample.decision,
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="sample def_index must match accepted"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_mismatched_decision_tokens_for_stop():
+    sample = sample_step(empty_state(), StopScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=True,
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=(T("DEF", def_index=0),),
+    )
+
+    with pytest.raises(ValueError, match="stopped sample decision_tokens must be STOP"):
+        score_step(empty_state(), StopScorer(), invalid)
+
+
+def test_score_step_rejects_mismatched_decision_tokens_for_rewrite():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision=sample.decision,
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=(T("CAND", candidate_index=0), T("END")),
+    )
+
+    with pytest.raises(ValueError, match="decision_tokens must match replayed decision"):
         score_step(actionable_state(), PreferenceScorer(), invalid)
 
 

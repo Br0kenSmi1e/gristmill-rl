@@ -150,11 +150,20 @@ def _validate_stage1_trace(sample: PolicySample) -> None:
     if sample.stopped:
         if accepted_indices:
             raise ValueError("stopped sample must not contain accepted stage-1 attempts")
+        if sample.decision_tokens != (T("STOP"),):
+            raise ValueError("stopped sample decision_tokens must be STOP")
         return
     if len(accepted_indices) != 1:
         raise ValueError("rewrite sample requires exactly one accepted stage-1 attempt")
     if accepted_indices[0] != len(sample.def_attempts) - 1:
         raise ValueError("accepted stage-1 attempt must be final")
+    final_attempt = sample.def_attempts[accepted_indices[0]]
+    if type(final_attempt.def_index) is not int:
+        raise ValueError("stage-1 def_index must be an int")
+    if type(sample.def_index) is not int:
+        raise ValueError("sample def_index must be an int")
+    if sample.def_index != final_attempt.def_index:
+        raise ValueError("sample def_index must match accepted stage-1 attempt")
 
 
 def _decision_candidate_index(decision: dict) -> int:
@@ -173,6 +182,27 @@ def _validate_mask(decision: dict, key: str, expected_length: int) -> list[bool]
     if any(type(value) is not bool for value in mask):
         raise ValueError(f"{key} entries must be bool")
     return mask
+
+
+def _fresh_replay_state(state):
+    from gristmill_symbolics import RewriteState, TensorComputation
+
+    comp = TensorComputation.from_json_string(state.to_json_string())
+    return RewriteState.from_computation(comp)
+
+
+def _decision_tokens(
+    *,
+    candidate_token: Token,
+    left_mask: list[bool],
+    right_mask: list[bool],
+) -> tuple[Token, ...]:
+    return (
+        candidate_token,
+        *(T(f"LEFT_{'KEEP' if keep else 'DROP'}") for keep in left_mask),
+        *(T(f"RIGHT_{'KEEP' if keep else 'DROP'}") for keep in right_mask),
+        T("END"),
+    )
 
 
 def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> PolicySample:
@@ -255,13 +285,18 @@ def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> Pol
 
 def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
     _validate_stage1_trace(sample)
+    replay_state = _fresh_replay_state(state)
     total_log_prob = 0.0
     accepted_space = None
     for attempt in sample.def_attempts:
-        context = build_state_context(state.snapshot())
+        if type(attempt.def_index) is not int:
+            raise ValueError("stage-1 def_index must be an int")
+        context = build_state_context(replay_state.snapshot())
         chosen = T("DEF", def_index=attempt.def_index)
-        total_log_prob += _score_token(scorer, context, (), _stage1_legal(state), chosen)
-        space = state.action_space_for_def(attempt.def_index)
+        total_log_prob += _score_token(
+            scorer, context, (), _stage1_legal(replay_state), chosen
+        )
+        space = replay_state.action_space_for_def(attempt.def_index)
         if attempt.accepted:
             if space is None:
                 raise ValueError("invalid def_index accepted by sample trace")
@@ -270,9 +305,9 @@ def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
             if space is not None:
                 raise ValueError("sample trace rejects an available def_index")
     if sample.stopped:
-        context = build_state_context(state.snapshot())
+        context = build_state_context(replay_state.snapshot())
         total_log_prob += _score_token(
-            scorer, context, (), _stage1_legal(state), T("STOP")
+            scorer, context, (), _stage1_legal(replay_state), T("STOP")
         )
         return total_log_prob
     if accepted_space is None:
@@ -281,7 +316,7 @@ def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
         raise ValueError("rewrite sample requires decision")
     space_snapshot = accepted_space.snapshot()
     context = (
-        *build_state_context(state.snapshot()),
+        *build_state_context(replay_state.snapshot()),
         *build_action_space_context(space_snapshot),
     )
     prefix: list[Token] = []
@@ -307,6 +342,13 @@ def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
         "right_mask",
         len(candidate["right_definition"]["terms"]),
     )
+    expected_tokens = _decision_tokens(
+        candidate_token=candidate_token,
+        left_mask=left_mask,
+        right_mask=right_mask,
+    )
+    if sample.decision_tokens != expected_tokens:
+        raise ValueError("decision_tokens must match replayed decision")
     total_log_prob += _score_bits(
         scorer=scorer,
         context=context,
