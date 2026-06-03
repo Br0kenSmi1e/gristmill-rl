@@ -150,6 +150,94 @@ def _validate_state_shape_matches(
         raise ValueError(message)
 
 
+def _iter_nested_optimizer_functions(value: Any, *, depth: int = 0, seen=None):
+    if seen is None:
+        seen = set()
+    if depth > 8 or id(value) in seen:
+        return
+    seen.add(id(value))
+
+    if callable(value):
+        yield value
+        closure = getattr(value, "__closure__", None)
+        if closure is None:
+            return
+        for cell in closure:
+            try:
+                child = cell.cell_contents
+            except ValueError:
+                continue
+            yield from _iter_nested_optimizer_functions(
+                child,
+                depth=depth + 1,
+                seen=seen,
+            )
+        return
+
+    if isinstance(value, (tuple, list)):
+        for child in value:
+            yield from _iter_nested_optimizer_functions(
+                child,
+                depth=depth + 1,
+                seen=seen,
+            )
+        return
+
+    for attr_name in ("init", "update"):
+        child = getattr(value, attr_name, None)
+        if callable(child):
+            yield from _iter_nested_optimizer_functions(
+                child,
+                depth=depth + 1,
+                seen=seen,
+            )
+
+
+def _extract_create_optimizer_learning_rate(optimizer) -> float:
+    """Extract LR from the Optax Adam transform produced by create_optimizer."""
+    tx = getattr(optimizer, "tx", None)
+    update_fn = getattr(tx, "update", None)
+    if not callable(update_fn):
+        raise ValueError(
+            "optimizer learning_rate could not be verified; use create_optimizer"
+        )
+
+    learning_rates = []
+    for function in _iter_nested_optimizer_functions(update_fn):
+        if getattr(function, "__qualname__", None) != "scale.<locals>.update_fn":
+            continue
+        closure = getattr(function, "__closure__", None) or ()
+        values = []
+        for cell in closure:
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, Real) and not isinstance(value, bool):
+                values.append(float(value))
+        if len(values) == 1 and values[0] < 0.0 and math.isfinite(values[0]):
+            learning_rates.append(-values[0])
+
+    if len(learning_rates) != 1:
+        raise ValueError(
+            "optimizer learning_rate could not be verified; use create_optimizer"
+        )
+    return learning_rates[0]
+
+
+def _validate_optimizer_learning_rate(optimizer, train_config: TrainConfig) -> None:
+    optimizer_learning_rate = _extract_create_optimizer_learning_rate(optimizer)
+    if not math.isclose(
+        optimizer_learning_rate,
+        train_config.learning_rate,
+        rel_tol=0.0,
+        abs_tol=1e-15,
+    ):
+        raise ValueError(
+            "optimizer learning_rate does not match train_config.learning_rate"
+        )
+
+
 def _validate_checkpoint_state_shapes(
     *,
     scorer,
@@ -171,6 +259,7 @@ def _validate_checkpoint_state_shapes(
         nnx.state(expected_optimizer),
         "optimizer state shape does not match policy_config and train_config",
     )
+    _validate_optimizer_learning_rate(optimizer, train_config)
 
 
 def _serialized_metadata(
@@ -210,12 +299,21 @@ def _write_metadata(path: Path, metadata_json: str) -> None:
     _metadata_path(path).write_text(metadata_json)
 
 
+def _reject_json_constant(value: str):
+    raise ValueError(
+        f"checkpoint metadata must be strict JSON; invalid constant {value}"
+    )
+
+
 def _read_json_metadata(path: Path) -> dict[str, Any]:
     metadata_file = _metadata_path(path)
     if not metadata_file.exists():
         raise FileNotFoundError(f"checkpoint metadata not found: {metadata_file}")
     try:
-        payload = json.loads(metadata_file.read_text())
+        payload = json.loads(
+            metadata_file.read_text(),
+            parse_constant=_reject_json_constant,
+        )
     except json.JSONDecodeError as exc:
         raise ValueError("checkpoint metadata must be valid JSON") from exc
     if not isinstance(payload, dict):

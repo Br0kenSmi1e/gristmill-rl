@@ -261,6 +261,33 @@ def test_save_checkpoint_rejects_scorer_policy_config_shape_mismatch_before_writ
     assert not path.parent.exists()
 
 
+def test_save_checkpoint_rejects_optimizer_learning_rate_mismatch_before_writing(
+    tmp_path,
+):
+    path = tmp_path / "missing-parent" / "checkpoint"
+    policy_config = _policy_config()
+    scorer = policy_config.create_scorer(seed=0)
+    optimizer = create_optimizer(scorer, TrainConfig(learning_rate=1e-3))
+
+    with pytest.raises(
+        ValueError,
+        match="optimizer learning_rate does not match train_config.learning_rate",
+    ):
+        save_checkpoint(
+            path,
+            scorer=scorer,
+            optimizer=optimizer,
+            policy_config=policy_config,
+            train_config=TrainConfig(learning_rate=1e-2),
+            rollout_config=RolloutConfig(),
+            update_count=0,
+            seed=0,
+        )
+
+    assert not path.exists()
+    assert not path.parent.exists()
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -289,6 +316,20 @@ def test_load_checkpoint_rejects_bad_identity_metadata(
         load_checkpoint(path)
 
 
+def test_load_checkpoint_rejects_non_strict_json_constants(tmp_path):
+    path = tmp_path / "checkpoint"
+    _save_minimal_checkpoint(path)
+    metadata_path = path / "metadata.json"
+    metadata = metadata_path.read_text()
+    metadata_path.write_text(metadata.replace("\n}", ',\n  "bad": NaN\n}'))
+
+    with pytest.raises(
+        ValueError,
+        match="checkpoint metadata must be strict JSON; invalid constant NaN",
+    ):
+        load_checkpoint(path)
+
+
 def test_load_checkpoint_rejects_inconsistent_learning_rate_metadata(tmp_path):
     path = tmp_path / "checkpoint"
     _save_minimal_checkpoint(path)
@@ -304,7 +345,7 @@ def test_load_checkpoint_rejects_inconsistent_learning_rate_metadata(tmp_path):
         load_checkpoint(path)
 
 
-@pytest.mark.parametrize("learning_rate", [0.0, -1.0, float("nan")])
+@pytest.mark.parametrize("learning_rate", [0.0, -1.0])
 def test_load_checkpoint_rejects_invalid_train_config_learning_rate(
     tmp_path, learning_rate
 ):
