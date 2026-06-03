@@ -29,4 +29,4 @@ exclude = [
 ]
 module-name = "gristmill_symbolics"
 manifest-path = "Cargo.toml"
-python-packages = ["gristmill_rl"]
+python-packages = ["gristmill_rl", "transformer_policy"]
