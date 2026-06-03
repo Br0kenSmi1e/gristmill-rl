@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import uuid
 from dataclasses import asdict, dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
 from flax import nnx
+import jax
+import numpy as np
 import orbax.checkpoint as ocp
 
 from reinforce_training.objective import TrainConfig, create_optimizer
@@ -73,12 +77,100 @@ def _nonnegative_integer(value: Any, field_name: str) -> int:
     return value
 
 
+def _learning_rate(value: Any, field_name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{field_name} must be finite and positive")
+    learning_rate = float(value)
+    if learning_rate <= 0.0 or not math.isfinite(learning_rate):
+        raise ValueError(f"{field_name} must be finite and positive")
+    return learning_rate
+
+
+def _train_config_payload(train_config: TrainConfig, field_name: str) -> dict[str, float]:
+    return {"learning_rate": _learning_rate(train_config.learning_rate, field_name)}
+
+
+def _json_value_path(path: str, key: str) -> str:
+    if key.isidentifier():
+        return f"{path}.{key}"
+    return f"{path}[{key!r}]"
+
+
+def _validate_json_value(value: Any, path: str) -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} keys must be strings")
+            _validate_json_value(child, _json_value_path(path, key))
+        return
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            _validate_json_value(child, f"{path}[{index}]")
+        return
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int) and not isinstance(value, bool):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must be finite")
+        return
+    raise ValueError(f"{path} must be JSON-compatible")
+
+
 def _validate_user_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     if metadata is None:
         return {}
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint metadata.metadata must be an object")
+    _validate_json_value(metadata, "checkpoint metadata.metadata")
     return metadata
+
+
+def _state_shape_signature(
+    state: Any,
+) -> tuple[tuple[tuple[str, ...], tuple[int, ...], str], ...]:
+    leaves_with_path, _ = jax.tree_util.tree_flatten_with_path(state)
+    return tuple(
+        (
+            tuple(str(part) for part in path),
+            tuple(np.asarray(leaf).shape),
+            str(np.asarray(leaf).dtype),
+        )
+        for path, leaf in leaves_with_path
+    )
+
+
+def _validate_state_shape_matches(
+    actual_state: Any,
+    expected_state: Any,
+    message: str,
+) -> None:
+    if _state_shape_signature(actual_state) != _state_shape_signature(expected_state):
+        raise ValueError(message)
+
+
+def _validate_checkpoint_state_shapes(
+    *,
+    scorer,
+    optimizer,
+    policy_config: PolicyConfig,
+    train_config: TrainConfig,
+) -> None:
+    expected_scorer = policy_config.create_scorer(seed=0)
+    _validate_state_shape_matches(
+        nnx.state(scorer, nnx.Param),
+        nnx.state(expected_scorer, nnx.Param),
+        "scorer state shape does not match policy_config",
+    )
+    expected_optimizer = create_optimizer(expected_scorer, train_config)
+    # Optax/NNX state does not expose the original optimizer hyperparameters in a
+    # stable way here, so this validates topology compatibility by state shape.
+    _validate_state_shape_matches(
+        nnx.state(optimizer),
+        nnx.state(expected_optimizer),
+        "optimizer state shape does not match policy_config and train_config",
+    )
 
 
 def _serialized_metadata(
@@ -90,22 +182,26 @@ def _serialized_metadata(
     seed: int,
     metadata: dict[str, Any],
 ) -> str:
+    train_config_payload = _train_config_payload(
+        train_config,
+        "checkpoint metadata.train_config.learning_rate",
+    )
     payload: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "package": _PACKAGE,
         "model_class": _MODEL_CLASS,
         "policy_config": asdict(policy_config),
-        "train_config": asdict(train_config),
+        "train_config": train_config_payload,
         "rollout_config": asdict(rollout_config),
         "optimizer": _OPTIMIZER,
-        "learning_rate": train_config.learning_rate,
+        "learning_rate": train_config_payload["learning_rate"],
         "update_count": update_count,
         "seed": seed,
         "seed_scheme": _SEED_SCHEME,
         "metadata": metadata,
     }
     try:
-        return json.dumps(payload, indent=2, sort_keys=True)
+        return json.dumps(payload, allow_nan=False, indent=2, sort_keys=True)
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint metadata must be JSON serializable") from exc
 
@@ -168,6 +264,19 @@ def _read_metadata(
 
     policy_config = _config_from_metadata(PolicyConfig, payload, "policy_config")
     train_config = _config_from_metadata(TrainConfig, payload, "train_config")
+    train_learning_rate = _learning_rate(
+        train_config.learning_rate,
+        "checkpoint metadata.train_config.learning_rate",
+    )
+    metadata_learning_rate = _learning_rate(
+        payload.get("learning_rate"),
+        "checkpoint metadata.learning_rate",
+    )
+    if metadata_learning_rate != train_learning_rate:
+        raise ValueError(
+            "checkpoint metadata.learning_rate must match train_config.learning_rate"
+        )
+    train_config = TrainConfig(learning_rate=train_learning_rate)
     rollout_config = _config_from_metadata(RolloutConfig, payload, "rollout_config")
     update_count = _nonnegative_integer(payload.get("update_count"), "update_count")
     seed = _integer(payload.get("seed"), "seed")
@@ -175,6 +284,7 @@ def _read_metadata(
     user_metadata = payload.get("metadata", {})
     if not isinstance(user_metadata, dict):
         raise ValueError("checkpoint metadata.metadata must be an object")
+    _validate_json_value(user_metadata, "checkpoint metadata.metadata")
 
     return (
         policy_config,
@@ -231,6 +341,12 @@ def save_checkpoint(
 ) -> None:
     update_count = _nonnegative_integer(update_count, "update_count")
     seed = _integer(seed, "seed")
+    train_config = TrainConfig(
+        learning_rate=_learning_rate(
+            train_config.learning_rate,
+            "checkpoint metadata.train_config.learning_rate",
+        )
+    )
     metadata_payload = _validate_user_metadata(metadata)
     metadata_json = _serialized_metadata(
         policy_config=policy_config,
@@ -239,6 +355,12 @@ def save_checkpoint(
         update_count=update_count,
         seed=seed,
         metadata=metadata_payload,
+    )
+    _validate_checkpoint_state_shapes(
+        scorer=scorer,
+        optimizer=optimizer,
+        policy_config=policy_config,
+        train_config=train_config,
     )
 
     checkpoint_path = _checkpoint_path(path)
