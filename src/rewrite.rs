@@ -30,9 +30,78 @@ pub struct Decision {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FactorizationRewrite {
-    pub def_index: usize,
-    pub factorization: Factorization,
+pub struct RewriteState {
+    comp: TensorComputation,
+    def_mask: Vec<bool>,
+}
+
+impl RewriteState {
+    pub fn new(comp: TensorComputation) -> Self {
+        let def_mask = comp.definitions().iter().map(cheap_possible).collect();
+        Self { comp, def_mask }
+    }
+
+    pub fn computation(&self) -> &TensorComputation {
+        &self.comp
+    }
+
+    pub fn into_computation(self) -> TensorComputation {
+        self.comp
+    }
+
+    pub fn definition_mask(&self) -> &[bool] {
+        &self.def_mask
+    }
+
+    pub fn action_space_for_def(
+        &mut self,
+        def_index: usize,
+    ) -> Result<Option<ActionSpace>, RewriteError> {
+        if def_index >= self.def_mask.len() {
+            return Err(RewriteError::DefinitionIndexOutOfRange {
+                index: def_index,
+                len: self.def_mask.len(),
+            });
+        }
+        if !self.def_mask[def_index] {
+            return Ok(None);
+        }
+
+        let Some(space) = action_space_for_definition(&self.comp, def_index)? else {
+            self.def_mask[def_index] = false;
+            return Ok(None);
+        };
+        Ok(Some(space))
+    }
+
+    pub fn step_with_space(
+        &mut self,
+        space: &ActionSpace,
+        decision: &Decision,
+    ) -> Result<(), RewriteError> {
+        let rewrite = build_rewrite(&self.comp, space, decision)?;
+        let def_index = rewrite.def_index;
+        apply_rewrite(&mut self.comp, rewrite)?;
+        self.refresh_mask_after_rewrite(def_index);
+        Ok(())
+    }
+
+    fn refresh_mask_after_rewrite(&mut self, def_index: usize) {
+        let replacement_mask: Vec<bool> = self.comp.definitions()[def_index..def_index + 3]
+            .iter()
+            .map(cheap_possible)
+            .collect();
+        self.def_mask.remove(def_index);
+        for (offset, mask_value) in replacement_mask.into_iter().enumerate() {
+            self.def_mask.insert(def_index + offset, mask_value);
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FactorizationRewrite {
+    def_index: usize,
+    factorization: Factorization,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,37 +135,42 @@ impl From<GraphError> for RewriteError {
     }
 }
 
-pub fn next_action_space(
+fn action_space_for_definition(
     comp: &TensorComputation,
-    start_from: usize,
+    def_index: usize,
 ) -> Result<Option<ActionSpace>, RewriteError> {
-    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
-
-    for (def_index, def) in comp.definitions().iter().enumerate().skip(start_from) {
-        if def.terms.len() < 2 {
-            continue;
-        }
-
-        let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
-        if candidate_bicliques.is_empty() {
-            continue;
-        }
-
-        let candidate_templates = candidate_graphs
-            .iter()
-            .zip(&candidate_bicliques)
-            .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
-            .collect();
-
-        return Ok(Some(ActionSpace {
-            def_index,
-            candidate_templates,
-            candidate_graphs,
-            candidate_bicliques,
-        }));
+    let Some(def) = comp.definitions().get(def_index) else {
+        return Err(RewriteError::DefinitionIndexOutOfRange {
+            index: def_index,
+            len: comp.definitions().len(),
+        });
+    };
+    if !cheap_possible(def) {
+        return Ok(None);
     }
 
-    Ok(None)
+    let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
+    let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
+    if candidate_bicliques.is_empty() {
+        return Ok(None);
+    }
+
+    let candidate_templates = candidate_graphs
+        .iter()
+        .zip(&candidate_bicliques)
+        .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
+        .collect();
+
+    Ok(Some(ActionSpace {
+        def_index,
+        candidate_templates,
+        candidate_graphs,
+        candidate_bicliques,
+    }))
+}
+
+fn cheap_possible(def: &TensorDef) -> bool {
+    def.terms.len() >= 2
 }
 
 fn enumerate_candidates(
@@ -138,7 +212,7 @@ fn enumerate_candidates(
     Ok((candidate_graphs, candidate_bicliques))
 }
 
-pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
+fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
     let Some(template) = space.candidate_templates.get(decision.candidate_index) else {
         return Err(RewriteError::CandidateIndexOutOfRange {
             index: decision.candidate_index,
@@ -173,7 +247,7 @@ pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(),
     Ok(())
 }
 
-pub fn build_rewrite(
+fn build_rewrite(
     comp: &TensorComputation,
     space: &ActionSpace,
     decision: &Decision,
@@ -212,33 +286,21 @@ pub fn build_rewrite(
     })
 }
 
-pub fn apply_rewrite(
+fn apply_rewrite(
     comp: &mut TensorComputation,
     rewrite: FactorizationRewrite,
 ) -> Result<(), RewriteError> {
-    verify_rewrite_def_index(comp, &rewrite)?;
-    register_rewrite_tensors(comp);
-    replace_definition_with_factorization(comp, rewrite);
-    Ok(())
-}
-
-fn verify_rewrite_def_index(
-    comp: &TensorComputation,
-    rewrite: &FactorizationRewrite,
-) -> Result<(), RewriteError> {
-    if rewrite.def_index < comp.definitions().len() {
-        Ok(())
-    } else {
-        Err(RewriteError::DefinitionIndexOutOfRange {
+    if rewrite.def_index >= comp.definitions().len() {
+        return Err(RewriteError::DefinitionIndexOutOfRange {
             index: rewrite.def_index,
             len: comp.definitions().len(),
-        })
+        });
     }
-}
 
-fn register_rewrite_tensors(comp: &mut TensorComputation) {
     comp.add_tensor(vec![]);
     comp.add_tensor(vec![]);
+    replace_definition_with_factorization(comp, rewrite);
+    Ok(())
 }
 
 fn replace_definition_with_factorization(
@@ -259,7 +321,6 @@ fn replace_definition_with_factorization(
     definitions.insert(def_index, left_definition);
 }
 
-#[allow(dead_code)]
 fn build_factorization(
     def: &TensorDef,
     graph: &ConstrGraph,
@@ -267,31 +328,30 @@ fn build_factorization(
     left_tid: TensorId,
     right_tid: TensorId,
 ) -> Factorization {
-    let contracted = contracted_indices(graph);
-    let (left_external, right_external) = side_external_indices(graph);
-
     let left_definition = build_side_definition(
         &graph.left_nodes,
         &biclique.left_node_ids,
         &biclique.left_coeffs,
-        &left_external,
-        &contracted,
+        &graph.interface.left_external,
+        &graph.interface.contracted,
         left_tid,
     );
     let right_definition = build_side_definition(
         &graph.right_nodes,
         &biclique.right_node_ids,
         &biclique.right_coeffs,
-        &right_external,
-        &contracted,
+        &graph.interface.right_external,
+        &graph.interface.contracted,
         right_tid,
     );
-    let consumed = consumed_term_indices(biclique);
+    let consumed: Vec<_> = (0..64)
+        .filter(|position| biclique.terms_used & (1_u64 << position) != 0)
+        .collect();
     let rewritten_definition = build_rewritten_definition(
         def,
         &left_definition,
         &right_definition,
-        &contracted,
+        &graph.interface.contracted,
         &consumed,
     );
 
@@ -302,25 +362,6 @@ fn build_factorization(
     }
 }
 
-#[allow(dead_code)]
-fn contracted_indices(graph: &ConstrGraph) -> Vec<Index> {
-    graph.interface.contracted.clone()
-}
-
-#[allow(dead_code)]
-fn side_external_indices(graph: &ConstrGraph) -> (Vec<Index>, Vec<Index>) {
-    (
-        graph.interface.left_external.clone(),
-        graph.interface.right_external.clone(),
-    )
-}
-
-#[allow(dead_code)]
-fn consumed_term_indices(biclique: &Biclique) -> Vec<usize> {
-    bits_to_vec(biclique.terms_used)
-}
-
-#[allow(dead_code)]
 fn build_side_definition(
     source_nodes: &[Term],
     node_ids: &[usize],
@@ -338,19 +379,15 @@ fn build_side_definition(
         terms: node_ids
             .iter()
             .zip(coeffs)
-            .map(|(&node_id, coeff)| build_side_term(source_nodes, node_id, coeff))
+            .map(|(&node_id, coeff)| {
+                let mut term = source_nodes[node_id].clone();
+                term.coeff *= *coeff;
+                term
+            })
             .collect(),
     }
 }
 
-#[allow(dead_code)]
-fn build_side_term(source_nodes: &[Term], node_id: usize, coeff: &Rational) -> Term {
-    let mut term = source_nodes[node_id].clone();
-    term.coeff *= *coeff;
-    term
-}
-
-#[allow(dead_code)]
 fn build_rewritten_definition(
     def: &TensorDef,
     left_def: &TensorDef,
@@ -393,14 +430,6 @@ fn build_rewritten_definition(
     }
 }
 
-#[allow(dead_code)]
-fn bits_to_vec(mask: u64) -> Vec<usize> {
-    (0..64)
-        .filter(|position| mask & (1_u64 << position) != 0)
-        .collect()
-}
-
-#[allow(dead_code)]
 fn sub_biclique_from_decision(
     graph: &ConstrGraph,
     biclique: &Biclique,
