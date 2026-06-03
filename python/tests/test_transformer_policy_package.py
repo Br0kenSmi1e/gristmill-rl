@@ -2,8 +2,9 @@ import importlib
 import sys
 
 
-def test_transformer_policy_imports_without_legacy_rl():
-    sys.modules.pop("gristmill_rl", None)
+def test_transformer_policy_imports_without_legacy_rl(monkeypatch):
+    monkeypatch.delitem(sys.modules, "gristmill_rl", raising=False)
+    monkeypatch.delitem(sys.modules, "transformer_policy", raising=False)
 
     module = importlib.import_module("transformer_policy")
 
