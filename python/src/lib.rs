@@ -5,13 +5,13 @@ use ::gristmill_symbolics::repr::{
     TensorComputation as RustTensorComputation, TensorDef, TensorInfo, Term,
 };
 use ::gristmill_symbolics::rewrite::{
-    self, ActionSpace as RustActionSpace, Decision, Factorization,
+    ActionSpace as RustActionSpace, Decision, Factorization, RewriteState as RustRewriteState,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::pythonize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -216,22 +216,59 @@ impl PyTensorComputation {
     fn log_total_flops(&self) -> PyResult<f64> {
         cost::log_total_flops(&self.inner).map_err(py_gristmill_error)
     }
+}
 
-    fn next_action_space(&self, start_from: usize) -> PyResult<Option<PyActionSpace>> {
-        rewrite::next_action_space(&self.inner, start_from)
+#[pyclass(name = "RewriteState")]
+struct PyRewriteState {
+    inner: RustRewriteState,
+}
+
+#[pymethods]
+impl PyRewriteState {
+    #[staticmethod]
+    fn from_computation(comp: &PyTensorComputation) -> Self {
+        Self {
+            inner: RustRewriteState::new(comp.inner.clone()),
+        }
+    }
+
+    fn definition_mask(&self) -> Vec<bool> {
+        self.inner.definition_mask().to_vec()
+    }
+
+    fn action_space_for_def(&mut self, def_index: usize) -> PyResult<Option<PyActionSpace>> {
+        self.inner
+            .action_space_for_def(def_index)
             .map(|space| space.map(|inner| PyActionSpace { inner }))
             .map_err(py_gristmill_error)
     }
 
-    fn apply_decision_with_space(
+    fn step_with_space(
         &mut self,
         space: &PyActionSpace,
         decision: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let decision = parse_decision(decision)?;
-        let rewrite = rewrite::build_rewrite(&self.inner, &space.inner, &decision)
-            .map_err(py_gristmill_error)?;
-        rewrite::apply_rewrite(&mut self.inner, rewrite).map_err(py_gristmill_error)
+        self.inner
+            .step_with_space(&space.inner, &decision)
+            .map_err(py_gristmill_error)
+    }
+
+    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        pythonize(py, &computation_value(self.inner.computation()))
+            .map_err(py_gristmill_display_error)
+    }
+
+    fn log_total_flops(&self) -> PyResult<f64> {
+        cost::log_total_flops(self.inner.computation()).map_err(py_gristmill_error)
+    }
+
+    fn to_json_string(&self) -> PyResult<String> {
+        io::to_json(self.inner.computation()).map_err(py_gristmill_display_error)
+    }
+
+    fn write_json(&self, path: PathBuf) -> PyResult<()> {
+        io::write_json(path, self.inner.computation()).map_err(py_gristmill_display_error)
     }
 }
 
@@ -260,6 +297,7 @@ impl PyActionSpace {
 #[pymodule]
 fn gristmill_symbolics(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTensorComputation>()?;
+    module.add_class::<PyRewriteState>()?;
     module.add_class::<PyActionSpace>()?;
     module.add(
         "GristmillSymbolicsError",
