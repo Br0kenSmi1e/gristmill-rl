@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -17,6 +18,14 @@ class Stage1AttemptTrace:
     def_index: int
     log_prob: float
     accepted: bool
+
+    def __post_init__(self) -> None:
+        if self.def_index < 0:
+            raise ValueError("def_index must be non-negative")
+        log_prob = float(self.log_prob)
+        if not np.isfinite(log_prob):
+            raise ValueError("log_prob must be finite")
+        object.__setattr__(self, "log_prob", log_prob)
 
     @staticmethod
     def from_policy_attempt(attempt: Stage1Attempt) -> "Stage1AttemptTrace":
@@ -43,9 +52,14 @@ class StepTrace:
     def __post_init__(self) -> None:
         if self.step_index < 0:
             raise ValueError("step_index must be non-negative")
-        if not self.token_events:
+        token_events = tuple(self.token_events)
+        if not token_events:
             raise ValueError("step trace must contain token events")
-        if not np.isfinite(self.sample_log_prob):
+        for event in token_events:
+            if event.step_index != self.step_index:
+                raise ValueError("token event step_index must match step trace")
+        sample_log_prob = float(self.sample_log_prob)
+        if not np.isfinite(sample_log_prob):
             raise ValueError("sample_log_prob must be finite")
         if self.stopped:
             if self.def_index is not None or self.action_space_snapshot is not None:
@@ -59,6 +73,17 @@ class StepTrace:
                 raise ValueError("rewrite step requires action_space_snapshot")
             if self.decision is None:
                 raise ValueError("rewrite step requires decision")
+        object.__setattr__(self, "state_snapshot", deepcopy(self.state_snapshot))
+        object.__setattr__(self, "def_attempts", tuple(self.def_attempts))
+        object.__setattr__(
+            self,
+            "action_space_snapshot",
+            deepcopy(self.action_space_snapshot),
+        )
+        object.__setattr__(self, "decision", deepcopy(self.decision))
+        object.__setattr__(self, "decision_tokens", tuple(self.decision_tokens))
+        object.__setattr__(self, "token_events", token_events)
+        object.__setattr__(self, "sample_log_prob", sample_log_prob)
 
 
 @dataclass(frozen=True)
@@ -76,10 +101,23 @@ class EpisodeTrace:
             raise ValueError("episode_index must be non-negative")
         if self.terminal_reason not in {"stop", "max_steps"}:
             raise ValueError("terminal_reason must be 'stop' or 'max_steps'")
-        if not np.isfinite(self.final_log_flops):
+        steps = tuple(self.steps)
+        if not steps:
+            raise ValueError("episode trace must contain at least one step")
+        final_log_flops = float(self.final_log_flops)
+        if not np.isfinite(final_log_flops):
             raise ValueError("final_log_flops must be finite")
-        if not np.isfinite(self.reward):
+        reward = float(self.reward)
+        if not np.isfinite(reward):
             raise ValueError("reward must be finite")
+        if self.terminal_reason == "stop" and not steps[-1].stopped:
+            raise ValueError("stop episode requires a final stopped step")
+        if self.terminal_reason == "max_steps" and steps[-1].stopped:
+            raise ValueError("max_steps episode must not end with stop")
+        object.__setattr__(self, "steps", deepcopy(steps))
+        object.__setattr__(self, "final_snapshot", deepcopy(self.final_snapshot))
+        object.__setattr__(self, "final_log_flops", final_log_flops)
+        object.__setattr__(self, "reward", reward)
 
 
 def step_trace_from_traced_sample(
