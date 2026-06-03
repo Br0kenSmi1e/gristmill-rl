@@ -375,6 +375,48 @@ Call 2: STATE + ACTION_SPACE context -> CAND@j, mask bits, END
 The implementation may rebuild the context between calls rather than attempting
 to cache activations. Caching is an optimization, not part of this design.
 
+## Implementation Components
+
+The policy should be implemented as four separated pieces:
+
+```text
+Tokenizer/context builders
+Token embedder interface
+Neural sequence model
+Constrained decoder
+```
+
+The tokenizer/context builders own faithful symbolic conversion. They convert
+`TensorComputation`, `TensorDef`, and `ActionSpace` snapshots into structured
+token records, then wrap them as state and state-plus-action-space contexts.
+They do not score choices, sample tokens, or normalize symbolic IDs.
+
+The token embedder interface converts structured token records into vectors.
+It combines token-type information, payload fields such as tensor/index/range
+IDs or coefficients, and positional information. The exact embedding math can
+evolve, but the rest of the policy should interact with it through a narrow
+"tokens to vectors" boundary.
+
+The neural sequence model is the replaceable scorer. In this design it is a
+small causal Transformer. Its required interface is:
+
+```text
+score_next(context_tokens, decision_prefix, legal_next_tokens) -> logits
+```
+
+Later work can replace this scorer with a larger Transformer, a different
+attention variant, a hybrid encoder/decoder, or a graph-aware model, as long as
+it can score the legal next-token set for the current prefix.
+
+The constrained decoder owns `sample_step` and `score_step`. It builds the
+legal next-token set from `RewriteState`, `ActionSpace`, and the current
+decision phase; asks the neural sequence model to score that legal set; samples
+or replays one token; and accumulates log probabilities. It is responsible for
+turning token choices into the final `STOP` or Rust-compatible decision dict.
+
+This split keeps the tokenizer, embedder boundary, and decoder stable while
+allowing the neural sequence model to change.
+
 ## Error Handling
 
 - Empty definition mask: `STOP` is the only legal token.
@@ -402,6 +444,8 @@ Tokenizer tests:
 - state context wraps multiple definitions deterministically.
 - action-space context wraps candidates and nested `TensorDef` values
   deterministically.
+- token records can be embedded through the token embedder interface without
+  decoder-specific knowledge.
 
 Mask and decoder tests:
 
@@ -420,6 +464,8 @@ Policy interface tests:
 
 - sampled non-`STOP` decisions can be applied through
   `RewriteState.step_with_space`.
+- `sample_step` and `score_step` interact with the neural sequence model only
+  through the legal-next-token scoring interface.
 - scoring a sampled decision reproduces the same token path and a finite log
   probability.
 - illegal scored choices fail with clear phase-specific errors.
