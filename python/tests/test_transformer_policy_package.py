@@ -13,5 +13,6 @@ def test_transformer_policy_imports_without_legacy_rl(monkeypatch):
         "T",
         "Stage1Attempt",
         "PolicySample",
+        "TransformerPolicy",
     )
     assert "gristmill_rl" not in sys.modules
