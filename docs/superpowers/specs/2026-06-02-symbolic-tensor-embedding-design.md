@@ -417,6 +417,79 @@ turning token choices into the final `STOP` or Rust-compatible decision dict.
 This split keeps the tokenizer, embedder boundary, and decoder stable while
 allowing the neural sequence model to change.
 
+## Python Package Layout
+
+The policy should live outside the existing `gristmill_rl` package because that
+package is expected to be deprecated. The new policy must not import from
+`gristmill_rl`.
+
+Issue #4 should add a top-level Python package:
+
+```text
+python/
+  transformer_policy/
+    __init__.py
+    types.py
+    tokenize.py
+    embed.py
+    sequence_model.py
+    decoder.py
+    policy.py
+```
+
+The package responsibilities mirror the implementation components:
+
+- `types.py`: token records, token kinds, `PolicySample`, and stage-1 attempt
+  records
+- `tokenize.py`: faithful `TensorDef` tokenization plus state and action-space
+  context builders
+- `embed.py`: token-to-vector interface and default embedder
+- `sequence_model.py`: causal Transformer scorer implementing
+  `score_next(context_tokens, decision_prefix, legal_next_tokens) -> logits`
+- `decoder.py`: constrained decoder, stage masks, `sample_step`, and
+  `score_step`
+- `policy.py`: high-level policy object wiring tokenizer, embedder, sequence
+  model, and decoder
+
+The temporary package list in `python/pyproject.toml` should include both the
+legacy and new packages:
+
+```toml
+python-packages = ["gristmill_rl", "transformer_policy"]
+```
+
+When the legacy RL package is removed, `gristmill_rl` can be dropped from that
+list.
+
+Training code should be a later sibling package, not part of issue #4:
+
+```text
+python/
+  reinforce_training/
+    __init__.py
+    rollout.py
+    objectives.py
+    losses.py
+    train.py
+    checkpoint.py
+```
+
+The dependency direction should be:
+
+```text
+transformer_policy -> gristmill_symbolics
+reinforce_training -> transformer_policy
+reinforce_training -> gristmill_symbolics
+
+transformer_policy !-> reinforce_training
+transformer_policy !-> gristmill_rl
+reinforce_training !-> gristmill_rl
+```
+
+This keeps the Transformer policy as the probability distribution and leaves
+REINFORCE loss construction, rollout batching, objectives, optimizer state,
+checkpoints, metrics, and training CLI to the later training package.
+
 ## Error Handling
 
 - Empty definition mask: `STOP` is the only legal token.
@@ -446,6 +519,7 @@ Tokenizer tests:
   deterministically.
 - token records can be embedded through the token embedder interface without
   decoder-specific knowledge.
+- `transformer_policy` modules do not import `gristmill_rl`.
 
 Mask and decoder tests:
 
