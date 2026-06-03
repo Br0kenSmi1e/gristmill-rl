@@ -6,7 +6,7 @@ from transformer_policy.types import T, Token
 
 
 def _coeff_pair(coeff: Any) -> tuple[int, int]:
-    if isinstance(coeff, dict):
+    if isinstance(coeff, dict) and "numer" in coeff and "denom" in coeff:
         return int(coeff["numer"]), int(coeff["denom"])
     if isinstance(coeff, list | tuple) and len(coeff) == 2:
         return int(coeff[0]), int(coeff[1])

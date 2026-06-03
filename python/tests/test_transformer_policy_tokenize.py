@@ -1,3 +1,5 @@
+import pytest
+
 from transformer_policy.tokenize import (
     build_action_space_context,
     build_state_context,
@@ -34,6 +36,15 @@ def test_tokenize_tensor_def_preserves_field_order_and_raw_ids():
         T("TERM_END", position=0),
     )
     assert tokens[-1] == T("DEF_END")
+
+
+@pytest.mark.parametrize("coeff", [{}, {"numer": 1}, {"denom": 1}])
+def test_tokenize_tensor_def_rejects_malformed_coeff_dicts(coeff):
+    definition = tensor_definition_snapshot()
+    definition["terms"][0]["coeff"] = coeff
+
+    with pytest.raises(TypeError, match="unsupported coeff shape"):
+        tokenize_tensor_def(definition)
 
 
 def test_build_state_context_wraps_definitions():
