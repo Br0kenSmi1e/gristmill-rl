@@ -76,6 +76,17 @@ class StaticScorer:
         return jnp.where(legal_mask, legal_features[:, 0], -jnp.inf)
 
 
+class WrongWidthScorer:
+    def score_next_features(
+        self,
+        sequence_features,
+        sequence_mask,
+        legal_features,
+        legal_mask,
+    ):
+        return jnp.ones((1,), dtype=jnp.float32)
+
+
 class NonfiniteScorer(nnx.Module):
     def __init__(self):
         self.scale = nnx.Param(jnp.asarray(np.nan, dtype=jnp.float32))
@@ -224,6 +235,17 @@ def test_reinforce_loss_rejects_nonpositive_episode_count():
         )
 
 
+@pytest.mark.parametrize("episode_count", [True, 1.0])
+def test_reinforce_loss_rejects_non_integer_episode_count(episode_count):
+    with pytest.raises(ValueError, match="episode_count must be a positive integer"):
+        reinforce_loss(
+            _scorer(),
+            _event_batch(),
+            advantages=np.asarray([1.0], dtype=np.float32),
+            episode_count=episode_count,
+        )
+
+
 def test_reinforce_loss_rejects_negative_episode_id():
     batch = _event_batch()
     episode_id = np.zeros_like(batch.episode_id)
@@ -271,6 +293,16 @@ def test_reinforce_loss_rejects_masked_chosen_index():
             _batch_with_masked_chosen(),
             advantages=np.asarray([1.0], dtype=np.float32),
             episode_count=1,
+        )
+
+
+def test_reinforce_loss_rejects_logits_shape_mismatch():
+    with pytest.raises(ValueError, match="logits shape must match legal_mask shape"):
+        reinforce_loss(
+            WrongWidthScorer(),
+            _synthetic_batch(),
+            advantages=np.asarray([1.0, 1.0], dtype=np.float32),
+            episode_count=2,
         )
 
 

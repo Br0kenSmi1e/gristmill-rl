@@ -47,6 +47,8 @@ def _validate_reinforce_inputs(
     advantages: np.ndarray,
     episode_count: int,
 ) -> None:
+    if isinstance(episode_count, bool) or not isinstance(episode_count, (int, np.integer)):
+        raise ValueError("episode_count must be a positive integer")
     if episode_count <= 0:
         raise ValueError("episode_count must be positive")
 
@@ -91,6 +93,13 @@ def _validate_reinforce_inputs(
         raise ValueError("episode_id must be non-negative")
     if np.any(episode_id >= episode_count):
         raise ValueError("episode_id values must be less than episode_count")
+
+
+def _validate_logits_shape(logits: jax.Array, batch: PaddedTokenChoiceBatch) -> None:
+    if logits.ndim != 2:
+        raise ValueError("logits must be a 2-D matrix")
+    if tuple(logits.shape) != tuple(batch.legal_mask.shape):
+        raise ValueError("logits shape must match legal_mask shape")
 
 
 def _chosen_event_log_probs_for_gradient(
@@ -140,6 +149,7 @@ def _reinforce_loss_core(
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     advantage_values = jax.lax.stop_gradient(jnp.asarray(advantages, dtype=jnp.float32))
     logits = score_event_batch(scorer, batch)
+    _validate_logits_shape(logits, batch)
     chosen_log_probs = _chosen_event_log_probs_for_gradient(
         logits,
         batch.legal_mask,
