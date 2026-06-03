@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 
+import jax.numpy as jnp
 import numpy as np
 from flax import nnx
 
@@ -50,6 +51,21 @@ print(json.dumps(token_features((T("DEF", id="abc"),)).tolist()))
     assert run_with_hash_seed("1") == run_with_hash_seed("2")
 
 
+def test_token_features_place_payloads_in_fixed_columns():
+    tokens = (T("FACTOR", arity=2, id="abc", position=1, tensor=3),)
+
+    features = token_features(tokens)
+    repeated_features = token_features(tokens)
+
+    def payload_column(key: str) -> int:
+        return 2 + PAYLOAD_KEYS.index(key)
+
+    assert features[0, payload_column("arity")] == np.float32(2.0)
+    assert features[0, payload_column("position")] == np.float32(1.0)
+    assert features[0, payload_column("tensor")] == np.float32(3.0)
+    assert features[0, payload_column("id")] == repeated_features[0, payload_column("id")]
+
+
 def test_token_features_reject_unknown_kind():
     tokens = (T("UNKNOWN_KIND"),)
 
@@ -72,3 +88,19 @@ def test_token_embedder_projects_tokens_to_hidden_vectors():
 
     assert values.shape == (2, 8)
     assert np.isfinite(np.asarray(values)).all()
+
+
+def test_token_embedder_returns_linear_projection():
+    tokens = (
+        T("STATE_START"),
+        T("STATE_END"),
+    )
+    embedder = TokenEmbedder(hidden_dim=8, rngs=nnx.Rngs(0))
+
+    features = jnp.asarray(token_features(tokens), dtype=jnp.float32)
+    values = embedder(tokens)
+
+    np.testing.assert_array_equal(
+        np.asarray(values),
+        np.asarray(embedder.proj(features)),
+    )

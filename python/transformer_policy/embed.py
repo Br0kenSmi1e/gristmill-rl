@@ -91,4 +91,4 @@ class TokenEmbedder(nnx.Module):
 
     def __call__(self, tokens: tuple[Token, ...]) -> jax.Array:
         features = jnp.asarray(token_features(tokens), dtype=jnp.float32)
-        return nnx.relu(self.proj(features))
+        return self.proj(features)
