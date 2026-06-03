@@ -8,7 +8,7 @@ from transformer_policy.tokenize import (
     build_action_space_context,
     build_state_context,
 )
-from transformer_policy.trace import TokenChoiceEvent, TracedPolicySample
+from transformer_policy.trace import TokenChoiceEvent, TracePhase, TracedPolicySample
 from transformer_policy.types import PolicySample, Stage1Attempt, T, Token
 
 
@@ -70,28 +70,51 @@ def _sample_token(
     return legal[index], log_prob
 
 
-def _sample_token_with_event(
+def _append_token_choice_event(
     *,
-    scorer: NextTokenScorer,
+    events: list[TokenChoiceEvent] | None,
     context: tuple[Token, ...],
     prefix: tuple[Token, ...],
     legal: tuple[Token, ...],
-    rng: np.random.Generator,
-    phase: str,
+    chosen_index: int,
+    phase: TracePhase,
     step_index: int,
-) -> tuple[Token, float, TokenChoiceEvent]:
-    chosen_index, log_prob = _sample_token_index(scorer, context, prefix, legal, rng)
-    return (
-        legal[chosen_index],
-        log_prob,
+) -> None:
+    if events is None:
+        return
+    events.append(
         TokenChoiceEvent(
             sequence_tokens=(*context, *prefix),
             legal_next_tokens=legal,
             chosen_index=chosen_index,
             phase=phase,
             step_index=step_index,
-        ),
+        )
     )
+
+
+def _sample_token_traced(
+    *,
+    scorer: NextTokenScorer,
+    context: tuple[Token, ...],
+    prefix: tuple[Token, ...],
+    legal: tuple[Token, ...],
+    rng: np.random.Generator,
+    events: list[TokenChoiceEvent] | None,
+    phase: TracePhase,
+    step_index: int,
+) -> tuple[Token, float]:
+    chosen_index, log_prob = _sample_token_index(scorer, context, prefix, legal, rng)
+    _append_token_choice_event(
+        events=events,
+        context=context,
+        prefix=prefix,
+        legal=legal,
+        chosen_index=chosen_index,
+        phase=phase,
+        step_index=step_index,
+    )
+    return legal[chosen_index], log_prob
 
 
 def _score_token(
@@ -131,7 +154,7 @@ def _bit_legal(kind_prefix: str, is_final: bool, kept_any: bool) -> tuple[Token,
     return (keep, drop)
 
 
-def _sample_bits(
+def _sample_bits_core(
     *,
     scorer: NextTokenScorer,
     context: tuple[Token, ...],
@@ -139,54 +162,47 @@ def _sample_bits(
     kind_prefix: str,
     term_count: int,
     rng: np.random.Generator,
+    events: list[TokenChoiceEvent] | None = None,
+    step_index: int = 0,
 ) -> tuple[list[bool], float]:
     bits: list[bool] = []
     log_prob = 0.0
     kept_any = False
+    phase: TracePhase | None = None
+    if events is not None:
+        if kind_prefix == "LEFT":
+            phase = "left_bit"
+        elif kind_prefix == "RIGHT":
+            phase = "right_bit"
+        else:
+            raise ValueError("kind_prefix must be LEFT or RIGHT")
     for term_index in range(term_count):
         legal = _bit_legal(kind_prefix, term_index == term_count - 1, kept_any)
-        token, token_log_prob = _sample_token(scorer, context, tuple(prefix), legal, rng)
+        if phase is None:
+            token, token_log_prob = _sample_token(
+                scorer,
+                context,
+                tuple(prefix),
+                legal,
+                rng,
+            )
+        else:
+            token, token_log_prob = _sample_token_traced(
+                scorer=scorer,
+                context=context,
+                prefix=tuple(prefix),
+                legal=legal,
+                rng=rng,
+                events=events,
+                phase=phase,
+                step_index=step_index,
+            )
         prefix.append(token)
         keep = token.kind.endswith("KEEP")
         bits.append(keep)
         kept_any = kept_any or keep
         log_prob += token_log_prob
     return bits, log_prob
-
-
-def _sample_bits_with_events(
-    *,
-    scorer: NextTokenScorer,
-    context: tuple[Token, ...],
-    prefix: list[Token],
-    kind_prefix: str,
-    term_count: int,
-    rng: np.random.Generator,
-    step_index: int,
-) -> tuple[list[bool], float, list[TokenChoiceEvent]]:
-    bits: list[bool] = []
-    log_prob = 0.0
-    kept_any = False
-    phase = "left_bit" if kind_prefix == "LEFT" else "right_bit"
-    events: list[TokenChoiceEvent] = []
-    for term_index in range(term_count):
-        legal = _bit_legal(kind_prefix, term_index == term_count - 1, kept_any)
-        token, token_log_prob, event = _sample_token_with_event(
-            scorer=scorer,
-            context=context,
-            prefix=tuple(prefix),
-            legal=legal,
-            rng=rng,
-            phase=phase,
-            step_index=step_index,
-        )
-        prefix.append(token)
-        keep = token.kind.endswith("KEEP")
-        bits.append(keep)
-        kept_any = kept_any or keep
-        log_prob += token_log_prob
-        events.append(event)
-    return bits, log_prob, events
 
 
 def _score_bits(
@@ -276,39 +292,49 @@ def _decision_tokens(
     )
 
 
-def sample_step_with_events(
+def _sample_step_core(
     state,
     scorer: NextTokenScorer,
     rng: np.random.Generator,
     *,
     step_index: int = 0,
-) -> TracedPolicySample:
+    collect_events: bool,
+) -> tuple[PolicySample, tuple[TokenChoiceEvent, ...] | None]:
     sample_state = _fresh_replay_state(state)
     attempts: list[Stage1Attempt] = []
     total_log_prob = 0.0
-    events: list[TokenChoiceEvent] = []
+    events: list[TokenChoiceEvent] | None = [] if collect_events else None
     while True:
         state_context = build_state_context(sample_state.snapshot())
-        stage1_token, stage1_log_prob, event = _sample_token_with_event(
-            scorer=scorer,
-            context=state_context,
-            prefix=(),
-            legal=_stage1_legal(sample_state),
-            rng=rng,
-            phase="def",
-            step_index=step_index,
-        )
-        events.append(event)
+        if events is None:
+            stage1_token, stage1_log_prob = _sample_token(
+                scorer,
+                state_context,
+                (),
+                _stage1_legal(sample_state),
+                rng,
+            )
+        else:
+            stage1_token, stage1_log_prob = _sample_token_traced(
+                scorer=scorer,
+                context=state_context,
+                prefix=(),
+                legal=_stage1_legal(sample_state),
+                rng=rng,
+                events=events,
+                phase="def",
+                step_index=step_index,
+            )
         total_log_prob += stage1_log_prob
         if stage1_token.kind == "STOP":
-            return TracedPolicySample(
-                sample=PolicySample(
+            return (
+                PolicySample(
                     stopped=True,
                     log_prob=total_log_prob,
                     def_attempts=tuple(attempts),
                     decision_tokens=(T("STOP"),),
                 ),
-                events=tuple(events),
+                None if events is None else tuple(events),
             )
         def_index = int(stage1_token.payload_dict()["def_index"])
         space = sample_state.action_space_for_def(def_index)
@@ -330,46 +356,55 @@ def sample_step_with_events(
         *build_action_space_context(space_snapshot),
     )
     prefix: list[Token] = []
-    candidate_token, candidate_log_prob, event = _sample_token_with_event(
-        scorer=scorer,
-        context=context,
-        prefix=tuple(prefix),
-        legal=_candidate_legal(space_snapshot),
-        rng=rng,
-        phase="candidate",
-        step_index=step_index,
-    )
-    events.append(event)
+    if events is None:
+        candidate_token, candidate_log_prob = _sample_token(
+            scorer,
+            context,
+            tuple(prefix),
+            _candidate_legal(space_snapshot),
+            rng,
+        )
+    else:
+        candidate_token, candidate_log_prob = _sample_token_traced(
+            scorer=scorer,
+            context=context,
+            prefix=tuple(prefix),
+            legal=_candidate_legal(space_snapshot),
+            rng=rng,
+            events=events,
+            phase="candidate",
+            step_index=step_index,
+        )
     prefix.append(candidate_token)
     total_log_prob += candidate_log_prob
     candidate_index = int(candidate_token.payload_dict()["candidate_index"])
     candidate = space_snapshot["candidate_templates"][candidate_index]
 
-    left_bits, left_log_prob, left_events = _sample_bits_with_events(
+    left_bits, left_log_prob = _sample_bits_core(
         scorer=scorer,
         context=context,
         prefix=prefix,
         kind_prefix="LEFT",
         term_count=len(candidate["left_definition"]["terms"]),
         rng=rng,
+        events=events,
         step_index=step_index,
     )
-    right_bits, right_log_prob, right_events = _sample_bits_with_events(
+    right_bits, right_log_prob = _sample_bits_core(
         scorer=scorer,
         context=context,
         prefix=prefix,
         kind_prefix="RIGHT",
         term_count=len(candidate["right_definition"]["terms"]),
         rng=rng,
+        events=events,
         step_index=step_index,
     )
-    events.extend(left_events)
-    events.extend(right_events)
     # END is a deterministic trace marker after fixed mask lengths, not a sampled decision.
     prefix.append(T("END"))
     total_log_prob += left_log_prob + right_log_prob
-    return TracedPolicySample(
-        sample=PolicySample(
+    return (
+        PolicySample(
             stopped=False,
             def_index=def_index,
             action_space=space,
@@ -382,12 +417,36 @@ def sample_step_with_events(
             def_attempts=tuple(attempts),
             decision_tokens=tuple(prefix),
         ),
-        events=tuple(events),
+        None if events is None else tuple(events),
     )
 
 
+def sample_step_with_events(
+    state,
+    scorer: NextTokenScorer,
+    rng: np.random.Generator,
+    *,
+    step_index: int = 0,
+) -> TracedPolicySample:
+    sample, events = _sample_step_core(
+        state,
+        scorer,
+        rng,
+        step_index=step_index,
+        collect_events=True,
+    )
+    assert events is not None
+    return TracedPolicySample(sample=sample, events=events)
+
+
 def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> PolicySample:
-    return sample_step_with_events(state, scorer, rng).sample
+    sample, _events = _sample_step_core(
+        state,
+        scorer,
+        rng,
+        collect_events=False,
+    )
+    return sample
 
 
 def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:

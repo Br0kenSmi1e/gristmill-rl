@@ -51,6 +51,12 @@ class TracedPolicySample:
             raise ValueError("traced sample must contain at least one token event")
 
 
+def _wire_list_or_tuple(value, *, field_name: str):
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field_name} must be a list or tuple")
+    return value
+
+
 def token_to_wire(token: Token) -> TokenWire:
     return {"kind": token.kind, "payload": token.payload}
 
@@ -60,11 +66,10 @@ def token_from_wire(wire: TokenWire) -> Token:
     payload = wire.get("payload")
     if not isinstance(kind, str):
         raise ValueError("token wire kind must be a string")
-    if not isinstance(payload, tuple):
-        raise ValueError("token wire payload must be a tuple")
+    payload = _wire_list_or_tuple(payload, field_name="token wire payload")
     normalized: list[tuple[str, PayloadValue]] = []
     for item in payload:
-        if not isinstance(item, tuple) or len(item) != 2:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
             raise ValueError("token wire payload entries must be pairs")
         key, value = item
         if not isinstance(key, str):
@@ -89,15 +94,27 @@ def event_from_wire(wire: TokenChoiceEventWire) -> TokenChoiceEvent:
     phase = wire.get("phase")
     if phase not in {"def", "candidate", "left_bit", "right_bit"}:
         raise ValueError("event wire phase is invalid")
+    if "sequence_tokens" not in wire:
+        raise ValueError("event wire sequence_tokens must be present")
+    if "legal_next_tokens" not in wire:
+        raise ValueError("event wire legal_next_tokens must be present")
     chosen_index = wire.get("chosen_index")
     step_index = wire.get("step_index")
     if type(chosen_index) is not int:
         raise ValueError("event wire chosen_index must be an int")
     if type(step_index) is not int:
         raise ValueError("event wire step_index must be an int")
+    sequence_tokens = _wire_list_or_tuple(
+        wire.get("sequence_tokens"),
+        field_name="event wire sequence_tokens",
+    )
+    legal_next_tokens = _wire_list_or_tuple(
+        wire.get("legal_next_tokens"),
+        field_name="event wire legal_next_tokens",
+    )
     return TokenChoiceEvent(
-        sequence_tokens=tuple(token_from_wire(token) for token in wire["sequence_tokens"]),
-        legal_next_tokens=tuple(token_from_wire(token) for token in wire["legal_next_tokens"]),
+        sequence_tokens=tuple(token_from_wire(token) for token in sequence_tokens),
+        legal_next_tokens=tuple(token_from_wire(token) for token in legal_next_tokens),
         chosen_index=chosen_index,
         phase=phase,
         step_index=step_index,
