@@ -26,7 +26,11 @@ bindings = "pyo3"
 exclude = [
     "gristmill_rl/**/__pycache__",
     "gristmill_rl/**/*.pyc",
+    "reinforce_training/**/__pycache__",
+    "reinforce_training/**/*.pyc",
+    "transformer_policy/**/__pycache__",
+    "transformer_policy/**/*.pyc",
 ]
 module-name = "gristmill_symbolics"
 manifest-path = "Cargo.toml"
-python-packages = ["gristmill_rl", "transformer_policy"]
+python-packages = ["gristmill_rl", "transformer_policy", "reinforce_training"]
