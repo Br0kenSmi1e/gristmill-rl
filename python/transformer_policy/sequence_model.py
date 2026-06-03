@@ -4,8 +4,13 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from transformer_policy.embed import TokenEmbedder
+from transformer_policy.embed import TokenEmbedder, token_features
 from transformer_policy.types import Token
+
+
+def _validate_positive(name: str, value: int) -> None:
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
 
 
 class TransformerBlock(nnx.Module):
@@ -40,6 +45,10 @@ class CausalTransformerScorer(nnx.Module):
         mlp_dim: int = 64,
         rngs: nnx.Rngs,
     ):
+        _validate_positive("hidden_dim", hidden_dim)
+        _validate_positive("num_heads", num_heads)
+        _validate_positive("num_layers", num_layers)
+        _validate_positive("mlp_dim", mlp_dim)
         if hidden_dim % num_heads != 0:
             raise ValueError("hidden_dim must be divisible by num_heads")
         self.embedder = TokenEmbedder(hidden_dim=hidden_dim, rngs=rngs)
@@ -65,6 +74,13 @@ class CausalTransformerScorer(nnx.Module):
             values = block(values, causal_mask)
         return self.final_ln(values[0])
 
+    def _embed_legal_tokens(
+        self, tokens: tuple[Token, ...], next_position: int
+    ) -> jax.Array:
+        features = jnp.asarray(token_features(tokens), dtype=jnp.float32)
+        features = features.at[:, 1].set(float(next_position))
+        return self.embedder.proj(features)
+
     def score_next(
         self,
         context_tokens: tuple[Token, ...],
@@ -73,7 +89,10 @@ class CausalTransformerScorer(nnx.Module):
     ) -> jax.Array:
         if not legal_next_tokens:
             raise ValueError("legal_next_tokens must not be empty")
-        hidden = self._encode((*context_tokens, *decision_prefix))[-1]
+        sequence_tokens = (*context_tokens, *decision_prefix)
+        hidden = self._encode(sequence_tokens)[-1]
         query = self.query(hidden)
-        legal_embeddings = self.embedder(legal_next_tokens)
+        legal_embeddings = self._embed_legal_tokens(
+            legal_next_tokens, next_position=len(sequence_tokens)
+        )
         return jnp.matmul(legal_embeddings, query)
