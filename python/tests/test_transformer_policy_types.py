@@ -63,4 +63,5 @@ def test_package_exports_policy_types():
         "T",
         "Stage1Attempt",
         "PolicySample",
+        "TransformerPolicy",
     )
