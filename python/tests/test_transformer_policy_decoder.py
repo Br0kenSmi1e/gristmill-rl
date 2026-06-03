@@ -3,7 +3,7 @@ import pytest
 
 from gristmill_symbolics import RewriteState, TensorComputation
 from transformer_policy.decoder import sample_step, score_step
-from transformer_policy.types import T
+from transformer_policy.types import Stage1Attempt, T
 
 from .transformer_policy_fixtures import actionable_state
 
@@ -37,6 +37,18 @@ class StopScorer:
             ],
             dtype=np.float32,
         )
+
+
+class WrongShapeScorer:
+    def score_next(self, context_tokens, decision_prefix, legal_next_tokens):
+        return np.zeros((1, len(legal_next_tokens)), dtype=np.float32)
+
+
+class NonFiniteScorer:
+    def score_next(self, context_tokens, decision_prefix, legal_next_tokens):
+        scores = np.zeros(len(legal_next_tokens), dtype=np.float32)
+        scores[0] = np.nan
+        return scores
 
 
 def empty_state():
@@ -113,4 +125,128 @@ def test_score_step_rejects_invalid_mask_length():
     )
 
     with pytest.raises(ValueError, match="invalid left_mask length"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_stopped_sample_with_accepted_attempt():
+    sample = sample_step(empty_state(), StopScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=True,
+        log_prob=sample.log_prob,
+        def_attempts=(Stage1Attempt(def_index=0, log_prob=0.0, accepted=True),),
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="stopped sample must not contain accepted"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_attempt_after_accepted_attempt():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision=sample.decision,
+        log_prob=sample.log_prob,
+        def_attempts=(
+            *sample.def_attempts,
+            Stage1Attempt(def_index=0, log_prob=0.0, accepted=False),
+        ),
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="accepted stage-1 attempt must be final"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_sample_step_rejects_wrong_shape_logits():
+    with pytest.raises(ValueError, match="scorer logits must be a 1-D vector"):
+        sample_step(empty_state(), WrongShapeScorer(), np.random.default_rng(0))
+
+
+def test_score_step_rejects_non_finite_logits():
+    sample = sample_step(empty_state(), StopScorer(), np.random.default_rng(0))
+
+    with pytest.raises(ValueError, match="scorer logits must be finite"):
+        score_step(empty_state(), NonFiniteScorer(), sample)
+
+
+def test_score_step_rejects_bool_candidate_index():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision={
+            "candidate_index": True,
+            "left_mask": sample.decision["left_mask"],
+            "right_mask": sample.decision["right_mask"],
+        },
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="candidate_index must be an int"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_integer_mask_entry():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision={
+            "candidate_index": sample.decision["candidate_index"],
+            "left_mask": [1],
+            "right_mask": sample.decision["right_mask"],
+        },
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="left_mask entries must be bool"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_invalid_candidate_index():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision={
+            "candidate_index": 999,
+            "left_mask": sample.decision["left_mask"],
+            "right_mask": sample.decision["right_mask"],
+        },
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="invalid candidate_index"):
+        score_step(actionable_state(), PreferenceScorer(), invalid)
+
+
+def test_score_step_rejects_invalid_right_mask_length():
+    sample = sample_step(actionable_state(), PreferenceScorer(), np.random.default_rng(0))
+    invalid = sample.__class__(
+        stopped=False,
+        def_index=sample.def_index,
+        action_space=sample.action_space,
+        decision={
+            "candidate_index": sample.decision["candidate_index"],
+            "left_mask": sample.decision["left_mask"],
+            "right_mask": [True],
+        },
+        log_prob=sample.log_prob,
+        def_attempts=sample.def_attempts,
+        decision_tokens=sample.decision_tokens,
+    )
+
+    with pytest.raises(ValueError, match="invalid right_mask length"):
         score_step(actionable_state(), PreferenceScorer(), invalid)

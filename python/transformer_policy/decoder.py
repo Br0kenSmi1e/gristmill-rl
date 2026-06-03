@@ -28,6 +28,20 @@ def _log_softmax(logits: np.ndarray) -> np.ndarray:
     return shifted - np.log(exp.sum())
 
 
+def _validated_logits(
+    scorer: NextTokenScorer,
+    context: tuple[Token, ...],
+    prefix: tuple[Token, ...],
+    legal: tuple[Token, ...],
+) -> np.ndarray:
+    logits = np.asarray(scorer.score_next(context, prefix, legal), dtype=np.float64)
+    if logits.ndim != 1 or len(logits) != len(legal):
+        raise ValueError("scorer logits must be a 1-D vector matching legal tokens")
+    if not np.all(np.isfinite(logits)):
+        raise ValueError("scorer logits must be finite")
+    return logits
+
+
 def _sample_token(
     scorer: NextTokenScorer,
     context: tuple[Token, ...],
@@ -37,7 +51,7 @@ def _sample_token(
 ) -> tuple[Token, float]:
     if not legal:
         raise ValueError("legal token set must not be empty")
-    logits = np.asarray(scorer.score_next(context, prefix, legal), dtype=np.float64)
+    logits = _validated_logits(scorer, context, prefix, legal)
     log_probs = _log_softmax(logits)
     probs = np.exp(log_probs)
     index = int(rng.choice(len(legal), p=probs))
@@ -53,7 +67,7 @@ def _score_token(
 ) -> float:
     if chosen not in legal:
         raise ValueError(f"illegal token {chosen.kind}")
-    logits = np.asarray(scorer.score_next(context, prefix, legal), dtype=np.float64)
+    logits = _validated_logits(scorer, context, prefix, legal)
     log_probs = _log_softmax(logits)
     return float(log_probs[legal.index(chosen)])
 
@@ -123,6 +137,44 @@ def _score_bits(
     return log_prob
 
 
+def _accepted_attempt_indices(sample: PolicySample) -> list[int]:
+    return [
+        index
+        for index, attempt in enumerate(sample.def_attempts)
+        if attempt.accepted
+    ]
+
+
+def _validate_stage1_trace(sample: PolicySample) -> None:
+    accepted_indices = _accepted_attempt_indices(sample)
+    if sample.stopped:
+        if accepted_indices:
+            raise ValueError("stopped sample must not contain accepted stage-1 attempts")
+        return
+    if len(accepted_indices) != 1:
+        raise ValueError("rewrite sample requires exactly one accepted stage-1 attempt")
+    if accepted_indices[0] != len(sample.def_attempts) - 1:
+        raise ValueError("accepted stage-1 attempt must be final")
+
+
+def _decision_candidate_index(decision: dict) -> int:
+    candidate_index = decision["candidate_index"]
+    if type(candidate_index) is not int:
+        raise ValueError("candidate_index must be an int")
+    return candidate_index
+
+
+def _validate_mask(decision: dict, key: str, expected_length: int) -> list[bool]:
+    mask = decision[key]
+    if not isinstance(mask, list):
+        raise ValueError(f"{key} must be a list")
+    if len(mask) != expected_length:
+        raise ValueError(f"invalid {key} length")
+    if any(type(value) is not bool for value in mask):
+        raise ValueError(f"{key} entries must be bool")
+    return mask
+
+
 def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> PolicySample:
     attempts: list[Stage1Attempt] = []
     total_log_prob = 0.0
@@ -183,6 +235,7 @@ def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> Pol
         term_count=len(candidate["right_definition"]["terms"]),
         rng=rng,
     )
+    # END is a deterministic trace marker after fixed mask lengths, not a sampled decision.
     prefix.append(T("END"))
     total_log_prob += left_log_prob + right_log_prob
     return PolicySample(
@@ -201,6 +254,7 @@ def sample_step(state, scorer: NextTokenScorer, rng: np.random.Generator) -> Pol
 
 
 def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
+    _validate_stage1_trace(sample)
     total_log_prob = 0.0
     accepted_space = None
     for attempt in sample.def_attempts:
@@ -231,19 +285,28 @@ def score_step(state, scorer: NextTokenScorer, sample: PolicySample) -> float:
         *build_action_space_context(space_snapshot),
     )
     prefix: list[Token] = []
-    candidate_index = int(sample.decision["candidate_index"])
+    candidate_index = _decision_candidate_index(sample.decision)
+    if (
+        candidate_index < 0
+        or candidate_index >= len(space_snapshot["candidate_templates"])
+    ):
+        raise ValueError("invalid candidate_index")
     candidate_token = T("CAND", candidate_index=candidate_index)
     total_log_prob += _score_token(
         scorer, context, tuple(prefix), _candidate_legal(space_snapshot), candidate_token
     )
     prefix.append(candidate_token)
     candidate = space_snapshot["candidate_templates"][candidate_index]
-    left_mask = [bool(value) for value in sample.decision["left_mask"]]
-    right_mask = [bool(value) for value in sample.decision["right_mask"]]
-    if len(left_mask) != len(candidate["left_definition"]["terms"]):
-        raise ValueError("invalid left_mask length")
-    if len(right_mask) != len(candidate["right_definition"]["terms"]):
-        raise ValueError("invalid right_mask length")
+    left_mask = _validate_mask(
+        sample.decision,
+        "left_mask",
+        len(candidate["left_definition"]["terms"]),
+    )
+    right_mask = _validate_mask(
+        sample.decision,
+        "right_mask",
+        len(candidate["right_definition"]["terms"]),
+    )
     total_log_prob += _score_bits(
         scorer=scorer,
         context=context,
