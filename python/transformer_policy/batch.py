@@ -22,6 +22,37 @@ class PaddedTokenChoiceBatch:
     event_mask: np.ndarray
 
 
+def _validate_non_empty_sequence_masks(sequence_mask: np.ndarray) -> None:
+    if sequence_mask.ndim != 2:
+        raise ValueError("sequence_mask must be a 2-D array")
+    if np.any(~np.any(sequence_mask, axis=1)):
+        raise ValueError("each event must contain at least one sequence token")
+
+
+def _validate_choice_inputs(
+    logits: jax.Array,
+    legal_mask: jax.Array,
+    chosen_index: jax.Array,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    logits_np = np.asarray(logits)
+    legal_mask_np = np.asarray(legal_mask, dtype=bool)
+    chosen_index_np = np.asarray(chosen_index)
+    if logits_np.ndim != 2:
+        raise ValueError("logits must be a 2-D matrix")
+    if legal_mask_np.shape != logits_np.shape:
+        raise ValueError("legal_mask must match logits shape")
+    if chosen_index_np.ndim != 1 or chosen_index_np.shape[0] != logits_np.shape[0]:
+        raise ValueError("chosen_index must be a 1-D array matching logits rows")
+    if np.any(~np.any(legal_mask_np, axis=1)):
+        raise ValueError("each row must have at least one legal token")
+    if np.any(chosen_index_np < 0) or np.any(chosen_index_np >= logits_np.shape[1]):
+        raise ValueError("chosen_index must be within logits width")
+    row_index = np.arange(logits_np.shape[0], dtype=np.int32)
+    if np.any(~legal_mask_np[row_index, chosen_index_np]):
+        raise ValueError("chosen_index must point to a legal token")
+    return logits_np, legal_mask_np, chosen_index_np.astype(np.int32, copy=False)
+
+
 def _validate_episode_ids(
     events: tuple[TokenChoiceEvent, ...], episode_ids: np.ndarray
 ) -> np.ndarray:
@@ -80,6 +111,7 @@ def pad_token_choice_events(
 
 
 def score_event_batch(scorer, batch: PaddedTokenChoiceBatch) -> jax.Array:
+    _validate_non_empty_sequence_masks(np.asarray(batch.sequence_mask, dtype=bool))
     return jax.vmap(scorer.score_next_features)(
         jnp.asarray(batch.sequence_features, dtype=jnp.float32),
         jnp.asarray(batch.sequence_mask, dtype=bool),
@@ -93,9 +125,14 @@ def chosen_event_log_probs(
     legal_mask: jax.Array,
     chosen_index: jax.Array,
 ) -> jax.Array:
-    masked_logits = jnp.where(legal_mask, logits, -jnp.inf)
+    logits_np, legal_mask_np, chosen_index_np = _validate_choice_inputs(
+        logits, legal_mask, chosen_index
+    )
+    masked_logits = jnp.where(jnp.asarray(legal_mask_np), jnp.asarray(logits_np), -jnp.inf)
     log_probs = jax.nn.log_softmax(masked_logits, axis=-1)
-    return jnp.take_along_axis(log_probs, chosen_index[:, None], axis=-1).squeeze(-1)
+    return jnp.take_along_axis(
+        log_probs, jnp.asarray(chosen_index_np)[:, None], axis=-1
+    ).squeeze(-1)
 
 
 def trajectory_log_probs(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 from transformer_policy.embed import TokenEmbedder, token_features
@@ -83,13 +84,23 @@ class CausalTransformerScorer(nnx.Module):
             raise ValueError("sequence_features must be a 2-D matrix")
         if sequence_mask.ndim != 1 or sequence_mask.shape[0] != sequence_features.shape[0]:
             raise ValueError("sequence_mask must match sequence_features length")
+        if not isinstance(sequence_mask, jax.core.Tracer) and not np.any(
+            np.asarray(sequence_mask, dtype=bool)
+        ):
+            raise ValueError("sequence_mask must contain at least one token")
         values = self.embedder.proj(sequence_features)[None, :, :]
         token_mask = sequence_mask[None, :]
         causal_mask = nnx.make_causal_mask(token_mask)
         for block in self.blocks:
             values = block(values, causal_mask)
         encoded = self.final_ln(values[0])
-        final_index = jnp.maximum(jnp.sum(sequence_mask.astype(jnp.int32)) - 1, 0)
+        final_index = jnp.max(
+            jnp.where(
+                sequence_mask,
+                jnp.arange(sequence_mask.shape[0], dtype=jnp.int32),
+                -1,
+            )
+        )
         return encoded[final_index]
 
     def _embed_legal_tokens(
