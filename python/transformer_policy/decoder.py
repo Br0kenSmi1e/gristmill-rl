@@ -168,17 +168,15 @@ def _sample_bits_core(
     bits: list[bool] = []
     log_prob = 0.0
     kept_any = False
-    phase: TracePhase | None = None
-    if events is not None:
-        if kind_prefix == "LEFT":
-            phase = "left_bit"
-        elif kind_prefix == "RIGHT":
-            phase = "right_bit"
-        else:
-            raise ValueError("kind_prefix must be LEFT or RIGHT")
+    if kind_prefix == "LEFT":
+        phase: TracePhase | None = "left_bit"
+    elif kind_prefix == "RIGHT":
+        phase = "right_bit"
+    else:
+        raise ValueError("kind_prefix must be LEFT or RIGHT")
     for term_index in range(term_count):
         legal = _bit_legal(kind_prefix, term_index == term_count - 1, kept_any)
-        if phase is None:
+        if events is None:
             token, token_log_prob = _sample_token(
                 scorer,
                 context,
