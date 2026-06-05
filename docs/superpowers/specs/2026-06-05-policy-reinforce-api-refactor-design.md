@@ -20,6 +20,8 @@ advantages, scores traces in bounded chunks, and applies REINFORCE updates.
 - Preserve the meaningful two-stage structure of rewrite decisions.
 - Keep transformer tokenization, legality masks, and action parameterization out
   of the trainer.
+- Deprecate the current prototype policy/training surfaces instead of
+  preserving them as parallel compatibility paths.
 - Let the first model architecture move away from a pure next-token transformer
   decoder while still using attention.
 - Support parallel rollout sampling with `--num-workers`.
@@ -34,6 +36,8 @@ advantages, scores traces in bounded chunks, and applies REINFORCE updates.
 - Requiring direct logits over the full exponential rewrite action space.
 - Supporting every future action-construction architecture immediately.
 - Reintroducing AlphaZero, MCTS, replay, or a value model.
+- Maintaining backward compatibility with the current prototype
+  `reinforce_training` and token-decoder training hooks.
 
 ## Public Decision Model
 
@@ -220,6 +224,26 @@ by the trainer so each logical batch has one reward baseline and one optimizer
 update. The policy API only needs to guarantee that subsets of traces can be
 scored independently.
 
+## Migration And Deprecation
+
+The implementation should treat the current `reinforce_training` prototype and
+the current transformer token-decoder training hooks as deprecated surfaces.
+They may be used as reference behavior while building the replacement, but the
+new implementation should not preserve them as long-term APIs.
+
+The refactor should favor a clean replacement boundary:
+
+```text
+new RewritePolicy API
+new semantic decision records
+new REINFORCE trainer flow
+```
+
+over adapters that keep the old token-choice training API alive. Temporary
+compatibility code is acceptable only as a short-lived migration aid inside the
+implementation plan, and should be removed before the refactor is considered
+complete.
+
 ## Deferred Warm Start
 
 Warm start should be handled later as supervised imitation over the same
@@ -238,6 +262,8 @@ teaching the trainer about policy internals.
 ## Acceptance Criteria
 
 - `reinforce_training` samples and executes semantic `RewriteDecision` values.
+- Current prototype policy/training APIs are deprecated or removed from the
+  supported public surface.
 - `reinforce_training` no longer depends on transformer token grammar, decoder
   legality helpers, or action-construction internals.
 - `transformer_policy` exposes a documented policy API for sampling decisions
