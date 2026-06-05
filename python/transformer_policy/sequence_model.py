@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from flax import nnx
 
 from transformer_policy.embed import TokenEmbedder, token_features
@@ -74,6 +75,34 @@ class CausalTransformerScorer(nnx.Module):
             values = block(values, causal_mask)
         return self.final_ln(values[0])
 
+    def _encode_features(
+        self,
+        sequence_features: jax.Array,
+        sequence_mask: jax.Array,
+    ) -> jax.Array:
+        if sequence_features.ndim != 2:
+            raise ValueError("sequence_features must be a 2-D matrix")
+        if sequence_mask.ndim != 1 or sequence_mask.shape[0] != sequence_features.shape[0]:
+            raise ValueError("sequence_mask must match sequence_features length")
+        if not isinstance(sequence_mask, jax.core.Tracer) and not np.any(
+            np.asarray(sequence_mask, dtype=bool)
+        ):
+            raise ValueError("sequence_mask must contain at least one token")
+        values = self.embedder.proj(sequence_features)[None, :, :]
+        token_mask = sequence_mask[None, :]
+        causal_mask = nnx.make_causal_mask(token_mask)
+        for block in self.blocks:
+            values = block(values, causal_mask)
+        encoded = self.final_ln(values[0])
+        final_index = jnp.max(
+            jnp.where(
+                sequence_mask,
+                jnp.arange(sequence_mask.shape[0], dtype=jnp.int32),
+                -1,
+            )
+        )
+        return encoded[final_index]
+
     def _embed_legal_tokens(
         self, tokens: tuple[Token, ...], next_position: int
     ) -> jax.Array:
@@ -96,3 +125,16 @@ class CausalTransformerScorer(nnx.Module):
             legal_next_tokens, next_position=len(sequence_tokens)
         )
         return jnp.matmul(legal_embeddings, query)
+
+    def score_next_features(
+        self,
+        sequence_features: jax.Array,
+        sequence_mask: jax.Array,
+        legal_features: jax.Array,
+        legal_mask: jax.Array,
+    ) -> jax.Array:
+        hidden = self._encode_features(sequence_features, sequence_mask)
+        query = self.query(hidden)
+        legal_embeddings = self.embedder.proj(legal_features)
+        logits = jnp.matmul(legal_embeddings, query)
+        return jnp.where(legal_mask, logits, -jnp.inf)

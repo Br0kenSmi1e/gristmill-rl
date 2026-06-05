@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from gristmill_symbolics import RewriteState, TensorComputation
-from transformer_policy.decoder import sample_step, score_step
+from transformer_policy.decoder import _sample_bits_core, sample_step, score_step
 from transformer_policy.types import Stage1Attempt, T
 
 from .transformer_policy_fixtures import actionable_state
@@ -180,6 +180,18 @@ def test_sample_step_returns_rewrite_decision_that_rust_can_apply():
     }
     assert sample.action_space is not None
     state.step_with_space(sample.action_space, sample.decision)
+
+
+def test_sample_bits_core_rejects_invalid_kind_prefix_without_events():
+    with pytest.raises(ValueError, match="kind_prefix must be LEFT or RIGHT"):
+        _sample_bits_core(
+            scorer=PreferenceScorer(),
+            context=(T("STATE_START"),),
+            prefix=[],
+            kind_prefix="FOO",
+            term_count=1,
+            rng=np.random.default_rng(0),
+        )
 
 
 def test_score_step_replays_sample_log_probability():
