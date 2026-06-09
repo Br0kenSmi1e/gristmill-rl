@@ -17,6 +17,9 @@ be placed into the current rollout row for later scoring.
 ## Goals
 
 - Define the exact target/action order for one sample step.
+- Define the first-version policy model architecture behind target/action
+  sampling and scoring.
+- Define the scalar REINFORCE objective used to train that model.
 - Ensure target selection never constructs or inspects action spaces.
 - Define scoring meaning for valid action, STOP, empty action space, and
   already-finished samples.
@@ -30,6 +33,7 @@ be placed into the current rollout row for later scoring.
 - Defining row-level parallel execution.
 - Defining row-level padding or batching mechanics beyond the width-1 scalar
   case.
+- Defining the final model architecture.
 - Running CCSD-scale batches.
 - Solving warm start.
 - Keeping the previous transformer/reinforce prototype API.
@@ -84,6 +88,26 @@ tokens, definition metadata, target masks, and STOP legality.
 It must not include action-space data. The scalar target stage must not call
 action-space generation.
 
+The first-version target model is:
+
+```text
+state tokens + definition metadata + target legality mask
+  -> attention context
+  -> logits over STOP plus definition indices
+```
+
+The target logits are masked by target legality before sampling and before
+scoring. STOP is represented as one target output position, not as an action.
+
+Target scoring recomputes:
+
+```text
+target_logp = log_softmax(masked_target_logits)[stored target choice]
+```
+
+The model must not create logits by first expanding action spaces for every
+definition. That would violate the target/action split.
+
 ## Action-Space Stage
 
 If target selection chooses a definition, the environment builds an action
@@ -112,6 +136,48 @@ ActionInput -> candidate_index, left_mask, right_mask
 
 The resulting action choice is then applied by the environment to produce the
 next sample state.
+
+The first-version action model is:
+
+```text
+state tokens + selected def_index + selected action-space tokens
+  -> attention context
+  -> candidate logits
+  -> left-mask logits
+  -> right-mask logits
+```
+
+The action distribution is autoregressive:
+
+```text
+candidate_index
+left_mask conditioned on candidate_index
+right_mask conditioned on candidate_index and left_mask
+```
+
+`candidate_index` is sampled from logits over the selected definition's action
+space. `left_mask` and `right_mask` are sampled from logits over the selected
+candidate's left and right term positions. Invalid padded positions are masked
+out. The sampled action must be representable as:
+
+```text
+candidate_index, left_mask, right_mask
+```
+
+Action scoring recomputes the same conditional distribution:
+
+```text
+candidate_logp = log p(stored candidate_index | ActionInput)
+left_mask_logp = log p(stored left_mask | ActionInput, stored candidate_index)
+right_mask_logp =
+  log p(stored right_mask | ActionInput, stored candidate_index, stored left_mask)
+
+action_logp = candidate_logp + left_mask_logp + right_mask_logp
+```
+
+This architecture uses attention over the state and selected action-space
+tokens, then directly decodes logits over the selected action space. It does not
+use the old token-decoder grammar where choices live as detached extra tokens.
 
 ## Step Cases
 
@@ -237,6 +303,46 @@ row 3: STOP                target mask true   action mask false
 No later finished row is required in the scalar width-1 rollout unless a test
 explicitly wants to exercise masked finished entries.
 
+## Scalar REINFORCE Algorithm
+
+The scalar trainer uses the width-1 rollout table. It repeatedly applies the
+scalar step to one sample column until the sample becomes terminal or a rollout
+limit is reached:
+
+```text
+row 0 -> row 1 -> row 2 -> ... -> terminal row
+```
+
+After rollout, the trainer computes a scalar reward for the sample column from
+the configured reward evaluator. The reward and advantage are not
+differentiable. The first scalar implementation may use a baseline value of
+zero, so advantage equals reward, or an externally supplied advantage in
+deterministic tests.
+
+For one sample column, the REINFORCE loss is:
+
+```text
+loss =
+  -advantage *
+  sum over rows t (
+    target_score_mask[t, 0] * target_logp[t, 0]
+  + action_score_mask[t, 0] * action_logp[t, 0]
+  )
+```
+
+The differentiable quantities are the recomputed target and action logp terms.
+The trainer must not backpropagate through:
+
+- sampled choices;
+- rewrite application;
+- action-space generation;
+- reward or advantage computation.
+
+For a scalar implementation, one optimizer update may use one or more completed
+sample columns. If more than one column is used, this is still just multiple
+width-1 scalar trajectories accumulated before the update; row-level parallel
+execution is not required.
+
 ## Relationship To Rows
 
 The scalar step produces one sample's contribution to a row.
@@ -265,4 +371,9 @@ rows with stable sample positions.
   target and action logp terms.
 - Training recomputes target/action logp from stored row data and sampled
   choices.
+- Target scoring uses masked logits over STOP plus definition indices.
+- Action scoring uses the autoregressive candidate, left-mask, right-mask
+  distribution over the selected action space.
+- The scalar REINFORCE loss uses recomputed logp terms weighted by the sample
+  column advantage.
 - The scalar design uses the overview vocabulary: sample, row, and column.
