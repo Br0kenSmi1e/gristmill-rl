@@ -45,9 +45,9 @@ shape or sample alignment.
   legality.
 - Build an action space only after a target definition has been selected.
 - Store rollout rows so training can recompute logp later.
-- Keep `STOP`, empty action space, and finished samples conceptually clear
+- Keep `STOP`, empty action space, and finished samples conceptually clear.
 - Represent scored decisions with target/action tables and score masks.
-- Defer row-level execution details to a later parallel spec.
+- Keep row-level execution details in the parallel row-wrapper spec.
 
 ## Non-Goals
 
@@ -251,5 +251,5 @@ The design is split into three documents:
 
 - This overview spec defines the public vocabulary and module boundary.
 - The scalar spec defines the authoritative behavior for one sample step.
-- A later parallel spec will define how to update and score rows efficiently
-  without changing the public abstraction.
+- The parallel row-wrapper spec defines how to update and score rows without
+  changing the public abstraction.
