@@ -46,14 +46,13 @@ shape or sample alignment.
 - Build an action space only after a target definition has been selected.
 - Store rollout rows so training can recompute logp later.
 - Keep `STOP`, empty action space, and finished samples conceptually clear
-  without committing to one concrete representation.
+- Represent scored decisions with target/action tables and score masks.
 - Defer row-level execution details to a later parallel spec.
 
 ## Non-Goals
 
 - Specifying how row-level execution filters or compacts active samples.
-- Choosing the concrete representation for finished, STOP, or empty-action
-  samples inside a padded row.
+- Choosing the low-level padding values for masked target/action entries.
 - Solving warm start or supervised pretraining.
 - Differentiating through Rust rewrite application or action-space generation.
 - Preserving compatibility with the previous transformer/reinforce prototype.
@@ -138,12 +137,22 @@ When a row is updated, the rollout stores the data needed for later scoring.
 The stored table should be rectangular at the public level:
 
 ```text
-row t stores:
-  target inputs and target choices for samples that made target choices
-  action inputs and action choices for samples that made action choices
-  status/mask information saying which scores are real
-  sample-column identity for reward assignment
+for each row t:
+  target_input[t, sample]
+  target_choice[t, sample]
+  target_score_mask[t, sample]
+
+  action_input[t, sample]
+  action_choice[t, sample]
+  action_score_mask[t, sample]
 ```
+
+The score masks define which entries are real policy decisions. If a score mask
+is false, the corresponding input and choice are ignored by loss and metrics.
+Masked entries still need safe padded values so the scorer can run over the
+rectangular row without out-of-range indexing or shape errors.
+
+The sample position is the column identity used for reward assignment.
 
 Training recomputes logp from stored row data:
 
@@ -180,8 +189,18 @@ The rewrite environment owns:
 
 ## STOP, Empty, And Finished Semantics
 
-This overview only defines scoring semantics and row alignment. It does not
-choose a concrete padded-row representation.
+The public row representation uses target/action score masks:
+
+```text
+case                  target_score_mask    action_score_mask
+already finished      false                false
+STOP                  true                 false
+empty action space    true                 false
+valid action          true                 true
+```
+
+The masked target/action data may contain any safe padded values. It must not
+contribute to loss, metrics, or score totals.
 
 ### Finished Sample
 
@@ -234,4 +253,3 @@ The design is split into three documents:
 - The scalar spec defines the authoritative behavior for one sample step.
 - A later parallel spec will define how to update and score rows efficiently
   without changing the public abstraction.
-
