@@ -1,12 +1,14 @@
-# REINFORCE Row-Table Overview Design
+# REINFORCE Row Table Design
+
+Status: planned
+Supersedes: the public table portions of earlier REINFORCE prototype specs
+Depends on: `2026-06-09-reinforce-scalar-step-design.md`
+Feeds implementation plan: yes
 
 ## Summary
 
-This spec defines the public mental model for the next REINFORCE refactor. The
-goal is to keep the policy/trainer boundary simple while leaving room for
-efficient row-level execution later.
-
-The public rollout shape is a table:
+This spec defines the public rollout storage model for REINFORCE training. The
+storage model is a rectangular table indexed by row and sample position:
 
 ```text
               sample 0    sample 1    sample 2    ...    sample N
@@ -16,180 +18,79 @@ row 2         ...         ...         ...
 ...
 ```
 
-The vocabulary is:
+Rows store immutable target/action inputs, sampled choices, and score masks so
+training can recompute differentiable logp later.
 
-- A sample is one rollout instance.
-- A row is all samples at the same step.
-- A column is one sample from the first step to the last step.
-
-The public step shapes are:
-
-```text
-sample step:
-  one sample at step t -> same sample at step t + 1
-
-row step:
-  row t -> row t + 1
-```
-
-The scalar sample step defines the semantics. The row step applies those
-semantics to all samples in a row. Any internal filtering, compaction, padding,
-or scheduling used by a row step is private and must not change the public row
-shape or sample alignment.
+The scalar step defines per-sample semantics. The row table defines how those
+semantics are stored across time and samples.
 
 ## Goals
 
-- Use only `sample`, `row`, and `column` for the public rollout vocabulary.
-- Make target selection and action selection separate policy stages.
-- Make target selection depend only on the current sample state and target
-  legality.
-- Build an action space only after a target definition has been selected.
-- Store rollout rows so training can recompute logp later.
-- Keep `STOP`, empty action space, and finished samples conceptually clear.
-- Represent scored decisions with target/action tables and score masks.
-- Keep row-level execution details in the parallel row-wrapper spec.
+- Use only `sample`, `row`, and `column` as public rollout vocabulary.
+- Keep row width stable across rollout.
+- Preserve sample position as the column identity for reward assignment.
+- Store target/action inputs, choices, and score masks in rectangular form.
+- Define padding and mask responsibilities without choosing low-level sentinel
+  values.
+- Keep row storage independent from private parallel scheduling mechanics.
 
 ## Non-Goals
 
-- Specifying how row-level execution filters or compacts active samples.
-- Choosing the low-level padding values for masked target/action entries.
-- Solving warm start or supervised pretraining.
-- Differentiating through Rust rewrite application or action-space generation.
-- Preserving compatibility with the previous transformer/reinforce prototype.
+- Defining model architecture or policy logits.
+- Defining scalar environment behavior beyond referencing the scalar spec.
+- Defining private active-sample compaction or scheduling.
+- Choosing exact padding values for every tensor field.
+- Defining reward, advantage, optimizer, or checkpoint behavior.
 
 ## Public Vocabulary
 
 ### Sample
 
 A sample is one rollout instance. It has a current rewrite state, policy-relevant
-status, and any state needed to continue the rollout.
+status, and any metadata needed to continue rollout.
 
 A sample may be active or finished:
 
-- An active sample may emit a target choice and possibly an action choice.
-- A finished sample does not emit new policy choices.
-
-The exact in-memory representation is not part of this overview.
+- an active sample may emit a target choice and possibly an action choice;
+- a finished sample emits no new policy choices.
 
 ### Row
 
 A row is all samples at one synchronized rollout step.
 
-The row width is stable across the rollout. If a sample is finished, the row
-still contains that sample position so the column remains aligned.
-
-A row contains enough stored data to score the policy choices made at that step.
-Within a row, model-facing inputs may already be padded so the scorer can
-operate on the row directly.
+The row width is stable. Finished samples still occupy their sample positions so
+columns remain aligned.
 
 ### Column
 
 A column is one sample through time.
 
-Training uses the column to associate policy choices with the reward or
-advantage for that sample. Scoring may be row-parallel, but credit assignment is
-still per sample column.
+Training assigns rewards and advantages per column. Scoring may run row-parallel,
+but credit assignment uses sample position.
 
-## Policy Boundary
+## Stored Row Contract
 
-The policy has two stages.
-
-### Target Selection
-
-Target selection decides where to act:
+For every rollout row `t`, the table stores:
 
 ```text
-TargetInput -> STOP or def_index
+target_input[t, sample]
+target_choice[t, sample]
+target_score_mask[t, sample]
+
+action_input[t, sample]
+action_choice[t, sample]
+action_score_mask[t, sample]
+
+step_case[t, sample]
+diagnostics[t, sample]
 ```
 
-Target selection may use:
+The model spec defines the structure of `target_input`, `action_input`,
+`target_choice`, and `action_choice`.
 
-- current state tokens or token features;
-- definition positions or equivalent target metadata;
-- target legality mask;
-- STOP legality.
+The scalar spec defines which masks are true for each step case.
 
-Target selection must not use:
-
-- action-space generation;
-- action-space tokens;
-- candidate information;
-- left/right mask information.
-
-This separation exists to prevent the model from materializing every
-definition's action space before choosing a target.
-
-### Action Selection
-
-Action selection decides how to act after one target definition has been
-selected:
-
-```text
-ActionInput -> candidate_index, left_mask, right_mask
-```
-
-Action selection exists only when the selected target definition has a non-empty
-action space.
-
-## Rollout Table Storage
-
-When a row is updated, the rollout stores the data needed for later scoring.
-The stored table should be rectangular at the public level:
-
-```text
-for each row t:
-  target_input[t, sample]
-  target_choice[t, sample]
-  target_score_mask[t, sample]
-
-  action_input[t, sample]
-  action_choice[t, sample]
-  action_score_mask[t, sample]
-```
-
-The score masks define which entries are real policy decisions. If a score mask
-is false, the corresponding input and choice are ignored by loss and metrics.
-Masked entries still need safe padded values so the scorer can run over the
-rectangular row without out-of-range indexing or shape errors.
-
-The sample position is the column identity used for reward assignment.
-
-Training recomputes logp from stored row data:
-
-```text
-stored row -> target scorer -> target logp per scored sample
-stored row -> action scorer -> action logp per scored sample
-```
-
-The trainer should not backpropagate through sampled logp values saved during
-rollout. Rollout stores inputs and choices; training recomputes differentiable
-logp.
-
-## Trainer Boundary
-
-The trainer owns:
-
-- rollout control at the row level;
-- reward and advantage computation per sample column;
-- scoring stored rows by recomputation;
-- combining target and action logp terms into a REINFORCE loss;
-- optimizer updates and checkpoints.
-
-The policy owns:
-
-- constructing target/action model inputs;
-- sampling target/action choices;
-- scoring stored target/action choices.
-
-The rewrite environment owns:
-
-- action-space generation for one selected definition;
-- rewrite application;
-- cost or reward evaluation.
-
-## STOP, Empty, And Finished Semantics
-
-The public row representation uses target/action score masks:
+## Mask Mapping
 
 ```text
 case                  target_score_mask    action_score_mask
@@ -199,57 +100,112 @@ empty action space    true                 false
 valid action          true                 true
 ```
 
-The masked target/action data may contain any safe padded values. It must not
-contribute to loss, metrics, or score totals.
+If a score mask is false, the corresponding input and choice are ignored by loss,
+metrics, and score totals.
 
-### Finished Sample
+Masked entries still need safe padded values so model scorers can run over
+rectangular batches without out-of-range indexing or shape errors.
 
-A finished sample remains aligned in later rows but emits no new target or
-action score.
+## Immutable Input Requirement
 
-### STOP
+Stored row inputs are immutable snapshots:
 
-STOP is a target choice.
+- `target_input` must not reference a mutable `RewriteState`;
+- `action_input` must not require a live `ActionSpace` handle;
+- stored choices must be plain data;
+- row data must remain scorable after rollout has advanced or finished.
 
-When STOP is selected:
+This requirement is part of the table contract because row scoring happens after
+environment mutation.
 
-- the target choice is scored;
-- no action choice is scored;
-- the sample becomes terminal.
+## Padding Requirements
 
-### Empty Action Space
+The row table may contain ragged symbolic structures internally, but any
+model-facing row batch must provide safe padding for:
 
-An empty action space happens after target selection chooses a definition whose
-action space is empty.
+- token sequences;
+- definition positions;
+- target choices;
+- action-space candidate positions;
+- left/right side term positions;
+- left/right bit sequences;
+- legality masks.
 
-When this happens:
+Padding must obey these rules:
 
-- the target choice is scored;
-- no action choice is scored;
-- the selected definition becomes unavailable for the affected sample state;
-- the sample continues unless another stopping rule applies.
+- masked score entries contribute no logp, loss, or metrics;
+- padding indices never point outside padded arrays;
+- illegal padded logits are masked before sampling or scoring;
+- sample positions remain stable after padding.
 
-There is no inner retry loop that chooses another target inside the same sample
-step. The next target selection happens in the next row.
+The concrete sentinel values are implementation details and belong in the
+implementation plan.
 
-## Row-Level Privacy
+## Row-To-Column Assignment
 
-The public abstraction is:
+The sample index in a row is the column identity:
 
 ```text
-row t -> row t + 1
+stored_row[t].target_input[s] belongs to sample column s
 ```
 
-A row-level implementation may internally skip finished samples, filter active
-samples, compact valid action inputs, split target/action work, or use other
-memory-saving mechanics. Those mechanics must not be visible to the trainer or
-policy API. The output remains a whole row with stable sample positions.
+Rewards and advantages are computed per sample column and then broadcast to that
+sample's scored target/action terms.
 
-## Spec Split
+The table must not reorder columns after rollout begins. Private row mechanics
+may compact active samples internally, but stored rows are scattered back to the
+original sample positions.
 
-The design is split into three documents:
+## Row Scoring Interface
 
-- This overview spec defines the public vocabulary and module boundary.
-- The scalar spec defines the authoritative behavior for one sample step.
-- The parallel row-wrapper spec defines how to update and score rows without
-  changing the public abstraction.
+Training recomputes logp from stored rows:
+
+```text
+score_target_row(stored_row_t)
+  -> target_logp[t, sample]
+
+score_action_row(stored_row_t)
+  -> action_logp[t, sample]
+```
+
+The returned arrays have row width. Values for masked entries may be arbitrary
+finite padding values because masks exclude them from loss and metrics.
+
+## Invariants
+
+- Every row has the same width.
+- Every sample column has at most one target choice per row.
+- Every sample column has at most one action choice per row.
+- `action_score_mask=true` implies `target_score_mask=true`.
+- `action_score_mask=true` implies the corresponding action input and choice are
+  valid for scoring.
+- Masked entries are safe to batch but invisible to objective terms.
+- Row storage does not expose private active-sample scheduling.
+
+## Error Handling
+
+The row table builder should fail clearly when:
+
+- a row has a different width from previous rows;
+- a true score mask lacks input or choice data;
+- an action score is present without a target score;
+- a stored choice is out of range for its stored input;
+- reward or advantage assignment uses a different width than the row table.
+
+## Testing Requirements
+
+- A width-1 table stores the same data as scalar step output.
+- A multi-sample row containing valid action, STOP, empty action space, and
+  already-finished samples produces the expected masks.
+- Finished samples remain aligned in later rows.
+- Masked padded values do not affect row loss or metrics.
+- Stored inputs can be scored after all samples finish.
+- Reward/advantage arrays align by sample position.
+
+## Acceptance Criteria
+
+- The row table can represent scalar and multi-sample rollout without changing
+  public vocabulary.
+- Stored rows contain all data needed for recomputed target/action logp.
+- The table contract is independent from private row execution mechanics.
+- Training can assemble per-column REINFORCE terms from row masks and logp arrays.

@@ -1,105 +1,127 @@
 # REINFORCE Parallel Row-Wrapper Design
 
+Status: planned
+Supersedes: row-parallel portions of earlier REINFORCE prototype specs
+Depends on: `2026-06-09-reinforce-scalar-step-design.md`,
+`2026-06-09-reinforce-row-table-overview-design.md`
+Feeds implementation plan: yes
+
 ## Summary
 
-This spec defines the parallel wrapper around the scalar REINFORCE sample step.
-It does not introduce new public rollout terminology. The public vocabulary
-remains:
+This spec defines how to lift the scalar sample step to a whole row while
+preserving scalar behavior for every sample position.
 
-- A sample is one rollout instance.
-- A row is all samples at the same step.
-- A column is one sample from the first step to the last step.
-
-The scalar spec defines:
-
-```text
-step_sample(sample_t) -> sample_t_plus_1, data for this sample in row t
-```
-
-The parallel wrapper lifts that to:
+The public contract is:
 
 ```text
 step_row(row_t) -> row_t_plus_1, stored_row_t
+score_row(stored_row_t) -> target/action logp arrays
 ```
 
-The row wrapper is reachable because `stored_row_t` is already rectangular:
-
-```text
-target_input[t, sample]
-target_choice[t, sample]
-target_score_mask[t, sample]
-
-action_input[t, sample]
-action_choice[t, sample]
-action_score_mask[t, sample]
-```
-
-The wrapper may use private mechanics to avoid wasted work, but callers only see
-whole rows with stable sample positions.
+The wrapper may privately filter, compact, batch, and scatter active samples, but
+callers only see whole rows with stable sample positions.
 
 ## Goals
 
-- Define the public contract for updating one row by one step.
-- Preserve scalar sample-step semantics for every sample position.
+- Preserve scalar semantics for every sample position.
 - Keep row width and sample-column alignment stable.
-- Store target/action tables and score masks for each row.
-- Define row scoring and loss assembly from stored row data.
-- Keep any row execution mechanics private.
+- Store one rectangular row after each row step.
+- Allow private batching of target sampling, action-space generation, action
+  sampling, and scoring.
+- Support bounded score chunks so logical row width is independent from physical
+  model batch size.
+- Keep row execution details out of policy and trainer public APIs.
 
 ## Non-Goals
 
-- Choosing the concrete internal scheduling strategy for row execution.
-- Choosing low-level padding values for masked entries.
-- Defining model architecture.
-- Solving warm start.
-- Differentiating through rewrite application or action-space generation.
-- Changing scalar behavior.
+- Defining model architecture or probability semantics.
+- Changing scalar STOP, empty action space, or valid-action behavior.
+- Choosing exact low-level padding sentinel values.
+- Defining reward, advantage, optimizer, or checkpoint behavior.
+- Requiring full environment rollout to be vectorized in JAX.
 
 ## Row Step Contract
 
-The public row update shape is:
-
-```text
-step_row(row_t) -> row_t_plus_1, stored_row_t
-```
-
-`row_t` contains all sample positions at step `t`.
+`row_t` contains all sample positions at rollout step `t`.
 
 `row_t_plus_1` contains the same sample positions at step `t + 1`.
 
-`stored_row_t` contains the target/action inputs, choices, and masks needed to
-score the policy choices made while moving from `row_t` to `row_t_plus_1`.
+`stored_row_t` contains the row-table data needed to score policy choices made
+while moving from `row_t` to `row_t_plus_1`.
 
-The row wrapper must preserve these invariants:
+The wrapper must preserve:
 
-- the row width is unchanged;
-- sample position `s` in the input row corresponds to sample position `s` in the
-  output row;
-- each sample position behaves according to the scalar sample-step spec;
-- masked target/action entries do not contribute to loss, metrics, or score
-  totals;
-- masked target/action data uses safe padded values.
+- unchanged row width;
+- stable sample positions;
+- scalar-equivalent behavior for each sample;
+- safe masked padded data;
+- no score contribution from masked entries.
 
 ## Scalar Equivalence
 
-The row wrapper is semantically equivalent to applying the scalar step to each
-sample position:
+The row wrapper is semantically equivalent to independent scalar stepping:
 
 ```text
 for each sample position s:
   step_row(row_t)[s] == step_sample(row_t[s])
 ```
 
-The equality is semantic, not necessarily byte-for-byte for masked padded data.
-For masked entries, only the masks and ignored-score behavior matter.
+The equality is semantic, not necessarily byte-for-byte for padded masked data or
+diagnostic ordering.
 
-The policy parameters are shared across all samples. Each sample position has
-its own policy choices for the current step. One sample's STOP, empty action
-space, or finished status must not change another sample's scalar behavior.
+One sample's STOP, exact-empty target, valid rewrite, or already-finished status
+must not change another sample's scalar behavior.
+
+## Private Row Mechanics
+
+The row wrapper may implement the step in phases:
+
+```text
+1. Identify active and finished sample positions.
+2. Build target inputs for active samples.
+3. Batch target sampling where possible.
+4. Scatter STOP samples to stored row and next row.
+5. For selected definitions, query exact action spaces one sample at a time or in a worker pool.
+6. Scatter exact-empty samples to stored row and next row.
+7. Build action inputs for non-empty selected action spaces.
+8. Batch action sampling where possible.
+9. Apply valid rewrites to their owning samples.
+10. Scatter all results into row_t_plus_1 and stored_row_t.
+```
+
+This phase structure is an implementation suggestion, not a public API. Any
+mechanic is acceptable if it preserves scalar equivalence and row-table storage.
+
+## Randomness
+
+Each sample position must receive an independent and reproducible random stream.
+
+The row wrapper may split a row-level RNG into per-sample RNGs. The mapping from
+sample position to RNG stream must not depend on private active-sample
+compaction, otherwise STOP or finished samples could change later samples'
+choices.
+
+Tests should be able to run width-1 and multi-sample row stepping with fixed RNGs
+and compare semantic outputs.
+
+## Action-Space Generation
+
+Target selection must not generate action spaces for unselected definitions.
+
+After target sampling, the wrapper may query exact action spaces only for
+selected non-STOP targets. Queries may happen sequentially or in parallel over
+sample positions.
+
+An exact-empty result follows scalar semantics:
+
+- target choice is scored;
+- no action choice is scored;
+- Rust's refined definition mask is kept in that sample state;
+- the sample remains active unless another stopping rule applies.
 
 ## Stored Row Format
 
-For every row `t`, the wrapper stores:
+The wrapper stores exactly the row-table fields:
 
 ```text
 target_input[t, sample]
@@ -109,24 +131,17 @@ target_score_mask[t, sample]
 action_input[t, sample]
 action_choice[t, sample]
 action_score_mask[t, sample]
+
+step_case[t, sample]
+diagnostics[t, sample]
 ```
 
-The mask mapping is:
-
-```text
-case                  target_score_mask    action_score_mask
-already finished      false                false
-STOP                  true                 false
-empty action space    true                 false
-valid action          true                 true
-```
-
-This is the same mapping as the scalar width-1 case. The parallel wrapper only
-adds more sample columns.
+Private compacted batches must be scattered back to these sample positions before
+returning.
 
 ## Row Scoring
 
-The scorer consumes one stored row:
+The row scorer consumes one stored row and returns row-width arrays:
 
 ```text
 score_row(stored_row_t)
@@ -134,87 +149,70 @@ score_row(stored_row_t)
   -> action_logp[t, sample]
 ```
 
-The row loss uses score masks and sample-column advantages:
+Scoring may internally split target and action entries into chunks:
 
 ```text
-row_loss[t] =
-  -sum over samples s (
-    advantage[s] *
-    (
-      target_score_mask[t, s] * target_logp[t, s]
-    + action_score_mask[t, s] * action_logp[t, s]
-    )
-  )
+target_score_chunk_size
+action_score_chunk_size
 ```
 
-Across the rollout table, training sums or averages the real masked score terms
-according to the trainer's chosen normalization rule. The normalization rule
-must not give weight to masked target/action entries.
+Chunking must not change results. The same stored input and choice should produce
+the same logp whether scored alone, in a width-1 row, in a full row, or in a
+chunk.
 
-## STOP, Empty, And Finished In A Row
+## Row Loss Inputs
 
-Different samples in the same row may be in different cases.
-
-Example:
+The row wrapper does not own reward or advantage calculation, but it provides the
+arrays needed by the training spec:
 
 ```text
-            sample 0          sample 1          sample 2          sample 3
-row t       valid action      STOP              empty action      finished
-
-target mask true              true              true              false
-action mask true              false             false             false
+target_logp[t, s]
+action_logp[t, s]
+target_score_mask[t, s]
+action_score_mask[t, s]
 ```
 
-The next row keeps the same sample positions:
+The training spec combines these with per-column advantages.
 
-```text
-            sample 0          sample 1          sample 2          sample 3
-row t + 1   updated sample    terminal sample   updated sample    finished
-```
+## Invariants
 
-The concrete representation of terminal or finished sample state is not part of
-this public contract. The scoring behavior is fully determined by the masks.
+- Row width is unchanged by `step_row`.
+- Stored row sample positions match input row sample positions.
+- Finished samples emit no score terms.
+- STOP emits target score only.
+- Empty action space emits target score only.
+- Valid action emits target and action scores.
+- Private active-sample compaction is invisible outside the wrapper.
+- RNG assignment is stable by sample position.
+- Score chunks are result-equivalent to scalar scoring.
 
-## Relationship To Policy And Trainer
+## Error Handling
 
-The trainer calls row-level rollout and row-level scoring:
+The wrapper should fail clearly when:
 
-```text
-step_row(row_t) -> row_t_plus_1, stored_row_t
-score_row(stored_row_t) -> target/action logp per sample
-```
+- scalar stepping one sample fails;
+- a compacted result cannot be scattered to its original sample position;
+- batched policy output length differs from active input length;
+- row scoring returns arrays with wrong width;
+- a score chunk contains an invalid stored choice.
 
-The policy still exposes target and action behavior:
+Errors should include sample position and row index when available.
 
-```text
-target: TargetInput -> STOP or def_index
-action: ActionInput -> candidate_index, left_mask, right_mask
-```
+## Testing Requirements
 
-The row wrapper does not merge target and action into one policy decision. It
-preserves the scalar target/action order for each sample.
-
-## Private Row Mechanics
-
-The public API must not expose extra rollout concepts beyond sample, row, and
-column.
-
-The row wrapper may privately avoid work for samples that cannot emit a score,
-and may privately organize target and action work in any way that preserves the
-row contract. These choices are not visible to the trainer or policy API.
+- Width-1 row stepping matches scalar sample stepping.
+- Multi-sample row stepping matches independent scalar stepping for each sample.
+- Row width and sample positions remain stable across multiple steps.
+- A mixed row with valid action, STOP, empty action space, and already-finished
+  samples produces the expected masks.
+- RNG assignment is stable when preceding samples finish.
+- Target selection still does not construct unselected action spaces.
+- Row scoring with chunks matches row scoring without chunks.
+- Masked padded values do not affect loss inputs or metrics.
 
 ## Acceptance Criteria
 
-- Width-1 row stepping matches the scalar sample step.
-- Multi-sample row stepping matches independent scalar sample steps for each
-  sample position.
-- Row width and sample positions remain stable across steps.
-- A row containing valid action, STOP, empty action space, and already-finished
-  samples produces the expected target/action score masks.
-- Row scoring includes only masked-in target/action logp terms.
-- Masked padded values do not affect loss or metrics.
-- Target selection still does not construct or inspect action spaces before a
-  target definition is chosen.
-- The parallel wrapper spec uses only the public vocabulary: sample, row, and
-  column.
-
+- The row wrapper can step a row of samples over the real `RewriteState`.
+- The stored row matches the row-table contract.
+- The wrapper preserves scalar semantics while allowing private batching.
+- Row scoring returns target/action logp arrays usable by the training spec.

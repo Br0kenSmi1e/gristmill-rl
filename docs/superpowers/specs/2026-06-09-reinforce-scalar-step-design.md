@@ -1,197 +1,134 @@
 # REINFORCE Scalar Step Design
 
+Status: planned
+Supersedes: earlier scalar portions of `2026-06-03-naive-reinforce-training-design.md`
+Depends on: `2026-06-09-reinforce-policy-model-design.md`
+Feeds implementation plan: yes
+
 ## Summary
 
-This spec defines the first scalar REINFORCE policy, rollout, and training
-objective for one sample column. It is the semantic source of truth for the
-parallel row-wrapper spec.
+This spec defines the authoritative behavior for one sample step in the
+REINFORCE rollout. The parallel row wrapper must preserve these semantics for
+every sample position.
 
-The central design is:
+The scalar step is:
 
 ```text
-model:
-  target distribution over STOP plus definition indices
-  action distribution over candidate_index, left_mask, right_mask
-
-rollout:
-  one sample at step t -> same sample at step t + 1
-
-training:
-  stored row data -> recompute logp -> REINFORCE loss
+step_sample(sample_t) -> sample_t_plus_1, stored sample data for row t
 ```
 
-The scalar implementation should be complete enough to train the first model
-version.
+The policy model owns how target/action choices are sampled and scored. This spec
+owns when those policy calls happen, when Rust action spaces are generated, how
+STOP and empty action spaces behave, and what data is stored for later training.
 
 ## Goals
 
-- Define the first-version attention-context policy architecture.
-- Define the target and action probability distributions.
-- Define the scalar rollout order for one sample step.
-- Define the width-1 row data stored for recomputation.
-- Define the scalar REINFORCE objective.
-- Preserve the target/action split so target selection never expands action
-  spaces for every definition.
-- Keep scalar behavior compatible with the row-table overview and the later
-  parallel row wrapper.
+- Define the exact one-sample rollout order.
+- Keep target selection and action selection separate.
+- Ensure target selection never constructs unselected action spaces.
+- Define the four scalar cases: already finished, STOP, empty action space, valid
+  action.
+- Store immutable width-1 row data for recomputed logp.
+- Define scalar score-mask semantics used by row and training specs.
 
 ## Non-Goals
 
+- Defining the attention model architecture.
 - Defining row-level parallel execution.
-- Choosing low-level padding values for masked row entries.
-- Defining the final model architecture.
-- Solving warm start or imitation learning.
-- Running CCSD-scale batches.
+- Choosing padding values for row batches.
+- Defining reward, advantage, optimizer, or checkpoint behavior.
 - Differentiating through rewrite application, action-space generation, rewards,
   or sampled choices.
-- Keeping the previous transformer/reinforce prototype API.
+- Preserving the previous transformer/reinforce prototype API.
 
-## Model Distribution
+## Dependencies
 
-The policy has two distributions:
+The scalar step depends on these contracts:
+
+- `TargetInput`, `ActionInput`, `TargetChoice`, and `ActionChoice` from the policy
+  model spec.
+- `RewriteState.definition_mask()`, `action_space_for_def`, and
+  `step_with_space` from the rewrite-state API.
+- STOP legality supplied by trainer rollout config.
+
+## Public Contract
+
+The scalar public contract is:
 
 ```text
-target:
-  p(STOP or def_index | TargetInput)
-
-action:
-  p(candidate_index, left_mask, right_mask | ActionInput)
+step_sample(sample_t, policy, rng, rollout_config)
+  -> sample_t_plus_1
+  -> StoredSampleStep
 ```
 
-The model samples from these distributions during rollout. Training recomputes
-the log probability of the sampled choices from stored inputs and choices.
-
-The model uses attention context and direct logits over semantic choices. It
-does not use the old token-decoder grammar where policy choices are generated
-as detached extra tokens.
-
-## Target Model
-
-Target selection decides where to act:
+`StoredSampleStep` is the width-1 form of a stored row:
 
 ```text
-TargetInput -> STOP or def_index
+StoredSampleStep {
+  target_input
+  target_choice
+  target_score_mask
+
+  action_input
+  action_choice
+  action_score_mask
+
+  step_case
+  diagnostics
+}
 ```
 
-`TargetInput` contains:
+If a score mask is false, the corresponding input and choice are ignored by loss
+and metrics. They must still contain safe padded values if the implementation
+stores rectangular arrays eagerly.
 
-- state token sequence;
-- definition metadata or definition positions inside the state tokens;
-- target legality mask;
-- STOP legality.
+## Sample State
 
-`TargetInput` must not contain:
-
-- action-space tokens;
-- candidate information;
-- left/right mask information.
-
-The first-version target architecture is:
+A scalar sample contains:
 
 ```text
-state tokens + definition metadata + target legality mask
-  -> attention context
-  -> logits over STOP plus definition indices
-  -> masked softmax
+Sample {
+  rewrite_state
+  finished
+  terminal_reason
+  step_index
+  rollout_metadata
+}
 ```
 
-Each legal definition receives one target logit. STOP receives one target logit.
-Illegal definitions are masked before sampling and scoring.
+`finished` means the sample emits no new policy decisions. `terminal_reason`
+records why a sample became finished, such as STOP, max steps, no target
+available, or environment error. The concrete representation can evolve, but the
+step cases below are public behavior.
 
-Target scoring recomputes:
+## Algorithm
+
+For an already-finished sample:
 
 ```text
-target_logp = log p(stored target choice | stored TargetInput)
+1. Return the same finished sample.
+2. Store target_score_mask=false and action_score_mask=false.
 ```
 
-The target model must not call action-space generation. This must be true by the
-shape of the model input, not only by convention.
-
-## Action Model
-
-Action selection decides how to rewrite after target selection chooses one
-definition with a non-empty action space:
+For an active sample:
 
 ```text
-ActionInput -> candidate_index, left_mask, right_mask
-```
-
-`ActionInput` contains:
-
-- state token sequence;
-- selected `def_index`;
-- selected definition's action-space token sequence;
-- candidate positions and candidate legality;
-- left/right term positions for each candidate.
-
-The first-version action architecture is:
-
-```text
-state tokens + selected def_index + selected action-space tokens
-  -> attention context
-  -> candidate logits
-  -> left-mask logits
-  -> right-mask logits
-```
-
-The action distribution is autoregressive:
-
-```text
-candidate_index
-left_mask conditioned on candidate_index
-right_mask conditioned on candidate_index and left_mask
-```
-
-`candidate_index` is sampled from masked logits over the selected action space.
-`left_mask` is sampled over the selected candidate's left term positions.
-`right_mask` is sampled over the selected candidate's right term positions.
-Invalid padded positions and invalid empty selections are excluded from the
-distribution before sampling and scoring.
-
-Action scoring recomputes:
-
-```text
-candidate_logp = log p(stored candidate_index | ActionInput)
-left_mask_logp =
-  log p(stored left_mask | ActionInput, stored candidate_index)
-right_mask_logp =
-  log p(stored right_mask | ActionInput, stored candidate_index, stored left_mask)
-
-action_logp = candidate_logp + left_mask_logp + right_mask_logp
-```
-
-The action model only sees the action space for the selected definition. It does
-not score or materialize action spaces for unselected definitions.
-
-## Scalar Rollout
-
-The scalar rollout step updates one sample by one step:
-
-```text
-step_sample(sample_t) -> sample_t_plus_1, data for this sample in row t
-```
-
-The active-sample order is:
-
-```text
-1. Build TargetInput from the current sample state.
+1. Build immutable TargetInput from the current sample state.
 2. Sample STOP or def_index from the target distribution.
-3. Store target input, target choice, and target score mask.
+3. Store target input, target choice, and target_score_mask=true.
 4. If STOP, mark the sample terminal and end the step.
-5. Build action space for the selected def_index only.
-6. If action space is empty, refine target legality and end the step.
-7. Build ActionInput from current state, selected def_index, and action space.
-8. Sample candidate_index, left_mask, right_mask from the action distribution.
-9. Store action input, action choice, and action score mask.
-10. Apply the action to produce the next sample state.
+5. Call action_space_for_def(def_index) for the selected definition only.
+6. If the action space is empty, keep Rust's refined definition mask and end the step.
+7. Build immutable ActionInput from the current state, selected def_index, and action space.
+8. Sample candidate_index, left_mask, and right_mask from the action distribution.
+9. Store action input, action choice, and action_score_mask=true.
+10. Apply the action through step_with_space to produce the next sample state.
 ```
 
-There is no retry loop inside one scalar step. If a selected definition has an
-empty action space, the next target selection happens in the next row.
+There is no inner retry loop. If a selected definition has an empty action space,
+the next target selection happens in the next row.
 
 ## Step Cases
-
-The scalar step has four cases:
 
 ```text
 case                  target_score_mask    action_score_mask
@@ -215,22 +152,25 @@ If the input sample is already finished:
 If target selection chooses STOP:
 
 - the target choice is stored and scored;
+- no action space is generated;
 - no action choice exists;
 - the sample becomes terminal.
 
-STOP is part of the target distribution, not the action distribution.
+STOP is part of the target distribution. The trainer controls when STOP is legal.
 
 ### Empty Action Space
 
-If target selection chooses a definition whose action space is empty:
+If target selection chooses a definition whose exact action space is empty:
 
 - the target choice is stored and scored;
-- no action choice exists;
-- the selected definition becomes unavailable for the next target selection from
-  this sample state;
+- no action input or action choice exists;
+- `action_space_for_def` refines the selected definition's mask to false when
+  the kernel reports exact empty;
 - the sample continues unless another stopping rule applies.
 
-The action model is not scored because no action distribution existed.
+This case is a scored target probe with no environment rewrite. The training spec
+may add a step penalty or other reward shaping, but the scalar mask behavior is
+fixed here.
 
 ### Valid Action
 
@@ -238,132 +178,85 @@ If target selection chooses a definition with a non-empty action space:
 
 - the target choice is stored and scored;
 - the action choice is stored and scored;
-- the chosen rewrite is applied to produce the next sample state.
+- `step_with_space` applies the rewrite;
+- the sample remains active unless max steps or another stopping rule finishes it
+  after the step.
 
-## Stored Width-1 Row
+## Immutable Storage Requirements
 
-Scalar training is the width-1 version of the row-table design:
+`TargetInput` must be captured before exact action-space generation for the
+selected definition mutates the lazy definition mask.
+
+`ActionInput` must be captured before applying the rewrite. It must contain plain
+immutable data sufficient to score the selected action later. It must not depend
+on the live `ActionSpace` handle remaining valid.
+
+Rollout may store sampled logp for diagnostics, but training must recompute
+differentiable target/action logp from stored inputs and choices.
+
+## Scalar REINFORCE Loss Shape
+
+For one sample column, scoring recomputes:
 
 ```text
-target_input[t, sample 0]
-target_choice[t, sample 0]
-target_score_mask[t, sample 0]
+target_logp[t] =
+  log p(stored target_choice[t] | stored target_input[t])
 
-action_input[t, sample 0]
-action_choice[t, sample 0]
-action_score_mask[t, sample 0]
+action_logp[t] =
+  log p(stored action_choice[t] | stored action_input[t])
 ```
 
-If a score mask is false, the corresponding input and choice are ignored by loss
-and metrics. Masked entries still need safe padded values so scoring can run
-without out-of-range indexing or shape errors.
-
-Example:
+The scalar column logp sum is:
 
 ```text
-row 0: valid action        target mask true   action mask true
-row 1: empty action space  target mask true   action mask false
-row 2: valid action        target mask true   action mask true
-row 3: STOP                target mask true   action mask false
-```
-
-No later finished row is required in a scalar rollout unless a test explicitly
-exercises masked finished entries.
-
-## REINFORCE Training
-
-Rollout stores inputs and sampled choices. It may compute sampled logp for
-metrics, but rollout logp is not the gradient source.
-
-Training recomputes:
-
-```text
-target_logp[t, 0] =
-  log p(stored target_choice[t, 0] | stored target_input[t, 0])
-
-action_logp[t, 0] =
-  log p(stored action_choice[t, 0] | stored action_input[t, 0])
-```
-
-After rollout, the trainer computes a scalar reward for the sample column from
-the configured reward evaluator. Advantage is:
-
-```text
-advantage = reward - baseline
-```
-
-The first scalar implementation may use a baseline value of zero, so advantage
-equals reward, or an externally supplied advantage in deterministic tests.
-
-For one sample column, the REINFORCE loss is:
-
-```text
-loss =
-  -advantage *
+column_logp_sum =
   sum over rows t (
-    target_score_mask[t, 0] * target_logp[t, 0]
-  + action_score_mask[t, 0] * action_logp[t, 0]
+    target_score_mask[t] * target_logp[t]
+  + action_score_mask[t] * action_logp[t]
   )
 ```
 
-Only recomputed target/action logp terms are differentiable. The trainer must
-not backpropagate through:
+The training spec owns advantage weighting and normalization.
 
-- sampled choices;
-- action-space generation;
-- rewrite application;
-- reward computation;
-- baseline or advantage computation.
+## Invariants
 
-One scalar optimizer update may use one or more completed sample columns. If
-more than one column is used, this is accumulation over independent width-1
-scalar trajectories, not row-level parallel rollout.
+- Active scalar target selection builds no unselected action spaces.
+- `target_score_mask=true` exactly when a target choice was sampled.
+- `action_score_mask=true` exactly when an action distribution existed and an
+  action choice was sampled.
+- Empty action space does not apply a rewrite.
+- STOP does not generate an action space.
+- Stored inputs are immutable snapshots.
+- Already-finished samples produce no score terms.
 
-## Public Contract
+## Error Handling
 
-The scalar public contract is intentionally small:
+The scalar step should fail clearly when:
 
-```text
-step_sample(sample_t) -> sample_t_plus_1, data for this sample in row t
-score_target(stored TargetInput, stored target choice) -> target logp
-score_action(stored ActionInput, stored action choice) -> action logp
-```
+- target sampling returns an illegal choice;
+- `def_index` is out of range;
+- action sampling returns a candidate or bit mask illegal for the generated
+  action space;
+- `step_with_space` rejects the sampled action;
+- required stored data is missing for a true score mask.
 
-The model owns target/action sampling and scoring. The trainer owns rollout
-control, reward and advantage computation, recomputed logp loss, and optimizer
-updates. The rewrite environment owns action-space generation and rewrite
-application.
+## Testing Requirements
 
-## Relationship To Rows
-
-The scalar step defines the semantics for one sample position. The parallel row
-wrapper must preserve those semantics when lifting:
-
-```text
-row t -> row t + 1
-```
-
-Row-level mechanics may organize work privately, but they must not change the
-per-sample target/action distribution, stored score masks, or REINFORCE loss
-meaning.
+- Already-finished input emits no target/action scores.
+- STOP emits target score data, emits no action score data, and marks the sample
+  terminal.
+- Empty action space emits target score data, emits no action score data, refines
+  the target mask, and leaves the sample active.
+- Valid action emits target and action score data and applies one rewrite.
+- Target input construction and sampling do not call action-space generation.
+- Action input construction happens only for the selected non-empty action space.
+- Stored target/action data can be rescored after the live `RewriteState` has
+  moved on.
 
 ## Acceptance Criteria
 
-- Target input construction and target sampling do not call action-space
-  generation.
-- Target scoring uses masked logits over STOP plus definition indices.
-- Action scoring uses the autoregressive candidate, left-mask, right-mask
-  distribution over the selected action space.
-- Already-finished samples emit no target or action score.
-- STOP emits target scoring data, emits no action scoring data, and makes the
-  sample terminal.
-- Empty action space emits target scoring data, emits no action scoring data,
-  and makes the selected definition unavailable for the next target selection.
-- Valid action emits target and action scoring data and applies one rewrite.
-- Scalar training recomputes target/action logp from stored row data and sampled
-  choices.
-- Scalar training uses target/action score masks to include exactly the real
-  target and action logp terms.
-- The scalar REINFORCE loss uses recomputed logp terms weighted by the sample
-  column advantage.
-- The scalar design uses the overview vocabulary: sample, row, and column.
+- Width-1 rollout can execute all four step cases.
+- Scoring recomputes target/action logp from stored immutable data.
+- Scalar mask semantics match the row-table mask mapping.
+- Scalar behavior is complete enough for width-1 REINFORCE tests with injected
+  advantages.
