@@ -297,7 +297,7 @@ Reward tests:
 
 Integration tests:
 
-- width-1 rollout with injected advantage changes policy parameters;
+- width-1 row rollout with injected advantage changes policy parameters;
 - a tiny multi-sample row rollout computes finite loss;
 - score chunking matches unchunked scoring;
 - negative STOP bias makes immediate STOP rare in a deterministic model fixture;
@@ -312,7 +312,8 @@ CLI smoke tests:
 
 ## Acceptance Criteria
 
-- The trainer can run one width-1 REINFORCE update over the real symbolic kernel.
+- The trainer can run one width-1 row REINFORCE update over the real symbolic
+  kernel.
 - The trainer can run one multi-sample row update with recomputed target/action
   logp.
 - Loss normalization is column-based and covered by tests.

@@ -21,8 +21,8 @@ row 2         ...         ...         ...
 Rows store immutable target/action arrays, sampled choices, and score masks so
 training can recompute differentiable logp later.
 
-The scalar step defines per-sample semantics. The row table defines how those
-semantics are stored across time and samples.
+The scalar reference spec defines per-sample semantics. The row table defines how
+those semantics are stored across time and samples.
 
 ## Goals
 
@@ -37,7 +37,8 @@ semantics are stored across time and samples.
 ## Non-Goals
 
 - Defining model architecture or policy logits.
-- Defining scalar environment behavior beyond referencing the scalar spec.
+- Defining scalar environment behavior beyond referencing the scalar reference
+  spec.
 - Defining private active-sample compaction or scheduling.
 - Choosing exact padding values for every tensor field.
 - Defining reward, advantage, optimizer, or checkpoint behavior.
@@ -118,7 +119,7 @@ right_valid_mask[t, sample, bit]
 
 The model spec defines the scalar meaning of these arrays.
 
-The scalar spec defines which masks are true for each step case.
+The scalar reference spec defines which masks are true for each step case.
 
 ## Mask Mapping
 
@@ -223,7 +224,8 @@ The row table builder should fail clearly when:
 
 ## Testing Requirements
 
-- A width-1 table stores the same data as scalar step output.
+- A width-1 table stores the masks, choices, and immutable arrays required by
+  the scalar reference cases.
 - A multi-sample row containing valid action, STOP, empty action space, and
   already-finished samples produces the expected masks.
 - Finished samples remain aligned in later rows.
@@ -233,8 +235,8 @@ The row table builder should fail clearly when:
 
 ## Acceptance Criteria
 
-- The row table can represent scalar and multi-sample rollout without changing
-  public vocabulary.
+- The row table can represent width-1 and multi-sample row rollout without
+  changing public vocabulary.
 - Stored rows contain all data needed for recomputed target/action logp.
 - The table contract is independent from private row execution mechanics.
 - Training can assemble per-column REINFORCE terms from row masks and logp arrays.

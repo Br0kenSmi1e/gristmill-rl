@@ -7,15 +7,19 @@ Feeds implementation plan: yes
 
 ## Summary
 
-This spec defines the authoritative behavior for one sample step in the
-REINFORCE rollout. The parallel row wrapper must preserve these semantics for
-every sample position.
+This spec defines the authoritative reference behavior for one sample position in
+the REINFORCE rollout. The parallel row wrapper must preserve these semantics
+for every sample position.
 
-The scalar step is:
+The conceptual scalar step is:
 
 ```text
 step_sample(sample_t) -> sample_t_plus_1, stored sample data for row t
 ```
+
+`step_sample` is a reference contract, not a required public implementation API.
+The production rollout path may implement these semantics directly through
+width-1 and multi-sample row execution.
 
 The policy model owns how target/action choices are sampled and scored. This spec
 owns when those policy calls happen, when Rust action spaces are generated, how
@@ -28,7 +32,7 @@ STOP and empty action spaces behave, and what data is stored for later training.
 - Ensure target selection never constructs unselected action spaces.
 - Define the four scalar cases: already finished, STOP, empty action space, valid
   action.
-- Store immutable width-1 row data for recomputed logp.
+- Define immutable width-1 row data for recomputed logp.
 - Define scalar score-mask semantics used by row and training specs.
 
 ## Non-Goals
@@ -40,6 +44,8 @@ STOP and empty action spaces behave, and what data is stored for later training.
 - Differentiating through rewrite application, action-space generation, rewards,
   or sampled choices.
 - Preserving the previous transformer/reinforce prototype API.
+- Requiring a standalone scalar rollout implementation. A scalar helper may exist
+  for tests or debugging, but row execution is the implementation target.
 
 ## Dependencies
 
@@ -49,15 +55,19 @@ The scalar step depends on these contracts:
 - `RewriteState.definition_mask()`, `action_space_for_def`, and
   `step_with_space` from the rewrite-state API.
 
-## Public Contract
+## Reference Contract
 
-The scalar public contract is:
+The scalar reference contract is:
 
 ```text
 step_sample(sample_t, policy, rng, rollout_config)
   -> sample_t_plus_1
   -> StoredSampleStep
 ```
+
+Implementation plans should use this contract to test width-1 row execution and
+row scalar-equivalence behavior. They do not need to build a separate production
+`step_sample` API.
 
 `StoredSampleStep` is the width-1 form of the row table arrays:
 
@@ -242,7 +252,7 @@ The training spec owns advantage weighting and normalization.
 
 ## Error Handling
 
-The scalar step should fail clearly when:
+An implementation preserving the scalar reference should fail clearly when:
 
 - target sampling returns an illegal choice;
 - `def_index` is out of range;
@@ -266,8 +276,9 @@ The scalar step should fail clearly when:
 
 ## Acceptance Criteria
 
-- Width-1 rollout can execute all four step cases.
+- Width-1 row execution can exercise all four step cases while matching this
+  scalar reference.
 - Scoring recomputes target/action logp from stored immutable data.
 - Scalar mask semantics match the row-table mask mapping.
-- Scalar behavior is complete enough for width-1 REINFORCE tests with injected
+- Scalar behavior is complete enough for row-first REINFORCE tests with injected
   advantages.

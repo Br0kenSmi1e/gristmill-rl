@@ -75,15 +75,19 @@ The wrapper must preserve:
 
 ## Scalar Equivalence
 
-The row wrapper is semantically equivalent to independent scalar stepping:
+The row wrapper preserves the scalar reference semantics independently for each
+sample position:
 
 ```text
 for each sample position s:
-  step_row(row_t)[s] == step_sample(row_t[s])
+  step_row(row_t)[s] == scalar_reference_step(row_t[s])
 ```
 
 The equality is semantic, not necessarily byte-for-byte for padded masked data or
 diagnostic ordering.
+
+`scalar_reference_step` denotes the scalar-step spec's reference behavior. It
+does not require a separate production scalar rollout implementation.
 
 One sample's STOP, exact-empty target, valid rewrite, or already-finished status
 must not change another sample's scalar behavior.
@@ -364,7 +368,7 @@ The training spec combines these with per-column advantages.
 
 The wrapper should fail clearly when:
 
-- scalar stepping one sample fails;
+- preserving scalar reference behavior for one sample fails;
 - a compacted result cannot be scattered to its original sample position;
 - vectorized policy output length differs from active input length;
 - row scoring returns arrays with wrong width;
@@ -376,8 +380,8 @@ Errors should include sample position and row index when available.
 
 ## Testing Requirements
 
-- Width-1 row stepping matches scalar sample stepping.
-- Multi-sample row stepping matches independent scalar stepping for each sample.
+- Width-1 row stepping matches scalar reference behavior.
+- Multi-sample row stepping preserves scalar reference behavior for each sample.
 - Row width and sample positions remain stable across multiple steps.
 - A mixed row with valid action, STOP, empty action space, and already-finished
   samples produces the expected masks.
