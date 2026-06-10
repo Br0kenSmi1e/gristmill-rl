@@ -83,7 +83,7 @@ In this spec:
 - target tokens are the model-facing input for target selection;
 - action tokens are the model-facing input for action selection;
 - `TargetRecord` and `ActionRecord` are immutable rollout/scoring records that
-  wrap token sequences plus the masks needed to interpret logits.
+  wrap token sequences plus rollout metadata needed to interpret logits.
 
 ### TargetRecord
 
@@ -92,8 +92,7 @@ In this spec:
 ```text
 TargetRecord {
   target_tokens
-  target_legal_mask
-  stop_legal
+  def_mask
 }
 ```
 
@@ -103,8 +102,9 @@ definition marker tokens, so the target head can associate logits with
 sidecars for efficient pooling, but those positions are derived from the token
 sequence.
 
-`target_legal_mask` is the current cheap/lazily-refined definition mask.
-`stop_legal` is supplied by trainer rollout config through the scalar step.
+`def_mask` is the current cheap/lazily-refined definition mask. It is applied to
+definition logits after the target head runs. STOP is always an available target
+choice and is not controlled by a separate mask.
 
 `TargetRecord` must not contain:
 
@@ -122,7 +122,6 @@ been selected and Rust has returned a non-empty `ActionSpace`:
 ActionRecord {
   action_tokens
   selected_def_index
-  candidate_legal_mask
 }
 ```
 
@@ -133,6 +132,7 @@ in the token sequence. An implementation may cache candidate positions and side
 term positions as tokenizer sidecars for efficient heads and batching, but those
 positions are derived from `action_tokens`.
 
+All candidates encoded in `action_tokens` are legal candidates returned by Rust.
 The `ActionRecord` stores enough plain data to score the sampled action later
 without a live `ActionSpace` handle.
 
@@ -289,10 +289,13 @@ STOP + every current def_index
 Definition logits are computed from definition embeddings with global state
 context. The STOP logit is computed from the global state embedding.
 
-Before sampling or scoring, logits are masked by:
+Before sampling or scoring, definition logits are masked by `def_mask`.
 
-- `target_legal_mask` for definitions;
-- `stop_legal` for STOP.
+The STOP logit remains present even when definitions are legal. To avoid early
+STOP dominating random initial rollouts, the first implementation should
+initialize the STOP head bias to a negative value. A bias around `-20` makes STOP
+effectively unavailable at initialization when any definition logit is near zero,
+but STOP still receives probability one when all definition logits are masked.
 
 The masked categorical distribution is the complete target distribution.
 
@@ -321,8 +324,11 @@ state/action context. Caching is an optimization, not a public contract.
 ### Candidate Head
 
 The candidate head produces one logit per candidate in the selected action
-space. Logits are masked by `candidate_legal_mask`. The masked categorical
-distribution is:
+space. For one scalar sample, every candidate encoded in `action_tokens` is a
+legal candidate. In padded batches, padded candidate slots are masked out after
+logits are produced.
+
+The categorical distribution is:
 
 ```text
 p(candidate_index | ActionRecord)
@@ -386,10 +392,10 @@ target_score_mask * target_logp
 
 The trainer owns advantage weighting and normalization.
 
-## Bit Legality
+## Bit Decoding Constraint
 
-Rust requires both side masks to be non-empty. The bit decoder enforces this
-without turning masks into categorical subsets.
+Rust requires both side masks to be non-empty. The bit decoder enforces this as a
+decoder constraint without turning masks into categorical subsets.
 
 For a side with `n` terms:
 
@@ -397,25 +403,32 @@ For a side with `n` terms:
 - if no previous bit is `KEEP` and this is the final bit, only `KEEP` is legal;
 - otherwise both `KEEP` and `DROP` are legal.
 
-Sampling masks illegal bit values before sampling. Scoring replays stored bits
-through the same legality rule.
+Sampling applies this constraint before sampling the next bit. Scoring replays
+stored bits through the same constraint.
 
 When only one bit is legal, the distribution is deterministic. The implementation
 may record that bit with logp zero or omit it from metric counts, but scoring and
 loss must be consistent between sampling and recomputation.
 
-## STOP Legality
+## STOP Initialization
 
-The model treats STOP as a target choice controlled by `stop_legal`.
+STOP is always part of the target distribution.
 
-The training spec owns STOP modes such as:
+The first runnable implementation should make immediate STOP rare through
+initialization rather than through a trainer-controlled STOP mask:
 
-- always legal;
-- terminal only;
-- minimum rewrite count before legal.
+```text
+stop_bias_init ~= -20
+```
 
-The policy model does not decide which mode is active. It only masks STOP
-according to `TargetRecord.stop_legal`.
+This keeps the target-policy interface simple:
+
+```text
+state tokens -> raw logits over STOP + defs -> apply def_mask to defs only
+```
+
+When all definitions are masked out, STOP is the only unmasked choice and is
+sampled with probability one regardless of the negative bias.
 
 ## Immutable Storage
 
@@ -445,7 +458,7 @@ Batched target scoring pads:
 - state token sequences;
 - definition positions;
 - target choices;
-- target legality masks.
+- definition masks.
 
 Batched action scoring pads:
 
@@ -453,7 +466,7 @@ Batched action scoring pads:
 - candidates;
 - side term positions;
 - stored bit sequences;
-- candidate and bit legality masks.
+- candidate padding masks for padded batches.
 
 Padding values must be safe for the model to process and must be masked out
 before logits are interpreted. Padding must not change logp, metrics, or loss for
@@ -464,9 +477,8 @@ real decisions.
 Policy scoring should fail with clear errors when:
 
 - a target choice is illegal under `TargetRecord`;
-- STOP is chosen while `stop_legal` is false;
 - an action choice is scored with a masked action entry;
-- `candidate_index` is out of range or illegal;
+- `candidate_index` is out of range or points to a padded batch slot;
 - a stored bit sequence length does not match the selected candidate side;
 - a stored side mask is empty;
 - an illegal bit appears during replay.
@@ -487,14 +499,16 @@ Tokenizer tests:
 Target model tests:
 
 - target logits include STOP and all current definitions;
-- illegal definitions and illegal STOP are masked before sampling and scoring;
+- illegal definitions are masked before sampling and scoring;
+- STOP remains available and uses the configured negative initial bias;
 - target scoring matches manual masked-softmax logp on a small fixture;
-- target input construction does not call exact action-space generation.
+- target record construction does not call exact action-space generation.
 
 Action model tests:
 
 - candidate logits include only selected action-space candidates;
-- candidate scoring matches manual masked-softmax logp;
+- candidate scoring matches manual softmax logp for one scalar action space;
+- padded candidate slots are masked only in padded batches;
 - left and right masks are decoded in deterministic bit order;
 - final-bit forcing prevents empty side masks;
 - scoring an illegal empty mask fails;

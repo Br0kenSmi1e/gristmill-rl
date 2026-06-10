@@ -49,7 +49,6 @@ The scalar step depends on these contracts:
   model spec.
 - `RewriteState.definition_mask()`, `action_space_for_def`, and
   `step_with_space` from the rewrite-state API.
-- STOP legality supplied by trainer rollout config.
 
 ## Public Contract
 

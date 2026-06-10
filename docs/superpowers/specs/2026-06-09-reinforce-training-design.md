@@ -24,7 +24,8 @@ optimizer update, reports diagnostics, and optionally writes checkpoints.
 - Use recomputed logp from immutable stored row data as the gradient source.
 - Compute rewards and advantages with enough precision for symbolic cost
   differences.
-- Make STOP legality configurable for training and inference.
+- Make immediate STOP unlikely at initialization without adding trainer-side STOP
+  mask modes.
 - Pin down the default REINFORCE loss normalization.
 - Support bounded scoring chunks independent from logical batch size.
 - Define required metrics and checkpoint contents.
@@ -77,8 +78,6 @@ Rollout config includes:
 ```text
 batch_size
 max_steps
-stop_mode
-min_rewrite_steps
 rollout_microbatch_size
 seed
 ```
@@ -89,30 +88,18 @@ seed
 before returning progress. It must not change the logical baseline or optimizer
 update unit.
 
-## STOP Modes
+## STOP Initialization
 
-STOP legality is supplied to the scalar step through `TargetRecord.stop_legal`.
+STOP is always part of the target distribution. The trainer does not provide a
+separate STOP mask mode.
 
-The first implementation should support:
+To reduce immediate STOP during early training, the policy model should
+initialize the STOP head bias to a negative value, as defined in the policy model
+spec. This keeps the rollout interface simple while making STOP effectively rare
+when legal definition choices are available.
 
-```text
-always
-  STOP is legal for active samples at every step.
-
-terminal_only
-  STOP is legal only when no target definitions are currently legal under the
-  sample's current cheap/lazily-refined target mask.
-
-after_min_rewrites
-  STOP is illegal until the sample has applied min_rewrite_steps valid rewrites,
-  then follows the always mode.
-```
-
-Default training mode should be `after_min_rewrites` with
-`min_rewrite_steps=1`. Default evaluation/inference mode may be `always`.
-
-This makes early training less likely to collapse into immediate STOP while still
-keeping STOP as the same target choice in the model.
+When no definition is allowed by the current `RewriteState.definition_mask()`,
+STOP is the only unmasked target choice and the sample can terminate.
 
 ## Reward
 
@@ -227,7 +214,6 @@ Each update should report:
 update_index
 batch_size
 max_steps
-stop_mode
 initial_log_flops_mean
 final_log_flops_mean
 final_log_flops_best
@@ -314,7 +300,7 @@ Integration tests:
 - width-1 rollout with injected advantage changes policy parameters;
 - a tiny multi-sample row rollout computes finite loss;
 - score chunking matches unchunked scoring;
-- STOP modes change STOP legality as configured;
+- negative STOP bias makes immediate STOP rare in a deterministic model fixture;
 - checkpoint save/load round trips model and optimizer state.
 
 CLI smoke tests:
@@ -331,5 +317,5 @@ CLI smoke tests:
   logp.
 - Loss normalization is column-based and covered by tests.
 - Rewards and advantages use `float64` through baseline calculation.
-- STOP legality is configurable and visible in metrics.
+- STOP initialization is configured and STOP counts are visible in metrics.
 - A checkpoint can be written and loaded for continued training.
