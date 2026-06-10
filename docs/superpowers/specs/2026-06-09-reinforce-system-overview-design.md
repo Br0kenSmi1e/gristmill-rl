@@ -142,7 +142,7 @@ the vocabulary.
 
 The policy owns:
 
-- constructing immutable `TargetInput` and `ActionInput` snapshots;
+- constructing immutable `TargetRecord` and `ActionRecord` snapshots;
 - tokenizing those snapshots;
 - sampling target/action choices;
 - scoring stored target/action choices with differentiable logp;
@@ -210,7 +210,7 @@ This order makes semantic bugs visible before adding parallel mechanics.
 
 - Target selection must not generate or inspect action spaces for unselected
   definitions.
-- `TargetInput` and `ActionInput` stored for training are immutable snapshots.
+- `TargetRecord` and `ActionRecord` stored for training are immutable snapshots.
 - Every scored choice has a score mask set to true.
 - Every masked-out choice has safe padded values and contributes nothing to loss
   or metrics.
@@ -228,7 +228,7 @@ Implementation should fail early for contract violations:
 
 - illegal stored target choice during scoring;
 - stored action choice whose candidate or bit sequence is invalid for the stored
-  `ActionInput`;
+  `ActionRecord`;
 - missing immutable input data for a true score mask;
 - non-safe padded values causing scorer indexing errors;
 - row width changes across rollout;

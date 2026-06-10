@@ -45,7 +45,7 @@ STOP and empty action spaces behave, and what data is stored for later training.
 
 The scalar step depends on these contracts:
 
-- `TargetInput`, `ActionInput`, `TargetChoice`, and `ActionChoice` from the policy
+- `TargetRecord`, `ActionRecord`, `TargetChoice`, and `ActionChoice` from the policy
   model spec.
 - `RewriteState.definition_mask()`, `action_space_for_def`, and
   `step_with_space` from the rewrite-state API.
@@ -65,11 +65,11 @@ step_sample(sample_t, policy, rng, rollout_config)
 
 ```text
 StoredSampleStep {
-  target_input
+  target_record
   target_choice
   target_score_mask
 
-  action_input
+  action_record
   action_choice
   action_score_mask
 
@@ -113,15 +113,15 @@ For an already-finished sample:
 For an active sample:
 
 ```text
-1. Build immutable TargetInput from the current sample state.
+1. Build immutable TargetRecord from the current sample state.
 2. Sample STOP or def_index from the target distribution.
-3. Store target input, target choice, and target_score_mask=true.
+3. Store target record, target choice, and target_score_mask=true.
 4. If STOP, mark the sample terminal and end the step.
 5. Call action_space_for_def(def_index) for the selected definition only.
 6. If the action space is empty, keep Rust's refined definition mask and end the step.
-7. Build immutable ActionInput from the current state, selected def_index, and action space.
+7. Build immutable ActionRecord from the current state, selected def_index, and action space.
 8. Sample candidate_index, left_mask, and right_mask from the action distribution.
-9. Store action input, action choice, and action_score_mask=true.
+9. Store action record, action choice, and action_score_mask=true.
 10. Apply the action through step_with_space to produce the next sample state.
 ```
 
@@ -184,10 +184,10 @@ If target selection chooses a definition with a non-empty action space:
 
 ## Immutable Storage Requirements
 
-`TargetInput` must be captured before exact action-space generation for the
+`TargetRecord` must be captured before exact action-space generation for the
 selected definition mutates the lazy definition mask.
 
-`ActionInput` must be captured before applying the rewrite. It must contain plain
+`ActionRecord` must be captured before applying the rewrite. It must contain plain
 immutable data sufficient to score the selected action later. It must not depend
 on the live `ActionSpace` handle remaining valid.
 
@@ -200,10 +200,10 @@ For one sample column, scoring recomputes:
 
 ```text
 target_logp[t] =
-  log p(stored target_choice[t] | stored target_input[t])
+  log p(stored target_choice[t] | stored target_record[t])
 
 action_logp[t] =
-  log p(stored action_choice[t] | stored action_input[t])
+  log p(stored action_choice[t] | stored action_record[t])
 ```
 
 The scalar column logp sum is:

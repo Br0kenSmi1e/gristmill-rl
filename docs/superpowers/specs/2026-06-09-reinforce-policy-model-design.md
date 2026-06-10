@@ -65,58 +65,75 @@ ActionSpace.snapshot()
 
 Rust remains authoritative for exact action spaces and for validating decisions.
 Python policy code should not infer actionability by inspecting symbolic
-expressions beyond constructing model inputs from snapshots and masks supplied by
-the environment.
+expressions beyond constructing model token records from snapshots and masks
+supplied by the environment.
 
 ## Public Contracts
 
-### TargetInput
+### Model Inputs Are Token Sequences
 
-`TargetInput` is an immutable snapshot used for target sampling and scoring:
+The neural model consumes token sequences.
+
+The rollout and trainer also need sidecar data such as legality masks and
+semantic choices. Those sidecars are part of stored scoring records, not separate
+symbolic inputs to the attention model.
+
+In this spec:
+
+- target tokens are the model-facing input for target selection;
+- action tokens are the model-facing input for action selection;
+- `TargetRecord` and `ActionRecord` are immutable rollout/scoring records that
+  wrap token sequences plus the masks needed to interpret logits.
+
+### TargetRecord
+
+`TargetRecord` is an immutable snapshot used for target sampling and scoring:
 
 ```text
-TargetInput {
-  state_tokens
-  definition_positions
+TargetRecord {
+  target_tokens
   target_legal_mask
   stop_legal
-  sample_metadata
 }
 ```
 
-`state_tokens` are derived from the current symbolic tensor state.
-`definition_positions` map each `def_index` to the token span or pooled embedding
-used by the target head. `target_legal_mask` is the current cheap/lazily-refined
-definition mask. `stop_legal` is supplied by trainer rollout config through the
-scalar step.
+`target_tokens` are derived from the current symbolic tensor state. They include
+definition marker tokens, so the target head can associate logits with
+`def_index` values. An implementation may cache definition positions as tokenizer
+sidecars for efficient pooling, but those positions are derived from the token
+sequence.
 
-`TargetInput` must not contain:
+`target_legal_mask` is the current cheap/lazily-refined definition mask.
+`stop_legal` is supplied by trainer rollout config through the scalar step.
+
+`TargetRecord` must not contain:
 
 - action-space tokens;
 - candidate information;
 - left/right term information;
 - exact action-space generation results for unselected definitions.
 
-### ActionInput
+### ActionRecord
 
-`ActionInput` is an immutable snapshot built only after one target definition has
+`ActionRecord` is an immutable snapshot built only after one target definition has
 been selected and Rust has returned a non-empty `ActionSpace`:
 
 ```text
-ActionInput {
-  state_tokens
+ActionRecord {
+  action_tokens
   selected_def_index
-  selected_definition_position
-  action_space_tokens
-  candidate_positions
   candidate_legal_mask
-  left_term_positions_by_candidate
-  right_term_positions_by_candidate
-  sample_metadata
 }
 ```
 
-The `ActionInput` stores enough information to score the sampled action later
+`action_tokens` are the model-facing token sequence for action selection. They
+contain the current state context, a selected-definition marker, and the selected
+definition's action-space context. Candidate and side-term boundaries are encoded
+in the token sequence. An implementation may cache candidate positions and side
+term positions as tokenizer sidecars for efficient heads and batching, but those
+positions are derived from `action_tokens`.
+
+The `ActionRecord` stores enough plain data to score the sampled action later
 without a live `ActionSpace` handle.
 
 ### Choices
@@ -139,28 +156,28 @@ ActionChoice {
 }
 ```
 
-The left and right masks are stored in the deterministic term order defined by
-the selected candidate in `ActionInput`.
+The left and right masks are stored in the deterministic term order encoded for
+the selected candidate in `ActionRecord.action_tokens`.
 
 ### Policy API
 
 The policy-facing API should expose semantic sampling and scoring:
 
 ```text
-sample_target(TargetInput, rng) -> TargetSample
-score_target(TargetInput, TargetChoice) -> target_logp
+sample_target(TargetRecord, rng) -> TargetSample
+score_target(TargetRecord, TargetChoice) -> target_logp
 
-sample_action(ActionInput, rng) -> ActionSample
-score_action(ActionInput, ActionChoice) -> action_logp
+sample_action(ActionRecord, rng) -> ActionSample
+score_action(ActionRecord, ActionChoice) -> action_logp
 ```
 
 The row wrapper may call batched variants:
 
 ```text
-sample_target_batch(padded_target_inputs, rngs)
-score_target_batch(padded_target_inputs, target_choices)
-sample_action_batch(padded_action_inputs, rngs)
-score_action_batch(padded_action_inputs, action_choices)
+sample_target_batch(padded_target_records, rngs)
+score_target_batch(padded_target_records, target_choices)
+sample_action_batch(padded_action_records, rngs)
+score_action_batch(padded_action_records, action_choices)
 ```
 
 Batched variants must preserve the same semantics as the scalar functions.
@@ -257,9 +274,9 @@ definition_embeddings[def_index]
 global_state_embedding
 ```
 
-`definition_embeddings` are gathered or pooled from the token spans for each
-definition. `global_state_embedding` may be a pooled token, an explicit summary
-token, or an attention-pooled vector.
+`definition_embeddings` are gathered or pooled from definition marker spans in
+the target token sequence. `global_state_embedding` may be a pooled token, an
+explicit summary token, or an attention-pooled vector.
 
 ### Target Head
 
@@ -308,7 +325,7 @@ space. Logits are masked by `candidate_legal_mask`. The masked categorical
 distribution is:
 
 ```text
-p(candidate_index | ActionInput)
+p(candidate_index | ActionRecord)
 ```
 
 ### Bit-Sequence Mask Decoder
@@ -348,16 +365,16 @@ The target log probability is:
 
 ```text
 target_logp =
-  log p(target_choice | TargetInput)
+  log p(target_choice | TargetRecord)
 ```
 
 The action log probability is:
 
 ```text
 action_logp =
-  log p(candidate_index | ActionInput)
-+ sum_i log p(left_bit_i | ActionInput, candidate_index, left_prefix_before_i)
-+ sum_j log p(right_bit_j | ActionInput, candidate_index, left_mask, right_prefix_before_j)
+  log p(candidate_index | ActionRecord)
++ sum_i log p(left_bit_i | ActionRecord, candidate_index, left_prefix_before_i)
++ sum_j log p(right_bit_j | ActionRecord, candidate_index, left_mask, right_prefix_before_j)
 ```
 
 The full scored step contribution is:
@@ -398,18 +415,18 @@ The training spec owns STOP modes such as:
 - minimum rewrite count before legal.
 
 The policy model does not decide which mode is active. It only masks STOP
-according to `TargetInput.stop_legal`.
+according to `TargetRecord.stop_legal`.
 
 ## Immutable Storage
 
 Rollout must store immutable data for every scored decision:
 
 ```text
-TargetInput snapshot
+TargetRecord
 TargetChoice
 target_score_mask
 
-ActionInput snapshot
+ActionRecord
 ActionChoice
 action_score_mask
 ```
@@ -446,7 +463,7 @@ real decisions.
 
 Policy scoring should fail with clear errors when:
 
-- a target choice is illegal under `TargetInput`;
+- a target choice is illegal under `TargetRecord`;
 - STOP is chosen while `stop_legal` is false;
 - an action choice is scored with a masked action entry;
 - `candidate_index` is out of range or illegal;

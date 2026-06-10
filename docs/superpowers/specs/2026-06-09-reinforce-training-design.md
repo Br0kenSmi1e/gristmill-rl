@@ -91,7 +91,7 @@ update unit.
 
 ## STOP Modes
 
-STOP legality is supplied to the scalar step through `TargetInput.stop_legal`.
+STOP legality is supplied to the scalar step through `TargetRecord.stop_legal`.
 
 The first implementation should support:
 
@@ -159,10 +159,10 @@ Training recomputes:
 
 ```text
 target_logp[t, s] =
-  log p(target_choice[t, s] | target_input[t, s])
+  log p(target_choice[t, s] | target_record[t, s])
 
 action_logp[t, s] =
-  log p(action_choice[t, s] | action_input[t, s])
+  log p(action_choice[t, s] | action_record[t, s])
 ```
 
 Only recomputed target/action logp terms are differentiable. Sampled rollout logp

@@ -73,11 +73,11 @@ but credit assignment uses sample position.
 For every rollout row `t`, the table stores:
 
 ```text
-target_input[t, sample]
+target_record[t, sample]
 target_choice[t, sample]
 target_score_mask[t, sample]
 
-action_input[t, sample]
+action_record[t, sample]
 action_choice[t, sample]
 action_score_mask[t, sample]
 
@@ -85,7 +85,7 @@ step_case[t, sample]
 diagnostics[t, sample]
 ```
 
-The model spec defines the structure of `target_input`, `action_input`,
+The model spec defines the structure of `target_record`, `action_record`,
 `target_choice`, and `action_choice`.
 
 The scalar spec defines which masks are true for each step case.
@@ -110,8 +110,8 @@ rectangular batches without out-of-range indexing or shape errors.
 
 Stored row inputs are immutable snapshots:
 
-- `target_input` must not reference a mutable `RewriteState`;
-- `action_input` must not require a live `ActionSpace` handle;
+- `target_record` must not reference a mutable `RewriteState`;
+- `action_record` must not require a live `ActionSpace` handle;
 - stored choices must be plain data;
 - row data must remain scorable after rollout has advanced or finished.
 
@@ -146,7 +146,7 @@ implementation plan.
 The sample index in a row is the column identity:
 
 ```text
-stored_row[t].target_input[s] belongs to sample column s
+stored_row[t].target_record[s] belongs to sample column s
 ```
 
 Rewards and advantages are computed per sample column and then broadcast to that

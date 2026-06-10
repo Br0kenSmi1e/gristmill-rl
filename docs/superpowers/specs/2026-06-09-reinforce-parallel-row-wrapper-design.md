@@ -124,11 +124,11 @@ An exact-empty result follows scalar semantics:
 The wrapper stores exactly the row-table fields:
 
 ```text
-target_input[t, sample]
+target_record[t, sample]
 target_choice[t, sample]
 target_score_mask[t, sample]
 
-action_input[t, sample]
+action_record[t, sample]
 action_choice[t, sample]
 action_score_mask[t, sample]
 
