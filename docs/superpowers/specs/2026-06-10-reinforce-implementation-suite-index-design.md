@@ -52,7 +52,7 @@ Builds the model-facing data contracts and probability code:
 - action sampling and scoring;
 - left/right bit-sequence decoding;
 - padding and `jax.vmap` sampling/scoring;
-- chunk-equivalent scoring.
+- row-equivalent scalar/vectorized scoring.
 
 This phase can use fixtures or row-environment snapshots. It does not depend on
 the trainer.

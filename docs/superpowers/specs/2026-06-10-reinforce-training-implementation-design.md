@@ -24,7 +24,6 @@ and optionally writes checkpoints.
 - Recompute differentiable logp from immutable stored arrays and choices.
 - Compute rewards and advantages in `float64` through baseline calculation.
 - Use column-normalized REINFORCE loss by default.
-- Support bounded scoring chunks independent from logical batch size.
 - Report metrics that expose STOP collapse, exact-empty probes, reward variance,
   score counts, and parameter updates.
 - Save and load checkpoints with schema validation.
@@ -80,7 +79,7 @@ compute_rewards(final_column_metrics, reward_config)
 compute_advantages(reward, baseline_config)
   -> advantage[sample]
 
-score_rollout(policy, rollout_table, score_config)
+score_rollout(policy, rollout_table)
   -> target_logp[row, sample]
   -> action_logp[row, sample]
 
@@ -104,15 +103,10 @@ Rollout config includes:
 ```text
 batch_size
 max_steps
-rollout_microbatch_size
 seed
 ```
 
 `batch_size` is the logical number of sample columns per optimizer update.
-
-`rollout_microbatch_size` may control how many samples are stepped or collected
-before returning progress. It must not change the logical baseline, advantage
-calculation, or optimizer update unit.
 
 ## Rollout Table
 
@@ -248,15 +242,6 @@ action_logp[row, sample] =
 Only recomputed logp terms are differentiable. Sampled rollout logp may be
 stored for diagnostics, but it must not be the gradient source.
 
-Scoring may run in chunks:
-
-```text
-target_score_chunk_size
-action_score_chunk_size
-```
-
-Chunking must not change logp values or the loss.
-
 ## Loss
 
 The default loss normalizes by sample columns, not by scored decisions:
@@ -286,14 +271,10 @@ One optimizer update uses one logical rollout batch:
 freeze current policy parameters
 collect batch_size sample columns
 compute rewards and advantages over the full logical batch
-score stored rows in chunks
-accumulate gradients across chunks if needed
+score stored rows
 apply one optimizer update
 discard rollout rows unless debugging/checkpoint config retains them
 ```
-
-If gradient accumulation is needed, it must preserve the same objective as
-scoring the full logical batch at once.
 
 ## Metrics
 
@@ -320,7 +301,6 @@ action_score_count
 loss
 target_logp_mean
 action_logp_mean
-score_chunk_count
 params_changed
 ```
 
@@ -387,8 +367,7 @@ Objective tests:
 - masked entries do not affect loss;
 - column-normalized loss differs from decision-normalized loss on a crafted
   example;
-- baseline and advantage are treated as stop-gradient constants;
-- gradient accumulation across chunks matches full-batch scoring.
+- baseline and advantage are treated as stop-gradient constants.
 
 Reward tests:
 
@@ -400,7 +379,6 @@ Integration tests:
 
 - width-1 row rollout with injected advantage changes policy parameters;
 - tiny multi-sample row rollout computes finite loss;
-- score chunking matches unchunked scoring;
 - negative STOP bias makes immediate STOP rare in a deterministic fixture;
 - checkpoint save/load round trips model and optimizer state.
 

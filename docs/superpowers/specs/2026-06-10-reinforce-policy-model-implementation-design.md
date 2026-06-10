@@ -30,7 +30,7 @@ with snapshots from the row environment.
 - Implement target sampling and target scoring.
 - Implement action sampling and action scoring.
 - Decode left and right masks as constrained bit sequences.
-- Support padded `jax.vmap` sampling and scoring for rows and chunks.
+- Support padded `jax.vmap` sampling and scoring for rows.
 - Make immediate STOP rare through model initialization, not trainer masking.
 - Fail clearly for illegal stored choices.
 
@@ -317,7 +317,7 @@ or are consistently omitted from metric counts.
 
 ## Padding And Vectorization
 
-Before `jax.vmap`, scalar arrays are padded into rectangular row or chunk arrays.
+Before `jax.vmap`, scalar arrays are padded into rectangular row arrays.
 
 Target vectorization pads:
 
@@ -346,7 +346,7 @@ Masked score entries contribute no logp, loss, or metrics. Padding must not
 change logp for real decisions. Sampling masks must ensure padded entries do not
 produce choices that are interpreted as real rollout decisions.
 
-## Row Sampling And Chunk Scoring
+## Row Sampling And Scoring
 
 The intended row sampling shape is:
 
@@ -364,11 +364,6 @@ jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0, 0, 0))
 
 For `TokenTree` arguments, `in_axes=0` maps every token-tree leaf over its
 leading sample axis.
-
-Sampling and scoring code may split rows into chunks for memory control.
-Chunking must return the same logp values as scoring the full row at once.
-Sampling with chunks must preserve the same per-sample RNG-key assignment as
-unchunked row sampling.
 
 ## Error Handling
 
@@ -429,8 +424,6 @@ Vectorization tests:
 - `jax.vmap(score_action)` over padded arrays matches scalar action scoring;
 - masked padded entries do not affect real-choice logp;
 - masked padded entries are not interpreted as real sampled choices;
-- chunked sampling preserves row-aligned RNG assignment;
-- chunked scoring matches unchunked scoring;
 - width-1 row scoring matches scalar scoring.
 
 ## Exit Criteria
@@ -447,7 +440,5 @@ Phase 2 is complete when:
 - padded `jax.vmap` sampling returns row-aligned target/action choices and
   sampled logp;
 - padded `jax.vmap` scoring matches scalar scoring;
-- chunked sampling preserves row-aligned RNG assignment;
-- chunked scoring matches unchunked scoring;
 - STOP bias initialization is implemented and tested;
 - tests do not require the trainer or deprecated policy APIs.
