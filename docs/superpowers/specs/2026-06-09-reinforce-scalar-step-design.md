@@ -122,12 +122,13 @@ For an active sample:
 
 ```text
 1. Build immutable target arrays from the current sample state.
-2. Sample STOP or def_index from the target distribution.
+2. Sample target_choice from the target distribution.
+   target_choice = -1 means STOP; otherwise target_choice is the selected def_index.
 3. Store target arrays, target choice, and target_score_mask=true.
-4. If STOP, mark the sample terminal and end the step.
-5. Call action_space_for_def(def_index) for the selected definition only.
+4. If target_choice == -1, mark the sample terminal and end the step.
+5. Call action_space_for_def(target_choice) for the selected definition only.
 6. If the action space is empty, keep Rust's refined definition mask and end the step.
-7. Build immutable action arrays from the current state, selected def_index, and action space.
+7. Build immutable action arrays from the current state, selected target_choice, and action space.
 8. Sample candidate_index, left_mask, and right_mask from the action distribution.
 9. Store action arrays, action choice, and action_score_mask=true.
 10. Apply the action through step_with_space to produce the next sample state.
@@ -164,7 +165,9 @@ If target selection chooses STOP:
 - no action choice exists;
 - the sample becomes terminal.
 
-STOP is part of the target distribution. The trainer controls when STOP is legal.
+STOP is always part of the target distribution. It is not gated by rollout config,
+the definition mask, or a separate trainer-side legality mask. The model makes
+immediate STOP rare through its configured negative STOP bias.
 
 ### Empty Action Space
 
