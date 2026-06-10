@@ -123,12 +123,12 @@ For an active sample:
 ```text
 1. Build immutable target arrays from the current sample state.
 2. Sample target_choice from the target distribution.
-   target_choice = -1 means STOP; otherwise target_choice is the selected def_index.
+   target_choice = -1 means STOP; otherwise selected_def_index = target_choice.
 3. Store target arrays, target choice, and target_score_mask=true.
 4. If target_choice == -1, mark the sample terminal and end the step.
-5. Call action_space_for_def(target_choice) for the selected definition only.
+5. Call action_space_for_def(selected_def_index) for the selected definition only.
 6. If the action space is empty, keep Rust's refined definition mask and end the step.
-7. Build immutable action arrays from the current state, selected target_choice, and action space.
+7. Build immutable action arrays from the current state, selected_def_index, and action space.
 8. Sample candidate_index, left_mask, and right_mask from the action distribution.
 9. Store action arrays, action choice, and action_score_mask=true.
 10. Apply the action through step_with_space to produce the next sample state.

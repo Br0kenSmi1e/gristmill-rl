@@ -119,7 +119,7 @@ File: `2026-06-09-reinforce-training-design.md`
 Owns:
 
 - reward and advantage calculation;
-- STOP training modes;
+- STOP bias initialization, metrics, and collapse detection;
 - loss normalization;
 - optimizer update unit;
 - checkpoint and metric requirements.
