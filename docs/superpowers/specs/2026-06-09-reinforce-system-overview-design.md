@@ -142,7 +142,7 @@ the vocabulary.
 
 The policy owns:
 
-- constructing immutable `TargetRecord` and `ActionRecord` snapshots;
+- constructing immutable target/action arrays;
 - tokenizing those snapshots;
 - sampling target/action choices;
 - scoring stored target/action choices with differentiable logp;
@@ -188,7 +188,7 @@ initial computations
 ```
 
 Rollout may compute sampled logp for diagnostics, but sampled rollout logp is not
-the gradient source. Training recomputes logp from stored inputs and choices.
+the gradient source. Training recomputes logp from stored arrays and choices.
 
 ## Implementation Order
 
@@ -210,7 +210,7 @@ This order makes semantic bugs visible before adding parallel mechanics.
 
 - Target selection must not generate or inspect action spaces for unselected
   definitions.
-- `TargetRecord` and `ActionRecord` stored for training are immutable snapshots.
+- target/action arrays stored for training are immutable snapshots.
 - Every scored choice has a score mask set to true.
 - Every masked-out choice has safe padded values and contributes nothing to loss
   or metrics.
@@ -228,7 +228,7 @@ Implementation should fail early for contract violations:
 
 - illegal stored target choice during scoring;
 - stored action choice whose candidate or bit sequence is invalid for the stored
-  `ActionRecord`;
+  action arrays;
 - missing immutable input data for a true score mask;
 - non-safe padded values causing scorer indexing errors;
 - row width changes across rollout;

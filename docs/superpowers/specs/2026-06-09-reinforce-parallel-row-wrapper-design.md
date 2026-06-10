@@ -124,11 +124,17 @@ An exact-empty result follows scalar semantics:
 The wrapper stores exactly the row-table fields:
 
 ```text
-target_record[t, sample]
+target_state_tokens[t, sample, token]
+target_state_token_mask[t, sample, token]
+target_def_mask[t, sample, def]
 target_choice[t, sample]
 target_score_mask[t, sample]
 
-action_record[t, sample]
+action_state_tokens[t, sample, token]
+action_state_token_mask[t, sample, token]
+selected_def_index[t, sample]
+action_space_tokens[t, sample, token]
+action_space_token_mask[t, sample, token]
 action_choice[t, sample]
 action_score_mask[t, sample]
 
@@ -156,7 +162,7 @@ target_score_chunk_size
 action_score_chunk_size
 ```
 
-Chunking must not change results. The same stored input and choice should produce
+Chunking must not change results. The same stored arrays and choice should produce
 the same logp whether scored alone, in a width-1 row, in a full row, or in a
 chunk.
 

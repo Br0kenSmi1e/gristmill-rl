@@ -18,7 +18,7 @@ row 2         ...         ...         ...
 ...
 ```
 
-Rows store immutable target/action inputs, sampled choices, and score masks so
+Rows store immutable target/action arrays, sampled choices, and score masks so
 training can recompute differentiable logp later.
 
 The scalar step defines per-sample semantics. The row table defines how those
@@ -29,7 +29,7 @@ semantics are stored across time and samples.
 - Use only `sample`, `row`, and `column` as public rollout vocabulary.
 - Keep row width stable across rollout.
 - Preserve sample position as the column identity for reward assignment.
-- Store target/action inputs, choices, and score masks in rectangular form.
+- Store each target/action field as its own rectangular array.
 - Define padding and mask responsibilities without choosing low-level sentinel
   values.
 - Keep row storage independent from private parallel scheduling mechanics.
@@ -70,23 +70,49 @@ but credit assignment uses sample position.
 
 ## Stored Row Contract
 
-For every rollout row `t`, the table stores:
+For every rollout row `t`, the table stores a struct of arrays. Each field is
+rectangular over the row and sample axes, with extra field-specific axes for
+tokens, definitions, candidates, or bits.
+Target fields:
 
 ```text
-target_record[t, sample]
+target_state_tokens[t, sample, token]
+target_state_token_mask[t, sample, token]
+target_def_mask[t, sample, def]
 target_choice[t, sample]
 target_score_mask[t, sample]
+```
 
-action_record[t, sample]
+Action fields:
+
+```text
+action_state_tokens[t, sample, token]
+action_state_token_mask[t, sample, token]
+selected_def_index[t, sample]
+action_space_tokens[t, sample, token]
+action_space_token_mask[t, sample, token]
 action_choice[t, sample]
 action_score_mask[t, sample]
+```
 
+Shared row metadata:
+
+```text
 step_case[t, sample]
 diagnostics[t, sample]
 ```
 
-The model spec defines the structure of `target_record`, `action_record`,
-`target_choice`, and `action_choice`.
+`action_choice[t, sample]` is itself a small struct of arrays:
+
+```text
+candidate_index[t, sample]
+left_mask[t, sample, bit]
+left_valid_mask[t, sample, bit]
+right_mask[t, sample, bit]
+right_valid_mask[t, sample, bit]
+```
+
+The model spec defines the scalar meaning of these arrays.
 
 The scalar spec defines which masks are true for each step case.
 
@@ -100,18 +126,18 @@ empty action space    true                 false
 valid action          true                 true
 ```
 
-If a score mask is false, the corresponding input and choice are ignored by loss,
+If a score mask is false, the corresponding arrays and choice are ignored by loss,
 metrics, and score totals.
 
 Masked entries still need safe padded values so model scorers can run over
 rectangular batches without out-of-range indexing or shape errors.
 
-## Immutable Input Requirement
+## Immutable Array Requirement
 
-Stored row inputs are immutable snapshots:
+Stored row arrays are immutable snapshots:
 
-- `target_record` must not reference a mutable `RewriteState`;
-- `action_record` must not require a live `ActionSpace` handle;
+- target arrays must not reference a mutable `RewriteState`;
+- action arrays must not require a live `ActionSpace` handle;
 - stored choices must be plain data;
 - row data must remain scorable after rollout has advanced or finished.
 
@@ -129,7 +155,7 @@ model-facing row batch must provide safe padding for:
 - action-space candidate positions;
 - left/right side term positions;
 - left/right bit sequences;
-- legality masks.
+- definition masks and padding masks.
 
 Padding must obey these rules:
 
@@ -146,7 +172,7 @@ implementation plan.
 The sample index in a row is the column identity:
 
 ```text
-stored_row[t].target_record[s] belongs to sample column s
+stored_row.target_state_tokens[t, s] belongs to sample column s
 ```
 
 Rewards and advantages are computed per sample column and then broadcast to that
@@ -177,7 +203,7 @@ finite padding values because masks exclude them from loss and metrics.
 - Every sample column has at most one target choice per row.
 - Every sample column has at most one action choice per row.
 - `action_score_mask=true` implies `target_score_mask=true`.
-- `action_score_mask=true` implies the corresponding action input and choice are
+- `action_score_mask=true` implies the corresponding action arrays and choice are
   valid for scoring.
 - Masked entries are safe to batch but invisible to objective terms.
 - Row storage does not expose private active-sample scheduling.
@@ -189,7 +215,7 @@ The row table builder should fail clearly when:
 - a row has a different width from previous rows;
 - a true score mask lacks input or choice data;
 - an action score is present without a target score;
-- a stored choice is out of range for its stored input;
+- a stored choice is out of range for its stored arrays;
 - reward or advantage assignment uses a different width than the row table.
 
 ## Testing Requirements
@@ -199,7 +225,7 @@ The row table builder should fail clearly when:
   already-finished samples produces the expected masks.
 - Finished samples remain aligned in later rows.
 - Masked padded values do not affect row loss or metrics.
-- Stored inputs can be scored after all samples finish.
+- Stored arrays can be scored after all samples finish.
 - Reward/advantage arrays align by sample position.
 
 ## Acceptance Criteria

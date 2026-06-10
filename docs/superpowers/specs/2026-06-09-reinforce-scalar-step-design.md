@@ -45,8 +45,7 @@ STOP and empty action spaces behave, and what data is stored for later training.
 
 The scalar step depends on these contracts:
 
-- `TargetRecord`, `ActionRecord`, `TargetChoice`, and `ActionChoice` from the policy
-  model spec.
+- target/action array and choice shapes from the policy model spec.
 - `RewriteState.definition_mask()`, `action_space_for_def`, and
   `step_with_space` from the rewrite-state API.
 
@@ -60,15 +59,21 @@ step_sample(sample_t, policy, rng, rollout_config)
   -> StoredSampleStep
 ```
 
-`StoredSampleStep` is the width-1 form of a stored row:
+`StoredSampleStep` is the width-1 form of the row table arrays:
 
 ```text
 StoredSampleStep {
-  target_record
+  target_state_tokens
+  target_state_token_mask
+  target_def_mask
   target_choice
   target_score_mask
 
-  action_record
+  action_state_tokens
+  action_state_token_mask
+  selected_def_index
+  action_space_tokens
+  action_space_token_mask
   action_choice
   action_score_mask
 
@@ -77,7 +82,7 @@ StoredSampleStep {
 }
 ```
 
-If a score mask is false, the corresponding input and choice are ignored by loss
+If a score mask is false, the corresponding arrays and choice are ignored by loss
 and metrics. They must still contain safe padded values if the implementation
 stores rectangular arrays eagerly.
 
@@ -112,15 +117,15 @@ For an already-finished sample:
 For an active sample:
 
 ```text
-1. Build immutable TargetRecord from the current sample state.
+1. Build immutable target arrays from the current sample state.
 2. Sample STOP or def_index from the target distribution.
-3. Store target record, target choice, and target_score_mask=true.
+3. Store target arrays, target choice, and target_score_mask=true.
 4. If STOP, mark the sample terminal and end the step.
 5. Call action_space_for_def(def_index) for the selected definition only.
 6. If the action space is empty, keep Rust's refined definition mask and end the step.
-7. Build immutable ActionRecord from the current state, selected def_index, and action space.
+7. Build immutable action arrays from the current state, selected def_index, and action space.
 8. Sample candidate_index, left_mask, and right_mask from the action distribution.
-9. Store action record, action choice, and action_score_mask=true.
+9. Store action arrays, action choice, and action_score_mask=true.
 10. Apply the action through step_with_space to produce the next sample state.
 ```
 
@@ -183,15 +188,15 @@ If target selection chooses a definition with a non-empty action space:
 
 ## Immutable Storage Requirements
 
-`TargetRecord` must be captured before exact action-space generation for the
+Target arrays must be captured before exact action-space generation for the
 selected definition mutates the lazy definition mask.
 
-`ActionRecord` must be captured before applying the rewrite. It must contain plain
-immutable data sufficient to score the selected action later. It must not depend
-on the live `ActionSpace` handle remaining valid.
+Action arrays must be captured before applying the rewrite. They must contain
+plain immutable data sufficient to score the selected action later. They must not
+depend on the live `ActionSpace` handle remaining valid.
 
 Rollout may store sampled logp for diagnostics, but training must recompute
-differentiable target/action logp from stored inputs and choices.
+differentiable target/action logp from stored arrays and choices.
 
 ## Scalar REINFORCE Loss Shape
 
@@ -199,10 +204,10 @@ For one sample column, scoring recomputes:
 
 ```text
 target_logp[t] =
-  log p(stored target_choice[t] | stored target_record[t])
+  log p(stored target_choice[t] | stored target arrays[t])
 
 action_logp[t] =
-  log p(stored action_choice[t] | stored action_record[t])
+  log p(stored action_choice[t] | stored action arrays[t])
 ```
 
 The scalar column logp sum is:
@@ -225,7 +230,7 @@ The training spec owns advantage weighting and normalization.
   action choice was sampled.
 - Empty action space does not apply a rewrite.
 - STOP does not generate an action space.
-- Stored inputs are immutable snapshots.
+- Stored arrays are immutable snapshots.
 - Already-finished samples produce no score terms.
 
 ## Error Handling

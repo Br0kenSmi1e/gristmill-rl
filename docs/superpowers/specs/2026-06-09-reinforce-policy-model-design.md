@@ -38,7 +38,7 @@ Target, candidate, and mask decisions are semantic heads over legal choices.
   candidate, left-bit, and right-bit choices.
 - Keep target selection independent from action-space generation.
 - Decode left and right masks as legal bit sequences, not categorical subsets.
-- Store immutable model inputs and choices so training can recompute logp.
+- Store immutable model arrays and choices so training can recompute logp.
 - Support row scoring through padded batches and score masks.
 
 ## Non-Goals
@@ -65,7 +65,7 @@ ActionSpace.snapshot()
 
 Rust remains authoritative for exact action spaces and for validating decisions.
 Python policy code should not infer actionability by inspecting symbolic
-expressions beyond constructing model token records from snapshots and masks
+expressions beyond constructing model token arrays from snapshots and masks
 supplied by the environment.
 
 ## Public Contracts
@@ -74,29 +74,29 @@ supplied by the environment.
 
 The neural model consumes token sequences.
 
-The rollout and trainer also need sidecar data such as legality masks and
-semantic choices. Those sidecars are part of stored scoring records, not separate
-symbolic inputs to the attention model.
+The rollout and trainer also need sidecar arrays such as definition masks and
+semantic choices. Those sidecars are stored in the rollout table, not passed as
+separate symbolic inputs to the attention model.
 
 In this spec:
 
 - target tokens are the model-facing input for target selection;
 - action tokens are the model-facing input for action selection;
-- `TargetRecord` and `ActionRecord` are immutable rollout/scoring records that
-  wrap token sequences plus rollout metadata needed to interpret logits.
+- rollout storage is a struct-of-arrays table containing token matrices, masks,
+  choices, and score masks.
 
-### TargetRecord
+### Target Arrays
 
-`TargetRecord` is an immutable snapshot used for target sampling and scoring:
+One scalar target decision stores:
 
 ```text
-TargetRecord {
-  target_tokens
-  def_mask
-}
+state_tokens: int32[T_state]
+state_token_mask: bool[T_state]
+def_mask: bool[D]
+target_choice: int32[]  # STOP = 0, def i = i + 1
 ```
 
-`target_tokens` are derived from the current symbolic tensor state. They include
+`state_tokens` are derived from the current symbolic tensor state. They include
 definition marker tokens, so the target head can associate logits with
 `def_index` values. An implementation may cache definition positions as tokenizer
 sidecars for efficient pooling, but those positions are derived from the token
@@ -106,35 +106,40 @@ sequence.
 definition logits after the target head runs. STOP is always an available target
 choice and is not controlled by a separate mask.
 
-`TargetRecord` must not contain:
+Target arrays must not contain:
 
 - action-space tokens;
 - candidate information;
 - left/right term information;
 - exact action-space generation results for unselected definitions.
 
-### ActionRecord
+### Action Arrays
 
-`ActionRecord` is an immutable snapshot built only after one target definition has
-been selected and Rust has returned a non-empty `ActionSpace`:
+One scalar action decision stores arrays built only after one target definition
+has been selected and Rust has returned a non-empty `ActionSpace`:
 
 ```text
-ActionRecord {
-  action_tokens
-  selected_def_index
-}
+state_tokens: int32[T_state]
+state_token_mask: bool[T_state]
+selected_def_index: int32[]
+action_space_tokens: int32[T_action]
+action_space_token_mask: bool[T_action]
+candidate_index: int32[]
+left_mask: bool[L]
+left_valid_mask: bool[L]
+right_mask: bool[R]
+right_valid_mask: bool[R]
 ```
 
-`action_tokens` are the model-facing token sequence for action selection. They
-contain the current state context, a selected-definition marker, and the selected
-definition's action-space context. Candidate and side-term boundaries are encoded
-in the token sequence. An implementation may cache candidate positions and side
-term positions as tokenizer sidecars for efficient heads and batching, but those
-positions are derived from `action_tokens`.
+`state_tokens`, `selected_def_index`, and `action_space_tokens` are the
+model-facing action input. Candidate and side-term boundaries are encoded in the
+action-space token sequence. An implementation may cache candidate positions and
+side-term positions as tokenizer sidecars for efficient heads and vectorization,
+but those positions are derived from `action_space_tokens`.
 
-All candidates encoded in `action_tokens` are legal candidates returned by Rust.
-The `ActionRecord` stores enough plain data to score the sampled action later
-without a live `ActionSpace` handle.
+All candidates encoded in `action_space_tokens` are legal candidates returned by
+Rust. The stored arrays contain enough plain data to score the sampled action
+later without a live `ActionSpace` handle.
 
 ### Choices
 
@@ -157,12 +162,12 @@ ActionChoice {
 ```
 
 The left and right masks are stored in the deterministic term order encoded for
-the selected candidate in `ActionRecord.action_tokens`.
+the selected candidate in `action_space_tokens`.
 
 ### Policy API
 
 The policy-facing API should expose scalar JAX functions. Row and batch scoring
-should use `jax.vmap` over these scalar functions after padding records into
+should use `jax.vmap` over these scalar functions after padding stored arrays into
 rectangular arrays.
 
 ```text
@@ -280,7 +285,7 @@ semantic policy heads
 
 ### Token Embedder
 
-The embedder maps structured token records to vectors. It combines:
+The embedder maps structured token arrays to vectors. It combines:
 
 - token kind embedding;
 - numeric payload embeddings or projections;
@@ -358,7 +363,7 @@ logits are produced.
 The categorical distribution is:
 
 ```text
-p(candidate_index | ActionRecord)
+p(candidate_index | state_tokens, selected_def_index, action_space_tokens)
 ```
 
 ### Bit-Sequence Mask Decoder
@@ -398,16 +403,16 @@ The target log probability is:
 
 ```text
 target_logp =
-  log p(target_choice | TargetRecord)
+  log p(target_choice | state_tokens, def_mask)
 ```
 
 The action log probability is:
 
 ```text
 action_logp =
-  log p(candidate_index | ActionRecord)
-+ sum_i log p(left_bit_i | ActionRecord, candidate_index, left_prefix_before_i)
-+ sum_j log p(right_bit_j | ActionRecord, candidate_index, left_mask, right_prefix_before_j)
+  log p(candidate_index | state_tokens, selected_def_index, action_space_tokens)
++ sum_i log p(left_bit_i | state_tokens, selected_def_index, action_space_tokens, candidate_index, left_prefix_before_i)
++ sum_j log p(right_bit_j | state_tokens, selected_def_index, action_space_tokens, candidate_index, left_mask, right_prefix_before_j)
 ```
 
 The full scored step contribution is:
@@ -459,28 +464,36 @@ sampled with probability one regardless of the negative bias.
 
 ## Immutable Storage
 
-Rollout must store immutable data for every scored decision:
+Rollout must store immutable arrays for every scored decision:
 
 ```text
-TargetRecord
-TargetChoice
+state_tokens
+state_token_mask
+def_mask
+target_choice
 target_score_mask
 
-ActionRecord
-ActionChoice
+selected_def_index
+action_space_tokens
+action_space_token_mask
+candidate_index
+left_mask
+left_valid_mask
+right_mask
+right_valid_mask
 action_score_mask
 ```
 
-Stored inputs must not hold live `RewriteState` or `ActionSpace` handles. PyO3
+Stored arrays must not hold live `RewriteState` or `ActionSpace` handles. PyO3
 handles may be used during rollout execution, but training replay must operate on
-plain immutable Python/JAX data derived from snapshots.
+plain immutable Python/JAX arrays derived from snapshots.
 
 This requirement protects scoring from stale action-space handles and from
 mutation of `RewriteState.definition_mask()` during exact-empty refinement.
 
 ## Padding And Vectorization
 
-Before using `jax.vmap`, row or training code pads scalar records into rectangular
+Before using `jax.vmap`, row or training code pads scalar arrays into rectangular
 arrays. Target vectorization pads:
 
 - state token sequences;
@@ -504,7 +517,7 @@ change logp, metrics, or loss for real decisions.
 
 Policy scoring should fail with clear errors when:
 
-- a target choice is illegal under `TargetRecord`;
+- a target choice is outside `STOP + def_index` or selects a masked definition;
 - an action choice is scored with a masked action entry;
 - `candidate_index` is out of range or points to a padded batch slot;
 - a stored bit sequence length does not match the selected candidate side;
@@ -530,7 +543,7 @@ Target model tests:
 - illegal definitions are masked before sampling and scoring;
 - STOP remains available and uses the configured negative initial bias;
 - target scoring matches manual masked-softmax logp on a small fixture;
-- target record construction does not call exact action-space generation.
+- target array construction does not call exact action-space generation.
 
 Action model tests:
 
@@ -544,8 +557,8 @@ Action model tests:
 
 Vectorization tests:
 
-- `jax.vmap(score_target)` over padded records matches scalar target scoring;
-- `jax.vmap(score_action)` over padded records matches scalar action scoring;
+- `jax.vmap(score_target)` over padded arrays matches scalar target scoring;
+- `jax.vmap(score_action)` over padded arrays matches scalar action scoring;
 - masked padded entries do not affect logits used for real choices;
 - width-1 row scoring matches scalar scoring.
 
@@ -556,7 +569,7 @@ Vectorization tests:
 - The policy can sample and score an action for one selected non-empty action
   space.
 - Left and right masks are modeled as bit sequences with exact recomputed logp.
-- Stored target/action inputs are immutable and sufficient for differentiable
+- Stored target/action arrays are immutable and sufficient for differentiable
   rescoring.
 - The policy API supports scalar sampling/scoring and `jax.vmap` row scoring.
 - The implementation can be tested without importing deprecated `gristmill_rl`

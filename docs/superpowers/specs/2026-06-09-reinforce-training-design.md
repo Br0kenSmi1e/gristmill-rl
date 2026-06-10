@@ -146,10 +146,10 @@ Training recomputes:
 
 ```text
 target_logp[t, s] =
-  log p(target_choice[t, s] | target_record[t, s])
+  log p(target_choice[t, s] | target arrays[t, s])
 
 action_logp[t, s] =
-  log p(action_choice[t, s] | action_record[t, s])
+  log p(action_choice[t, s] | action arrays[t, s])
 ```
 
 Only recomputed target/action logp terms are differentiable. Sampled rollout logp
