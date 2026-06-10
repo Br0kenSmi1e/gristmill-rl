@@ -70,9 +70,21 @@ supplied by the environment.
 
 ## Public Contracts
 
-### Model Inputs Are Token Sequences
+### Model Inputs Are Token Representations
 
-The neural model consumes token sequences.
+The neural model consumes JAX-compatible token representations. This spec uses
+`state_tokens` and `action_space_tokens` as short names, but they are not required
+to be raw integer token-id vectors.
+
+```text
+TokenTree[T] =
+  a rectangular JAX pytree whose leaves share leading token axis T
+```
+
+A `TokenTree` may be structured integer fields, projected float features, packed
+numeric payloads, or another rectangular representation accepted by the token
+embedder. Token padding masks remain explicit arrays because attention and
+`jax.vmap` need stable rectangular shapes.
 
 The rollout and trainer also need sidecar arrays such as definition masks and
 semantic choices. Those sidecars are stored in the rollout table, not passed as
@@ -82,7 +94,7 @@ In this spec:
 
 - target tokens are the model-facing input for target selection;
 - action tokens are the model-facing input for action selection;
-- rollout storage is a struct-of-arrays table containing token matrices, masks,
+- rollout storage is a struct-of-arrays table containing token pytrees, masks,
   choices, and score masks.
 
 ### Target Arrays
@@ -90,7 +102,7 @@ In this spec:
 One scalar target decision stores:
 
 ```text
-state_tokens: int32[T_state]
+state_tokens: TokenTree[T_state]
 state_token_mask: bool[T_state]
 def_mask: bool[D]
 target_choice: int32[]  # STOP = 0, def i = i + 1
@@ -119,10 +131,10 @@ One scalar action decision stores arrays built only after one target definition
 has been selected and Rust has returned a non-empty `ActionSpace`:
 
 ```text
-state_tokens: int32[T_state]
+state_tokens: TokenTree[T_state]
 state_token_mask: bool[T_state]
 selected_def_index: int32[]
-action_space_tokens: int32[T_action]
+action_space_tokens: TokenTree[T_action]
 action_space_token_mask: bool[T_action]
 candidate_index: int32[]
 left_mask: bool[L]
@@ -171,20 +183,39 @@ should use `jax.vmap` over these scalar functions after padding stored arrays in
 rectangular arrays.
 
 ```text
-sample_target(params, state_tokens, def_mask, rng)
+sample_target(params, state_tokens, state_token_mask, def_mask, rng)
   -> target_choice
   -> target_logp
 
-score_target(params, state_tokens, def_mask, target_choice)
+score_target(params, state_tokens, state_token_mask, def_mask, target_choice)
   -> target_logp
 
-sample_action(params, state_tokens, selected_def_index, action_space_tokens, rng)
+sample_action(
+  params,
+  state_tokens,
+  state_token_mask,
+  selected_def_index,
+  action_space_tokens,
+  action_space_token_mask,
+  rng,
+)
   -> action_choice
   -> action_logp
 
-score_action(params, state_tokens, selected_def_index, action_space_tokens, action_choice)
+score_action(
+  params,
+  state_tokens,
+  state_token_mask,
+  selected_def_index,
+  action_space_tokens,
+  action_space_token_mask,
+  action_choice,
+)
   -> action_logp
 ```
+
+`state_token_mask` and `action_space_token_mask` are padding/attention masks.
+They are not legality masks. `def_mask` is the target legality mask.
 
 `target_logp` and `action_logp` are scalar JAX values. Sampled logp from rollout
 is diagnostic; training recomputes differentiable logp with the `score_*`
@@ -194,30 +225,36 @@ The intended vectorized scoring shape is:
 
 ```text
 target_logp_batch =
-  jax.vmap(score_target, in_axes=(None, 0, 0, 0))(
+  jax.vmap(score_target, in_axes=(None, 0, 0, 0, 0))(
     params,
     state_tokens_batch,
+    state_token_mask_batch,
     def_mask_batch,
     target_choice_batch,
   )
 
 action_logp_batch =
-  jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0))(
+  jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
     params,
     state_tokens_batch,
+    state_token_mask_batch,
     selected_def_index_batch,
     action_space_tokens_batch,
+    action_space_token_mask_batch,
     action_choice_batch,
   )
 ```
+
+For `TokenTree` arguments, an `in_axes=0` entry means JAX maps every token-tree
+leaf over its leading sample axis.
 
 The policy should not expose a separate public batch API unless a later
 performance design needs one.
 
 ## Tokenization
 
-The tokenizer converts symbolic snapshots to deterministic structured tokens. It
-preserves snapshot order and values:
+The tokenizer is a faithful serializer from symbolic snapshots to deterministic
+JAX-compatible `TokenTree` values. It preserves snapshot order and values:
 
 - ranges;
 - tensors;
@@ -230,8 +267,16 @@ preserves snapshot order and values:
 - factors;
 - factor index lists.
 
-The first implementation may use raw integer IDs as payloads. It should not
-canonicalize IDs, reorder terms, infer graph roles, or simplify symbolic content.
+The tokenizer should not rewrite, canonicalize, optimize, reorder terms, infer
+graph roles, or simplify symbolic content. If the representation includes symbol
+references, generated names, or payload ids, their meaning is scoped to the
+current serialized snapshot. Equal references within one snapshot should remain
+equal in the token representation, but a payload value such as an intermediate
+name id carries no cross-sample semantic identity.
+
+The examples below use readable token names. The implementation may use
+structured integer leaves, float feature leaves, or another rectangular JAX
+pytree accepted by the token embedder.
 
 State tokenization produces:
 
@@ -276,7 +321,7 @@ instead of rediscovering structure from token strings.
 The v1 architecture has five replaceable components:
 
 ```text
-structured tokenizer
+faithful tokenizer
 token embedder
 state attention encoder
 selected action-space attention encoder
@@ -285,10 +330,11 @@ semantic policy heads
 
 ### Token Embedder
 
-The embedder maps structured token arrays to vectors. It combines:
+The embedder maps `TokenTree` leaves to vectors. Depending on the tokenizer
+representation, it may combine:
 
 - token kind embedding;
-- numeric payload embeddings or projections;
+- numeric payload embeddings, projections, or feature projections;
 - position embeddings;
 - segment/type embeddings such as state, definition, action space, candidate,
   left side, right side, and rewritten definition.
@@ -298,7 +344,8 @@ and head inputs should be stable.
 
 ### State Encoder
 
-The state encoder attends over `state_tokens` and returns:
+The state encoder attends over `state_tokens` with `state_token_mask` and
+returns:
 
 ```text
 state_token_embeddings
@@ -337,7 +384,9 @@ After a definition is selected and exact action space is generated, the action
 encoder attends over:
 
 ```text
-state_tokens + selected definition marker + action_space_tokens
+state_tokens + state_token_mask
++ selected definition marker
++ action_space_tokens + action_space_token_mask
 ```
 
 It returns:
@@ -356,14 +405,19 @@ state/action context. Caching is an optimization, not a public contract.
 ### Candidate Head
 
 The candidate head produces one logit per candidate in the selected action
-space. For one scalar sample, every candidate encoded in `action_tokens` is a
-legal candidate. In padded batches, padded candidate slots are masked out after
+space. For one scalar sample, every candidate encoded in `action_space_tokens` is
+a legal candidate. In padded batches, padded candidate slots are masked out after
 logits are produced.
 
 The categorical distribution is:
 
 ```text
-p(candidate_index | state_tokens, selected_def_index, action_space_tokens)
+p(candidate_index |
+  state_tokens,
+  state_token_mask,
+  selected_def_index,
+  action_space_tokens,
+  action_space_token_mask)
 ```
 
 ### Bit-Sequence Mask Decoder
@@ -403,16 +457,23 @@ The target log probability is:
 
 ```text
 target_logp =
-  log p(target_choice | state_tokens, def_mask)
+  log p(target_choice | state_tokens, state_token_mask, def_mask)
 ```
 
 The action log probability is:
 
 ```text
+action_context =
+  state_tokens,
+  state_token_mask,
+  selected_def_index,
+  action_space_tokens,
+  action_space_token_mask
+
 action_logp =
-  log p(candidate_index | state_tokens, selected_def_index, action_space_tokens)
-+ sum_i log p(left_bit_i | state_tokens, selected_def_index, action_space_tokens, candidate_index, left_prefix_before_i)
-+ sum_j log p(right_bit_j | state_tokens, selected_def_index, action_space_tokens, candidate_index, left_mask, right_prefix_before_j)
+  log p(candidate_index | action_context)
++ sum_i log p(left_bit_i | action_context, candidate_index, left_prefix_before_i)
++ sum_j log p(right_bit_j | action_context, candidate_index, left_mask, right_prefix_before_j)
 ```
 
 The full scored step contribution is:
@@ -456,7 +517,8 @@ stop_bias_init ~= -20
 This keeps the target-policy interface simple:
 
 ```text
-state tokens -> raw logits over STOP + defs -> apply def_mask to defs only
+state_tokens + state_token_mask -> raw logits over STOP + defs
+-> apply def_mask to defs only
 ```
 
 When all definitions are masked out, STOP is the only unmasked choice and is
@@ -483,6 +545,10 @@ right_mask
 right_valid_mask
 action_score_mask
 ```
+
+Here `state_tokens` and `action_space_tokens` denote immutable token pytrees. Each
+leaf is stored as a rectangular array with the same row/sample/token leading axes
+as the corresponding token mask.
 
 Stored arrays must not hold live `RewriteState` or `ActionSpace` handles. PyO3
 handles may be used during rollout execution, but training replay must operate on
@@ -532,6 +598,10 @@ silently masked.
 Tokenizer tests:
 
 - state tokenization is deterministic for a fixture computation;
+- tokenization is a faithful serialization and does not rewrite, canonicalize, or
+  simplify symbolic content;
+- repeated snapshot references remain equal within one serialized state, while
+  generated payload ids are not treated as cross-sample semantic identities;
 - `definition_positions` align with tokenized definitions;
 - action-space tokenization is deterministic for a fixture action space;
 - candidate and side-term positions align with candidate snapshots;

@@ -73,10 +73,14 @@ but credit assignment uses sample position.
 For every rollout row `t`, the table stores a struct of arrays. Each field is
 rectangular over the row and sample axes, with extra field-specific axes for
 tokens, definitions, candidates, or bits.
+Fields named `_tokens` are token pytrees: every leaf is a rectangular array with
+`[t, sample, token, ...]` leading axes. The examples below show the shared
+leading axes without prescribing whether the leaves are integer ids, float
+features, or another JAX-compatible representation.
 Target fields:
 
 ```text
-target_state_tokens[t, sample, token]
+target_state_tokens.<leaf>[t, sample, token, ...]
 target_state_token_mask[t, sample, token]
 target_def_mask[t, sample, def]
 target_choice[t, sample]
@@ -86,10 +90,10 @@ target_score_mask[t, sample]
 Action fields:
 
 ```text
-action_state_tokens[t, sample, token]
+action_state_tokens.<leaf>[t, sample, token, ...]
 action_state_token_mask[t, sample, token]
 selected_def_index[t, sample]
-action_space_tokens[t, sample, token]
+action_space_tokens.<leaf>[t, sample, token, ...]
 action_space_token_mask[t, sample, token]
 action_choice[t, sample]
 action_score_mask[t, sample]
@@ -172,7 +176,7 @@ implementation plan.
 The sample index in a row is the column identity:
 
 ```text
-stored_row.target_state_tokens[t, s] belongs to sample column s
+stored_row.target_state_tokens.<leaf>[t, s] belongs to sample column s
 ```
 
 Rewards and advantages are computed per sample column and then broadcast to that

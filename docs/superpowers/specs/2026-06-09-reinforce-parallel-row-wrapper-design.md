@@ -121,19 +121,20 @@ An exact-empty result follows scalar semantics:
 
 ## Stored Row Format
 
-The wrapper stores exactly the row-table fields:
+The wrapper stores exactly the row-table fields. Fields named `_tokens` are token
+pytrees whose leaves share the shown `[t, sample, token, ...]` leading axes:
 
 ```text
-target_state_tokens[t, sample, token]
+target_state_tokens.<leaf>[t, sample, token, ...]
 target_state_token_mask[t, sample, token]
 target_def_mask[t, sample, def]
 target_choice[t, sample]
 target_score_mask[t, sample]
 
-action_state_tokens[t, sample, token]
+action_state_tokens.<leaf>[t, sample, token, ...]
 action_state_token_mask[t, sample, token]
 selected_def_index[t, sample]
-action_space_tokens[t, sample, token]
+action_space_tokens.<leaf>[t, sample, token, ...]
 action_space_token_mask[t, sample, token]
 action_choice[t, sample]
 action_score_mask[t, sample]

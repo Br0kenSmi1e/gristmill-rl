@@ -82,6 +82,10 @@ StoredSampleStep {
 }
 ```
 
+Fields named `_tokens` are token pytrees in the policy-model sense: rectangular
+JAX-compatible leaves plus explicit padding masks, not necessarily raw integer
+token-id vectors.
+
 If a score mask is false, the corresponding arrays and choice are ignored by loss
 and metrics. They must still contain safe padded values if the implementation
 stores rectangular arrays eagerly.

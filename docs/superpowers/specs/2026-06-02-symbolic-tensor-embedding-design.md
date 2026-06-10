@@ -206,9 +206,12 @@ strings, but the conversion must stay faithful:
 - no reordering beyond the snapshot's deterministic order
 - no semantic simplification
 
-Raw integer IDs are allowed as token payloads in this design. If arbitrary IDs
-later hurt generalization, a later design can introduce canonicalized roles or
-another representation.
+Token payloads may be raw snapshot values, local payload ids, numeric features,
+or float feature arrays. The tokenizer is a faithful serializer, not a symbolic
+normalizer: it should preserve snapshot values and order, but it should not give
+generated intermediate names or payload ids cross-sample semantic meaning. If a
+later model needs stronger generalization, that should be handled behind the
+token embedder boundary rather than by silently rewriting symbolic snapshots.
 
 ## Context Wrappers
 
@@ -389,7 +392,8 @@ Constrained decoder
 The tokenizer/context builders own faithful symbolic conversion. They convert
 `TensorComputation`, `TensorDef`, and `ActionSpace` snapshots into structured
 token records, then wrap them as state and state-plus-action-space contexts.
-They do not score choices, sample tokens, or normalize symbolic IDs.
+They do not score choices, sample tokens, normalize symbolic IDs, or assign
+cross-sample meaning to generated payload ids.
 
 The token embedder interface converts structured token records into vectors.
 It combines token-type information, payload fields such as tensor/index/range
@@ -511,7 +515,8 @@ checkpoints, metrics, and training CLI to the later training package.
 
 Tokenizer tests:
 
-- `TensorDef` tokenization preserves snapshot field order and raw IDs.
+- `TensorDef` tokenization preserves snapshot field order and snapshot payload
+  values.
 - coefficients, `sum_indices`, factors, tensor IDs, and factor index lists are
   represented faithfully.
 - state context wraps multiple definitions deterministically.
