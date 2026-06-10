@@ -105,7 +105,7 @@ One scalar target decision stores:
 state_tokens: TokenTree[T_state]
 state_token_mask: bool[T_state]
 def_mask: bool[D]
-target_choice: int32[]  # STOP = 0, def i = i + 1
+target_choice: int32[]  # STOP = -1, def i = i
 ```
 
 `state_tokens` are derived from the current symbolic tensor state. They include
@@ -159,9 +159,14 @@ Target choices are:
 
 ```text
 TargetChoice =
-  STOP
-  def_index
+  -1      # STOP
+  0..D-1  # def_index
 ```
+
+`target_choice` is the stored semantic choice, not the target-head logit index.
+The target head may use internal logit order `[STOP, def0, def1, ...]`; scoring
+maps `target_choice == -1` to logit index `0` and `target_choice >= 0` to
+`target_choice + 1`.
 
 Action choices are Rust-compatible:
 
@@ -583,7 +588,8 @@ change logp, metrics, or loss for real decisions.
 
 Policy scoring should fail with clear errors when:
 
-- a target choice is outside `STOP + def_index` or selects a masked definition;
+- a target choice is neither `-1` nor a valid `def_index`, or selects a masked
+  definition;
 - an action choice is scored with a masked action entry;
 - `candidate_index` is out of range or points to a padded batch slot;
 - a stored bit sequence length does not match the selected candidate side;
@@ -612,6 +618,8 @@ Target model tests:
 - target logits include STOP and all current definitions;
 - illegal definitions are masked before sampling and scoring;
 - STOP remains available and uses the configured negative initial bias;
+- stored `target_choice=-1` scores STOP and `target_choice=k` scores definition
+  `k`;
 - target scoring matches manual masked-softmax logp on a small fixture;
 - target array construction does not call exact action-space generation.
 
