@@ -29,6 +29,8 @@ training loop.
 - Export deterministic action-space snapshots as plain host data for tokenizers.
 - Validate all sampled row actions before mutating any state.
 - Apply validated rewrites through Rust-side row operations.
+- Use Rayon inside Rust for row action-space generation, row action validation,
+  and row rewrite application parallelism.
 - Release the Python GIL around Rust row work that can run independently per
   sample.
 - Provide tests that prove row operations match scalar calls.
@@ -249,16 +251,26 @@ the partially advanced row as invalid and must not use it for training.
 
 ## Parallelism And Boundary Rules
 
-Row action-space generation and row rewrite application should parallelize inside
-Rust over independent sample positions, for example with Rayon. The PyO3 binding
-should release the Python GIL around these Rust sections.
+Row action-space generation, action validation, and rewrite application must use
+Rayon inside Rust to parallelize over independent sample positions. The PyO3
+binding should release the Python GIL around these Rust sections.
+
+Rayon work must preserve row semantics:
+
+- output order stays aligned by sample position;
+- each worker reads or mutates only the owning sample state and matching
+  row-aligned action-space entry;
+- validation remains non-mutating even when it runs in parallel;
+- validation errors include sample position and prevent later rewrite
+  application;
+- rewrite application runs only after full-row validation succeeds.
 
 The binding should not use Python-level threads over individual scalar calls as
 the primary parallelism mechanism.
 
-The first implementation may be serial internally if needed for correctness
-bring-up, but the public API and tests must be compatible with Rust-side
-parallel execution.
+A serial implementation may exist only as a narrow test/debug fallback. The
+implementation path used by the PyO3 row methods must exercise Rayon for row
+action-space generation, validation, and application.
 
 ## Error Handling
 
@@ -294,7 +306,8 @@ Action-space query tests:
 - STOP and inactive entries are skipped;
 - unselected definitions are not queried;
 - exact-empty selected definitions refine only the owning scalar state mask;
-- non-empty action-space snapshots match scalar `ActionSpace.snapshot()`.
+- non-empty action-space snapshots match scalar `ActionSpace.snapshot()`;
+- the PyO3 row query path uses the Rayon-backed Rust implementation.
 
 Validation tests:
 
@@ -302,7 +315,8 @@ Validation tests:
 - invalid candidate indices fail before any state mutation;
 - wrong-length masks fail before any state mutation;
 - empty left or right masks fail before any state mutation;
-- `action_score_mask=false` skips validation for padded or non-action entries.
+- `action_score_mask=false` skips validation for padded or non-action entries;
+- the PyO3 row validation path uses the Rayon-backed Rust implementation.
 
 Application tests:
 
@@ -310,7 +324,8 @@ Application tests:
 - multi-sample validated application mutates only valid-action positions;
 - skipped, STOP, inactive, and exact-empty positions do not apply rewrites;
 - validation failure leaves all row states unchanged;
-- row application reports sample position on failure when possible.
+- row application reports sample position on failure when possible;
+- the PyO3 row application path uses the Rayon-backed Rust implementation.
 
 Binding tests:
 
@@ -332,5 +347,7 @@ Phase 1 is complete when:
 - Row action validation is all-or-nothing and does not mutate state.
 - Validated row rewrite application matches scalar behavior for width-1 and
   mixed multi-sample rows.
+- The PyO3 row query, validation, and application paths use Rayon-backed Rust
+  parallelism.
 - Tests cover STOP, inactive, exact-empty, invalid action, and valid rewrite
   cases without importing the policy model or trainer.

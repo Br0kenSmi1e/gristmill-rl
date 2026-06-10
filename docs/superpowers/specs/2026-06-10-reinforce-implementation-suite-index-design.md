@@ -35,6 +35,7 @@ Builds the Rust-owned row rewrite environment and PyO3 bindings:
 - deterministic row action-space snapshots;
 - row action validation before mutation;
 - row rewrite application;
+- Rayon-backed parallelism for row query, validation, and application;
 - scalar-equivalence tests with injected choices.
 
 This phase does not depend on the policy model or training loop.
