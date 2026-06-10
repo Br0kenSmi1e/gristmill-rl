@@ -76,7 +76,7 @@ tokens, definitions, candidates, or bits.
 Fields named `_tokens` are token pytrees: every leaf is a rectangular array with
 `[t, sample, token, ...]` leading axes. The examples below show the shared
 leading axes without prescribing whether the leaves are integer ids, float
-features, or another JAX-compatible representation.
+features, structural marker leaves, or another JAX-compatible representation.
 Target fields:
 
 ```text
@@ -154,17 +154,16 @@ The row table may contain ragged symbolic structures internally, but any
 model-facing row batch must provide safe padding for:
 
 - token sequences;
-- definition positions;
+- token tree structural marker leaves;
 - target choices;
-- action-space candidate positions;
-- left/right side term positions;
 - left/right bit sequences;
 - definition masks and padding masks.
 
 Padding must obey these rules:
 
 - masked score entries contribute no logp, loss, or metrics;
-- padding indices never point outside padded arrays;
+- padded marker values use safe sentinels such as `-1` and never point to real
+  definitions, candidates, sides, or terms;
 - illegal padded logits are masked before sampling or scoring;
 - sample positions remain stable after padding.
 

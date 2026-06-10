@@ -81,10 +81,30 @@ TokenTree[T] =
   a rectangular JAX pytree whose leaves share leading token axis T
 ```
 
-A `TokenTree` may be structured integer fields, projected float features, packed
-numeric payloads, or another rectangular representation accepted by the token
-embedder. Token padding masks remain explicit arrays because attention and
-`jax.vmap` need stable rectangular shapes.
+A `TokenTree` may contain structured integer fields, projected float features,
+packed numeric payloads, or another rectangular representation accepted by the
+token embedder. It must also contain structural marker leaves sufficient to
+derive model pooling and decoding masks under JAX. A feature-only representation
+is not enough unless structural markers are encoded in separate leaves.
+
+Common state marker leaves:
+
+```text
+token_kind: int32[T]
+def_index: int32[T]  # -1 outside definition tokens
+```
+
+Common action-space marker leaves:
+
+```text
+token_kind: int32[T]
+candidate_index: int32[T]  # -1 outside candidate tokens
+side: int32[T]             # none / left / right / rewritten
+term_index: int32[T]       # -1 outside side-term tokens
+```
+
+Token padding masks remain explicit arrays because attention and `jax.vmap` need
+stable rectangular shapes.
 
 The rollout and trainer also need sidecar arrays such as definition masks and
 semantic choices. Those sidecars are stored in the rollout table, not passed as
@@ -109,10 +129,8 @@ target_choice: int32[]  # STOP = -1, def i = i
 ```
 
 `state_tokens` are derived from the current symbolic tensor state. They include
-definition marker tokens, so the target head can associate logits with
-`def_index` values. An implementation may cache definition positions as tokenizer
-sidecars for efficient pooling, but those positions are derived from the token
-sequence.
+structural marker leaves, such as `def_index`, so the target head can derive
+definition pooling masks and associate logits with `def_index` values.
 
 `def_mask` is the current cheap/lazily-refined definition mask. It is applied to
 definition logits after the target head runs. STOP is always an available target
@@ -144,10 +162,9 @@ right_valid_mask: bool[R]
 ```
 
 `state_tokens`, `selected_def_index`, and `action_space_tokens` are the
-model-facing action input. Candidate and side-term boundaries are encoded in the
-action-space token sequence. An implementation may cache candidate positions and
-side-term positions as tokenizer sidecars for efficient heads and vectorization,
-but those positions are derived from `action_space_tokens`.
+model-facing action input. Candidate and side-term boundaries are encoded by
+structural marker leaves inside the action-space token tree, such as
+`candidate_index`, `side`, and `term_index`.
 
 All candidates encoded in `action_space_tokens` are legal candidates returned by
 Rust. The stored arrays contain enough plain data to score the sampled action
@@ -317,9 +334,11 @@ CAND_END
 ACTION_SPACE_END
 ```
 
-The tokenizer must also return spans or positions for definitions, candidates,
-and candidate side terms. Heads and bit decoders should consume these positions
-instead of rediscovering structure from token strings.
+The tokenizer must encode structural marker leaves in each `TokenTree` so
+definition, candidate, and side-term masks can be mechanically derived under
+JAX. Heads and bit decoders should derive rectangular boolean masks from those
+marker leaves instead of rediscovering structure from token strings or consuming
+separate span sidecars.
 
 ## Architecture
 
@@ -358,9 +377,10 @@ definition_embeddings[def_index]
 global_state_embedding
 ```
 
-`definition_embeddings` are gathered or pooled from definition marker spans in
-the target token sequence. `global_state_embedding` may be a pooled token, an
-explicit summary token, or an attention-pooled vector.
+`definition_token_mask[def_index, token]` is derived from structural marker
+leaves such as `state_tokens.def_index`. `definition_embeddings` are gathered or
+pooled with this rectangular mask. `global_state_embedding` may be a pooled
+token, an explicit summary token, or an attention-pooled vector.
 
 ### Target Head
 
@@ -414,6 +434,9 @@ space. For one scalar sample, every candidate encoded in `action_space_tokens` i
 a legal candidate. In padded batches, padded candidate slots are masked out after
 logits are produced.
 
+`candidate_token_mask[candidate_index, token]` is derived from structural marker
+leaves such as `action_space_tokens.candidate_index`.
+
 The categorical distribution is:
 
 ```text
@@ -453,8 +476,12 @@ p(right_mask | context, candidate, left_mask)
 Bit logits are computed from side term embeddings, the action context, the
 selected candidate embedding, and a compact prefix state. The prefix state may be
 a small recurrent state, an attention over emitted bit embeddings, or a masked
-Transformer over side-term positions. The public requirement is the
+Transformer over side-term token masks. The public requirement is the
 autoregressive legal-bit distribution, not the internal implementation.
+
+`left_term_token_mask[candidate_index, term_index, token]` and
+`right_term_token_mask[candidate_index, term_index, token]` are derived from
+action-space marker leaves such as `candidate_index`, `side`, and `term_index`.
 
 ## Probability And Logp
 
@@ -553,7 +580,8 @@ action_score_mask
 
 Here `state_tokens` and `action_space_tokens` denote immutable token pytrees. Each
 leaf is stored as a rectangular array with the same row/sample/token leading axes
-as the corresponding token mask.
+as the corresponding token mask. Structural marker leaves are stored with the
+same immutability requirement as feature leaves.
 
 Stored arrays must not hold live `RewriteState` or `ActionSpace` handles. PyO3
 handles may be used during rollout execution, but training replay must operate on
@@ -568,7 +596,8 @@ Before using `jax.vmap`, row or training code pads scalar arrays into rectangula
 arrays. Target vectorization pads:
 
 - state token sequences;
-- definition positions;
+- structural marker leaves inside state token trees;
+- derived definition token masks;
 - target choices;
 - definition masks.
 
@@ -576,13 +605,16 @@ Action vectorization pads:
 
 - state/action token sequences;
 - candidates;
-- side term positions;
+- structural marker leaves inside action-space token trees;
+- derived candidate and side-term token masks;
 - stored bit sequences;
 - candidate padding masks for padded batches.
 
 Padding values must be safe for the scalar model functions to process under
-`jax.vmap` and must be masked out before logits are interpreted. Padding must not
-change logp, metrics, or loss for real decisions.
+`jax.vmap` and must be masked out before logits are interpreted. Padded marker
+values must use safe sentinels such as `-1` and must not point to real
+definitions, candidates, sides, or terms. Padding must not change logp, metrics,
+or loss for real decisions.
 
 ## Error Handling
 
@@ -608,9 +640,10 @@ Tokenizer tests:
   simplify symbolic content;
 - repeated snapshot references remain equal within one serialized state, while
   generated payload ids are not treated as cross-sample semantic identities;
-- `definition_positions` align with tokenized definitions;
+- structural marker leaves align with tokenized definitions;
+- derived definition token masks align with tokenized definitions;
 - action-space tokenization is deterministic for a fixture action space;
-- candidate and side-term positions align with candidate snapshots;
+- derived candidate and side-term token masks align with candidate snapshots;
 - tokenization does not query action spaces for unselected definitions.
 
 Target model tests:
