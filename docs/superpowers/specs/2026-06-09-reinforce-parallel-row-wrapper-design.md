@@ -81,7 +81,7 @@ The row wrapper may implement the step in phases:
 2. Build target inputs for active samples.
 3. Batch target sampling where possible.
 4. Scatter STOP samples to stored row and next row.
-5. For selected definitions, query exact action spaces one sample at a time or in a worker pool.
+5. Query selected action spaces through a Rust-side row batch API.
 6. Scatter exact-empty samples to stored row and next row.
 7. Build action inputs for non-empty selected action spaces.
 8. Batch action sampling where possible.
@@ -108,9 +108,30 @@ and compare semantic outputs.
 
 Target selection must not generate action spaces for unselected definitions.
 
-After target sampling, the wrapper may query exact action spaces only for
-selected non-STOP targets. Queries may happen sequentially or in parallel over
-sample positions.
+After target sampling, the wrapper queries exact action spaces only for selected
+non-STOP targets. The intended implementation is a Rust-side row batch query
+over sample positions:
+
+```text
+query_action_spaces_for_row(states, target_choices)
+  -> action_space_result[sample]
+```
+
+The batch query should:
+
+- skip `target_choice == -1` for STOP samples;
+- call `action_space_for_def(target_choice)` only on the owning sample state;
+- parallelize over sample positions inside Rust, for example with Rayon over
+  mutable per-sample states;
+- release the Python GIL around the Rust batch query;
+- preserve output order by sample position;
+- keep exact-empty definition-mask refinement inside the corresponding sample
+  state.
+
+The row wrapper should not use Python-level threads over individual
+`action_space_for_def` calls as the primary parallelism mechanism. A serial Rust
+fallback may exist for debugging, but the implementation target is Rust-side
+row-parallel generation.
 
 An exact-empty result follows scalar semantics:
 
@@ -214,12 +235,17 @@ Errors should include sample position and row index when available.
   samples produces the expected masks.
 - RNG assignment is stable when preceding samples finish.
 - Target selection still does not construct unselected action spaces.
+- Rust-side row action-space batch querying skips STOP samples, preserves sample
+  order, and mutates exact-empty definition masks only on the owning sample
+  state.
 - Row scoring with chunks matches row scoring without chunks.
 - Masked padded values do not affect loss inputs or metrics.
 
 ## Acceptance Criteria
 
 - The row wrapper can step a row of samples over the real `RewriteState`.
+- Selected action spaces are generated through Rust-side row-parallel batch
+  querying while preserving scalar semantics.
 - The stored row matches the row-table contract.
 - The wrapper preserves scalar semantics while allowing private batching.
 - Row scoring returns target/action logp arrays usable by the training spec.
