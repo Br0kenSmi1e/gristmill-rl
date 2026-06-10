@@ -21,6 +21,20 @@ score_row(stored_row_t) -> target/action logp arrays
 The wrapper may privately filter, compact, batch, and scatter active samples, but
 callers only see whole rows with stable sample positions.
 
+The implementation target is a Rust-owned row environment exposed through a
+row-shaped PyO3 binding:
+
+```text
+RewriteStateRow {
+  states: Vec<RewriteState>
+}
+```
+
+The scalar `RewriteState` and `ActionSpace` APIs remain the reference behavior
+for width-1 tests and debugging. Production row rollout should use the row API
+so action-space generation and rewrite application cross the Python/Rust
+boundary once per row.
+
 ## Goals
 
 - Preserve scalar semantics for every sample position.
@@ -39,6 +53,8 @@ callers only see whole rows with stable sample positions.
 - Choosing exact low-level padding sentinel values.
 - Defining reward, advantage, optimizer, or checkpoint behavior.
 - Requiring full environment rollout to be vectorized in JAX.
+- Requiring the first implementation to export Rust-built token arrays directly.
+  Python snapshot tokenization is acceptable for the first runnable path.
 
 ## Row Step Contract
 
@@ -81,16 +97,20 @@ The row wrapper may implement the step in phases:
 2. Build target inputs for active samples.
 3. Batch target sampling where possible.
 4. Scatter STOP samples to stored row and next row.
-5. Query selected action spaces through a Rust-side row batch API.
+5. Query selected action spaces through `RewriteStateRow`.
 6. Scatter exact-empty samples to stored row and next row.
-7. Build action inputs for non-empty selected action spaces.
+7. Build action inputs by tokenizing non-empty `ActionSpaceRow` snapshots.
 8. Batch action sampling where possible.
-9. Apply valid rewrites to their owning samples.
-10. Scatter all results into row_t_plus_1 and stored_row_t.
+9. Validate sampled actions through `RewriteStateRow` without mutating state.
+10. Apply validated rewrites through `RewriteStateRow`.
+11. Scatter all results into row_t_plus_1 and stored_row_t.
 ```
 
 This phase structure is an implementation suggestion, not a public API. Any
 mechanic is acceptable if it preserves scalar equivalence and row-table storage.
+
+Action arrays must be captured before rewrite application mutates the owning
+sample state.
 
 ## Randomness
 
@@ -104,6 +124,57 @@ choices.
 Tests should be able to run width-1 and multi-sample row stepping with fixed RNGs
 and compare semantic outputs.
 
+## Rust Row Environment
+
+The row wrapper should build on two Rust-side row objects:
+
+```text
+RewriteStateRow {
+  states: Vec<RewriteState>
+}
+
+ActionSpaceRow {
+  entries: Vec<ActionSpaceEntry>
+}
+
+ActionSpaceEntry =
+  skipped          # STOP, finished, or inactive sample
+  exact_empty      # selected definition has no exact action space
+  non_empty(ActionSpace)
+```
+
+`ActionSpaceRow` is aligned by sample position. It is a live runtime handle used
+only while executing one row step. It must not be stored in the rollout table and
+training must not depend on it.
+
+The intended Rust/PyO3 surface is:
+
+```text
+RewriteStateRow.query_action_spaces_for_row(target_choices)
+  -> ActionSpaceRow
+
+ActionSpaceRow.snapshots()
+  -> host-side Python data for tokenization/debugging
+
+RewriteStateRow.validate_actions_for_row(action_space_row, action_choices, action_score_mask)
+  -> ValidatedActionRow
+
+RewriteStateRow.apply_validated_actions_for_row(validated_action_row)
+  -> step_result[sample]
+```
+
+`ValidatedActionRow` may contain Rust-only rewrite plans. It is also a live
+runtime handle and must not be stored in the rollout table.
+
+PyO3 should expose row-shaped classes such as `PyRewriteStateRow` and
+`PyActionSpaceRow`. The binding should release the Python GIL around Rust row
+work that can run independently per sample. The binding itself should remain a
+thin bridge; parallelism belongs in Rust.
+
+The scalar `RewriteState.action_space_for_def` and `RewriteState.step_with_space`
+APIs remain available for scalar tests, width-1 equivalence checks, and
+debugging.
+
 ## Action-Space Generation
 
 Target selection must not generate action spaces for unselected definitions.
@@ -113,8 +184,8 @@ non-STOP targets. The intended implementation is a Rust-side row batch query
 over sample positions:
 
 ```text
-query_action_spaces_for_row(states, target_choices)
-  -> action_space_result[sample]
+RewriteStateRow.query_action_spaces_for_row(target_choices)
+  -> ActionSpaceRow
 ```
 
 The batch query should:
@@ -139,6 +210,78 @@ An exact-empty result follows scalar semantics:
 - no action choice is scored;
 - Rust's refined definition mask is kept in that sample state;
 - the sample remains active unless another stopping rule applies.
+
+## Action Input Tokenization And Boundary Movement
+
+For the first runnable implementation, Python may tokenize action spaces from
+`ActionSpaceRow.snapshots()`:
+
+```text
+ActionSpaceRow.snapshots()
+  -> snapshot[sample]
+tokenize_action_space_row(snapshot)
+  -> action_space_tokens.<leaf>[sample, token, ...]
+  -> action_space_token_mask[sample, token]
+```
+
+This tokenization is host-side Python code that produces NumPy/JAX-compatible
+rectangular arrays. JAX must not trace through PyO3 `ActionSpace` or
+`ActionSpaceRow` objects; JAX only consumes the resulting token arrays and masks.
+
+The live `ActionSpaceRow` handle must remain available until validation and
+rewrite application finish:
+
+```text
+action_space_row = query selected action spaces
+action arrays = tokenize action_space_row snapshots
+action choices = jax.vmap(sample_action)(action arrays)
+validated = validate action choices against action_space_row
+apply validated rewrites
+```
+
+The Python/Rust boundary should move only coarse row data:
+
+- Rust to Python/JAX: state snapshots, action-space snapshots, and eventually
+  numeric token/mask arrays;
+- JAX to Rust: compact sampled choices such as `candidate_index`, `left_mask`,
+  and `right_mask` arrays.
+
+The first implementation may use nested Python snapshot data for tokenization,
+matching the current scalar `ActionSpace.snapshot()` style. A later performance
+optimization may move tokenization into Rust and export numeric buffers directly,
+without changing the policy API or row-table storage contract.
+
+## Parallel Rewrite Application
+
+Rewrite application should also happen through the Rust row environment. The row
+wrapper should validate sampled actions for all valid-action samples before any
+sample state is mutated:
+
+```text
+validate_actions_for_row(action_space_row, action_choices, action_score_mask)
+  -> ValidatedActionRow
+
+apply_validated_actions_for_row(validated_action_row)
+  -> step_result[sample]
+```
+
+Validation must:
+
+- skip samples whose `action_score_mask` is false;
+- reject candidate indices outside the corresponding non-empty action space;
+- reject left or right bit sequences with the wrong length;
+- reject empty left or right masks;
+- preserve sample order in errors and results;
+- avoid mutating any `RewriteState`.
+
+Only after validation succeeds should the wrapper apply rewrites. Application
+may parallelize over sample positions inside Rust because each worker mutates
+only its owning `RewriteState`.
+
+If validation fails, no rewrite should be applied for that row. If application
+fails after validation because of an internal state inconsistency, the error
+should include sample position and row index when available; the partially
+advanced row state should be treated as invalid and not reused for training.
 
 ## Stored Row Format
 
@@ -210,7 +353,10 @@ The training spec combines these with per-column advantages.
 - STOP emits target score only.
 - Empty action space emits target score only.
 - Valid action emits target and action scores.
+- Valid action rewrite application happens only after row validation succeeds.
 - Private active-sample compaction is invisible outside the wrapper.
+- Live `ActionSpaceRow` and `ValidatedActionRow` handles are runtime-only and are
+  never stored in rollout tables.
 - RNG assignment is stable by sample position.
 - Score chunks are result-equivalent to scalar scoring.
 
@@ -223,6 +369,8 @@ The wrapper should fail clearly when:
 - vectorized policy output length differs from active input length;
 - row scoring returns arrays with wrong width;
 - a score chunk contains an invalid stored choice.
+- row action validation rejects a sampled choice.
+- row rewrite application fails after validation.
 
 Errors should include sample position and row index when available.
 
@@ -238,6 +386,12 @@ Errors should include sample position and row index when available.
 - Rust-side row action-space batch querying skips STOP samples, preserves sample
   order, and mutates exact-empty definition masks only on the owning sample
   state.
+- `ActionSpaceRow.snapshots()` can be tokenized into rectangular action arrays
+  without exposing live handles to JAX.
+- Row action validation rejects bad candidate or bit-mask choices before any
+  rewrite is applied.
+- Row rewrite application mutates only valid-action sample states and preserves
+  scalar semantics.
 - Row scoring with chunks matches row scoring without chunks.
 - Masked padded values do not affect loss inputs or metrics.
 
@@ -246,6 +400,8 @@ Errors should include sample position and row index when available.
 - The row wrapper can step a row of samples over the real `RewriteState`.
 - Selected action spaces are generated through Rust-side row-parallel batch
   querying while preserving scalar semantics.
+- Valid sampled actions are validated first and then applied through Rust-side
+  row rewrite application.
 - The stored row matches the row-table contract.
 - The wrapper preserves scalar semantics while allowing private batching.
 - Row scoring returns target/action logp arrays usable by the training spec.

@@ -61,6 +61,11 @@ RewriteState.action_space_for_def(def_index)
 RewriteState.step_with_space(action_space, decision)
 RewriteState.snapshot()
 ActionSpace.snapshot()
+
+RewriteStateRow.query_action_spaces_for_row(target_choices)
+ActionSpaceRow.snapshots()
+RewriteStateRow.validate_actions_for_row(action_space_row, action_choices, action_score_mask)
+RewriteStateRow.apply_validated_actions_for_row(validated_action_row)
 ```
 
 Rust remains authoritative for exact action spaces and for validating decisions.
@@ -102,6 +107,11 @@ candidate_index: int32[T]  # -1 outside candidate tokens
 side: int32[T]             # none / left / right / rewritten
 term_index: int32[T]       # -1 outside side-term tokens
 ```
+
+If the action-space snapshot exposes candidate graph or incidence metadata, the
+token tree may also include marker leaves such as `edge_index`,
+`left_term_index`, `right_term_index`, or `source_term_index`. These are still
+model-input markers, not separate public legality masks.
 
 Token padding masks remain explicit arrays because attention and `jax.vmap` need
 stable rectangular shapes.
@@ -289,12 +299,13 @@ JAX-compatible `TokenTree` values. It preserves snapshot order and values:
 - factors;
 - factor index lists.
 
-The tokenizer should not rewrite, canonicalize, optimize, reorder terms, infer
-graph roles, or simplify symbolic content. If the representation includes symbol
-references, generated names, or payload ids, their meaning is scoped to the
-current serialized snapshot. Equal references within one snapshot should remain
-equal in the token representation, but a payload value such as an intermediate
-name id carries no cross-sample semantic identity.
+The tokenizer should not rewrite, canonicalize, optimize, reorder terms,
+simplify symbolic content, or infer action-space structure that is not exposed by
+the snapshot. If the representation includes symbol references, generated names,
+or payload ids, their meaning is scoped to the current serialized snapshot. Equal
+references within one snapshot should remain equal in the token representation,
+but a payload value such as an intermediate name id carries no cross-sample
+semantic identity.
 
 The examples below use readable token names. The implementation may use
 structured integer leaves, float feature leaves, or another rectangular JAX
@@ -320,15 +331,30 @@ Action-space tokenization produces:
 ```text
 ACTION_SPACE_START selected_def_index=i
 CAND_START candidate_index=0
+
 LEFT_DEF_START
-TensorDef(left_definition)
+left definition base tensor and external indices
+LEFT_TERM_START term_index=0
+Term(left_definition.terms[0])
+LEFT_TERM_END
+LEFT_TERM_START term_index=1
+Term(left_definition.terms[1])
+LEFT_TERM_END
 LEFT_DEF_END
+
 RIGHT_DEF_START
-TensorDef(right_definition)
+right definition base tensor and external indices
+RIGHT_TERM_START term_index=0
+Term(right_definition.terms[0])
+RIGHT_TERM_END
 RIGHT_DEF_END
+
 REWRITTEN_DEF_START
 TensorDef(rewritten_definition)
 REWRITTEN_DEF_END
+
+optional candidate edge/incidence tokens
+
 CAND_END
 ...
 ACTION_SPACE_END
@@ -339,6 +365,25 @@ definition, candidate, and side-term masks can be mechanically derived under
 JAX. Heads and bit decoders should derive rectangular boolean masks from those
 marker leaves instead of rediscovering structure from token strings or consuming
 separate span sidecars.
+
+The first runnable implementation may tokenize action spaces in Python from
+`ActionSpace.snapshot()` or `ActionSpaceRow.snapshots()` host-side data. The
+result must still be rectangular JAX-compatible token arrays before entering the
+policy model. JAX must never trace through live PyO3 action-space objects.
+
+The action-space snapshot must expose a deterministic candidate order and
+deterministic side-term order. The stored `candidate_index`, `left_mask`, and
+`right_mask` arrays are interpreted against that order:
+
+```text
+candidate_index == index in the snapshot's deterministic candidate order
+left_mask[j]     == decision for selected candidate left term j
+right_mask[j]    == decision for selected candidate right term j
+```
+
+Rust keeps the live `ActionSpace` or `ActionSpaceRow` handle for validation and
+rewrite application. Token arrays are immutable model inputs; they are not used
+to reconstruct the live action space.
 
 ## Architecture
 
@@ -587,6 +632,11 @@ Stored arrays must not hold live `RewriteState` or `ActionSpace` handles. PyO3
 handles may be used during rollout execution, but training replay must operate on
 plain immutable Python/JAX arrays derived from snapshots.
 
+For row rollout, `ActionSpaceRow` and any validated-action handle are
+runtime-only. They may exist between action-space generation and rewrite
+application, but they must be discarded after the row step and must not appear in
+row-table storage.
+
 This requirement protects scoring from stale action-space handles and from
 mutation of `RewriteState.definition_mask()` during exact-empty refinement.
 
@@ -643,6 +693,9 @@ Tokenizer tests:
 - structural marker leaves align with tokenized definitions;
 - derived definition token masks align with tokenized definitions;
 - action-space tokenization is deterministic for a fixture action space;
+- action-space row tokenization from `ActionSpaceRow.snapshots()` produces the
+  same scalar token arrays as tokenizing each non-empty scalar action-space
+  snapshot independently;
 - derived candidate and side-term token masks align with candidate snapshots;
 - tokenization does not query action spaces for unselected definitions.
 

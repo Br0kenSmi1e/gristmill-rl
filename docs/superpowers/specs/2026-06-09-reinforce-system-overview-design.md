@@ -151,9 +151,14 @@ The policy owns:
 The rewrite environment owns:
 
 - `RewriteState`;
+- `RewriteStateRow` as a row-owned collection of scalar rewrite states;
 - definition masks and lazy exact refinement;
 - exact action-space generation for one selected definition;
+- row-parallel exact action-space generation for selected definitions;
+- live `ActionSpace` and row-aligned `ActionSpaceRow` handles during rollout;
+- action-choice validation before row rewrite application;
 - rewrite application;
+- row-parallel rewrite application after validation;
 - final or intermediate cost evaluation.
 
 The trainer owns:
@@ -168,7 +173,9 @@ The row wrapper owns:
 
 - applying scalar semantics to all sample positions in one row;
 - preserving row width and column alignment;
-- hiding active-sample filtering, compaction, and scatter mechanics.
+- hiding active-sample filtering, compaction, and scatter mechanics;
+- coordinating `RewriteStateRow`, `ActionSpaceRow`, policy sampling, action
+  validation, and row rewrite application.
 
 ## End-To-End Data Flow
 
@@ -177,8 +184,15 @@ One optimizer update follows this flow:
 ```text
 initial computations
   -> initialize one RewriteState per sample
-  -> collect rows until all samples finish or max_steps is reached
-  -> store immutable target/action row data and masks
+  -> repeat row steps until all samples finish or max_steps is reached:
+       build and store immutable target arrays
+       sample targets with jax.vmap
+       query selected row action spaces through RewriteStateRow
+       tokenize non-empty action-space snapshots into immutable action arrays
+       sample actions with jax.vmap
+       validate sampled actions before mutating rewrite states
+       apply validated rewrites through RewriteStateRow
+       store immutable action choices and score masks
   -> compute reward per sample column
   -> compute advantages over the logical batch
   -> score stored target/action choices in bounded chunks
@@ -199,9 +213,11 @@ The recommended implementation order is:
 3. Scalar rollout step using the real `RewriteState`.
 4. Width-1 REINFORCE loss with deterministic fake advantages.
 5. Rectangular row storage.
-6. Multi-sample row stepping with scalar-equivalence tests.
-7. Row scoring and score chunks.
-8. Full training update with reward, baseline, optimizer, metrics, and
+6. Rust/PyO3 row environment wrappers for `RewriteStateRow` and
+   `ActionSpaceRow`.
+7. Multi-sample row stepping with scalar-equivalence tests.
+8. Row scoring and score chunks.
+9. Full training update with reward, baseline, optimizer, metrics, and
    checkpointing.
 
 This order makes semantic bugs visible before adding parallel mechanics.
@@ -218,6 +234,10 @@ This order makes semantic bugs visible before adding parallel mechanics.
 - Sample position is the only column identity used for reward assignment.
 - A sampled action can be scored later without holding live PyO3 `ActionSpace` or
   `RewriteState` handles.
+- Live `ActionSpaceRow` and validated-action handles are runtime-only and never
+  stored in rollout tables.
+- Row rewrite application validates all sampled actions before mutating any
+  sample state.
 - `STOP`, empty action space, valid action, and already-finished cases have the
   same mask semantics in scalar and row execution.
 - Baseline and advantage values are treated as stop-gradient constants.
@@ -232,6 +252,8 @@ Implementation should fail early for contract violations:
 - missing immutable input data for a true score mask;
 - non-safe padded values causing scorer indexing errors;
 - row width changes across rollout;
+- row action validation fails before rewrite application;
+- row rewrite application fails after validation;
 - reward or advantage arrays whose length differs from row width.
 
 These should be explicit exceptions or test failures, not silent dropped samples.
@@ -242,6 +264,8 @@ The implementation plan should include tests at three levels:
 
 - Contract tests for tokenization, masks, shapes, and scalar step cases.
 - Equivalence tests showing row stepping matches independent scalar stepping.
+- Boundary tests showing row action-space snapshots tokenize to arrays and live
+  action-space handles are not needed for later scoring.
 - End-to-end smoke tests proving a tiny training update recomputes logp,
   produces finite loss, changes parameters for nonzero advantage, and writes a
   checkpoint.
