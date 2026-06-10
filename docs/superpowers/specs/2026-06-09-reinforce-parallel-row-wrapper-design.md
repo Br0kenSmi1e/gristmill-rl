@@ -192,7 +192,7 @@ The wrapper should fail clearly when:
 
 - scalar stepping one sample fails;
 - a compacted result cannot be scattered to its original sample position;
-- batched policy output length differs from active input length;
+- vectorized policy output length differs from active input length;
 - row scoring returns arrays with wrong width;
 - a score chunk contains an invalid stored choice.
 

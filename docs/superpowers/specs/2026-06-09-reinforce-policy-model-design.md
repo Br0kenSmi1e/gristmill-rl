@@ -161,26 +161,53 @@ the selected candidate in `ActionRecord.action_tokens`.
 
 ### Policy API
 
-The policy-facing API should expose semantic sampling and scoring:
+The policy-facing API should expose scalar JAX functions. Row and batch scoring
+should use `jax.vmap` over these scalar functions after padding records into
+rectangular arrays.
 
 ```text
-sample_target(TargetRecord, rng) -> TargetSample
-score_target(TargetRecord, TargetChoice) -> target_logp
+sample_target(params, state_tokens, def_mask, rng)
+  -> target_choice
+  -> target_logp
 
-sample_action(ActionRecord, rng) -> ActionSample
-score_action(ActionRecord, ActionChoice) -> action_logp
+score_target(params, state_tokens, def_mask, target_choice)
+  -> target_logp
+
+sample_action(params, state_tokens, selected_def_index, action_space_tokens, rng)
+  -> action_choice
+  -> action_logp
+
+score_action(params, state_tokens, selected_def_index, action_space_tokens, action_choice)
+  -> action_logp
 ```
 
-The row wrapper may call batched variants:
+`target_logp` and `action_logp` are scalar JAX values. Sampled logp from rollout
+is diagnostic; training recomputes differentiable logp with the `score_*`
+functions.
+
+The intended vectorized scoring shape is:
 
 ```text
-sample_target_batch(padded_target_records, rngs)
-score_target_batch(padded_target_records, target_choices)
-sample_action_batch(padded_action_records, rngs)
-score_action_batch(padded_action_records, action_choices)
+target_logp_batch =
+  jax.vmap(score_target, in_axes=(None, 0, 0, 0))(
+    params,
+    state_tokens_batch,
+    def_mask_batch,
+    target_choice_batch,
+  )
+
+action_logp_batch =
+  jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0))(
+    params,
+    state_tokens_batch,
+    selected_def_index_batch,
+    action_space_tokens_batch,
+    action_choice_batch,
+  )
 ```
 
-Batched variants must preserve the same semantics as the scalar functions.
+The policy should not expose a separate public batch API unless a later
+performance design needs one.
 
 ## Tokenization
 
@@ -451,16 +478,17 @@ plain immutable Python/JAX data derived from snapshots.
 This requirement protects scoring from stale action-space handles and from
 mutation of `RewriteState.definition_mask()` during exact-empty refinement.
 
-## Padding And Batching
+## Padding And Vectorization
 
-Batched target scoring pads:
+Before using `jax.vmap`, row or training code pads scalar records into rectangular
+arrays. Target vectorization pads:
 
 - state token sequences;
 - definition positions;
 - target choices;
 - definition masks.
 
-Batched action scoring pads:
+Action vectorization pads:
 
 - state/action token sequences;
 - candidates;
@@ -468,9 +496,9 @@ Batched action scoring pads:
 - stored bit sequences;
 - candidate padding masks for padded batches.
 
-Padding values must be safe for the model to process and must be masked out
-before logits are interpreted. Padding must not change logp, metrics, or loss for
-real decisions.
+Padding values must be safe for the scalar model functions to process under
+`jax.vmap` and must be masked out before logits are interpreted. Padding must not
+change logp, metrics, or loss for real decisions.
 
 ## Error Handling
 
@@ -514,10 +542,10 @@ Action model tests:
 - scoring an illegal empty mask fails;
 - sampled action choices can be applied through `RewriteState.step_with_space`.
 
-Batching tests:
+Vectorization tests:
 
-- padded target batches match scalar target scoring;
-- padded action batches match scalar action scoring;
+- `jax.vmap(score_target)` over padded records matches scalar target scoring;
+- `jax.vmap(score_action)` over padded records matches scalar action scoring;
 - masked padded entries do not affect logits used for real choices;
 - width-1 row scoring matches scalar scoring.
 
@@ -530,6 +558,6 @@ Batching tests:
 - Left and right masks are modeled as bit sequences with exact recomputed logp.
 - Stored target/action inputs are immutable and sufficient for differentiable
   rescoring.
-- The policy API supports scalar and batched row scoring.
+- The policy API supports scalar sampling/scoring and `jax.vmap` row scoring.
 - The implementation can be tested without importing deprecated `gristmill_rl`
   policy APIs.
