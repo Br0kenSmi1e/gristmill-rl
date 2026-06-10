@@ -6,14 +6,22 @@ Feeds implementation plan: yes
 
 ## Summary
 
-This spec defines the first implementation phase for the REINFORCE system: a
-Rust-owned row rewrite environment exposed through PyO3.
+This spec defines the first implementation phase for the REINFORCE system: thin
+Rust/PyO3 row wrappers over the existing scalar rewrite API.
 
-The row environment batches the rewrite-kernel operations needed during rollout:
-selected action-space generation, action-space snapshot export, sampled action
-validation, and rewrite application. It preserves scalar `RewriteState` behavior
-for every sample position while crossing the Python/Rust boundary once per row
-operation.
+The row environment is not a new rewrite subsystem. It batches existing
+`src/rewrite.rs` operations with Rayon:
+
+```text
+RewriteState::action_space_for_def
+validate_decision
+RewriteState::step_with_space
+ActionSpace snapshot conversion used by PyO3
+RewriteState snapshot/cost helpers used by PyO3
+```
+
+It preserves scalar `RewriteState` behavior for every sample position while
+crossing the Python/Rust boundary once per row operation.
 
 This phase intentionally uses injected target and action choices in tests. It
 does not require the policy model, rollout table, reward logic, optimizer, or
@@ -21,14 +29,17 @@ training loop.
 
 ## Goals
 
-- Add row-owned Rust structures for batched rewrite-state operations.
+- Add row-owned Rust structures as thin wrappers around `Vec<RewriteState>`,
+  row-aligned `ActionSpace` entries, and row-aligned validated `Decision`
+  entries.
 - Preserve scalar rewrite behavior for every sample position.
 - Query exact action spaces only for selected, non-STOP definitions.
 - Preserve sample order and row width across all row operations.
 - Keep exact-empty definition-mask refinement inside the owning scalar state.
 - Export deterministic action-space snapshots as plain host data for tokenizers.
 - Validate all sampled row actions before mutating any state.
-- Apply validated rewrites through Rust-side row operations.
+- Apply validated rewrites by calling the existing scalar `step_with_space` on
+  each owning state.
 - Use Rayon inside Rust for row action-space generation, row action validation,
   and row rewrite application parallelism.
 - Release the Python GIL around Rust row work that can run independently per
@@ -43,6 +54,8 @@ training loop.
 - Moving tokenization into Rust.
 - Defining model padding sentinels or policy logits.
 - Replacing scalar `RewriteState` and `ActionSpace` APIs.
+- Adding a second rewrite planner, new action-space semantics, or a separate row
+  rewrite algorithm.
 - Guaranteeing transactional recovery after an internal rewrite-application bug.
 
 ## Public Vocabulary
@@ -90,13 +103,22 @@ ActionSpaceEntry =
 ValidatedActionRow {
   entries: Vec<ValidatedActionEntry>
 }
+
+ValidatedActionEntry =
+  skipped
+  valid(Decision)
 ```
 
 `ActionSpaceRow` and `ValidatedActionRow` are live runtime handles. They must
 not be stored in rollout data or exposed to JAX.
 
-The scalar `RewriteState` and `ActionSpace` APIs remain available for scalar
-tests, width-1 equivalence checks, and debugging.
+These row structures should live in or near `src/rewrite.rs` so they can reuse
+the existing scalar types and validation helper directly. If the row code lives
+outside `rewrite.rs`, expose only the smallest required validation surface rather
+than duplicating `validate_decision`.
+
+The scalar `RewriteState`, `ActionSpace`, and `Decision` APIs remain the
+authoritative behavior for row tests, width-1 equivalence checks, and debugging.
 
 ## PyO3 Surface
 
@@ -147,7 +169,10 @@ PyRewriteStateRow.apply_validated_actions_for_row(validated_action_row)
 ```
 
 The concrete Python object shapes may follow existing binding conventions, but
-the semantic inputs and outputs above are required.
+the semantic inputs and outputs above are required. PyO3 code should parse Python
+target/action choices into the existing Rust scalar types, call the Rust row
+wrapper methods, and convert snapshots with the same conversion helpers used by
+the scalar bindings.
 
 ## Target Choice Contract
 
@@ -168,8 +193,9 @@ For each sample position:
   `non_empty(ActionSpace)`;
 - if `target_choice` is out of range or masked by the scalar state, fail clearly.
 
-The method must call scalar action-space generation only for selected,
-non-STOP, active entries. It must never query unselected definitions.
+The method must be a Rayon iterator over sample positions that calls
+`RewriteState::action_space_for_def` only for selected, non-STOP, active entries.
+It must never query unselected definitions.
 
 ## Exact-Empty Semantics
 
@@ -235,15 +261,19 @@ clearly with sample position information.
 
 ## Validation Before Mutation
 
-`validate_actions_for_row` must not mutate any `RewriteState`.
+`validate_actions_for_row` must be a Rayon iterator over row action entries that
+reuses the scalar `validate_decision` behavior and does not mutate any
+`RewriteState`.
 
 If any scored action choice is invalid, validation fails and no rewrite is
 applied for the row. This all-or-nothing validation boundary protects rollout
 from partially applying a row after one bad sampled action.
 
-`apply_validated_actions_for_row` may mutate states only after validation has
-succeeded for the row. Application mutates each owning scalar `RewriteState` for
-valid-action entries and skips all other entries.
+`ValidatedActionRow` should store validated scalar `Decision` values, not a new
+row-specific rewrite plan. `apply_validated_actions_for_row` may mutate states
+only after validation has succeeded for the row. Application mutates each owning
+scalar `RewriteState` by calling `step_with_space` with the corresponding
+`ActionSpace` and validated `Decision`; it skips all other entries.
 
 If application fails after validation because of an internal state inconsistency,
 the error must include the sample position when available. The caller must treat
@@ -263,7 +293,9 @@ Rayon work must preserve row semantics:
 - validation remains non-mutating even when it runs in parallel;
 - validation errors include sample position and prevent later rewrite
   application;
-- rewrite application runs only after full-row validation succeeds.
+- rewrite application runs only after full-row validation succeeds;
+- row code delegates legality and mutation semantics to existing scalar
+  functions instead of reimplementing them.
 
 The binding should not use Python-level threads over individual scalar calls as
 the primary parallelism mechanism.
@@ -312,6 +344,7 @@ Action-space query tests:
 Validation tests:
 
 - valid injected choices produce a `ValidatedActionRow`;
+- validation accepts and rejects the same choices as scalar `validate_decision`;
 - invalid candidate indices fail before any state mutation;
 - wrong-length masks fail before any state mutation;
 - empty left or right masks fail before any state mutation;
@@ -322,6 +355,7 @@ Application tests:
 
 - width-1 validated application matches scalar `step_with_space`;
 - multi-sample validated application mutates only valid-action positions;
+- row application delegates each valid rewrite to scalar `step_with_space`;
 - skipped, STOP, inactive, and exact-empty positions do not apply rewrites;
 - validation failure leaves all row states unchanged;
 - row application reports sample position on failure when possible;
@@ -338,15 +372,18 @@ Binding tests:
 
 Phase 1 is complete when:
 
-- `RewriteStateRow`, `ActionSpaceRow`, and `ValidatedActionRow` exist in Rust.
+- `RewriteStateRow`, `ActionSpaceRow`, and `ValidatedActionRow` exist in Rust as
+  thin wrappers around existing scalar rewrite types.
 - PyO3 exposes the row methods needed by later phases.
-- Row action-space queries skip STOP and inactive samples, preserve sample order,
-  and query only selected definitions.
+- Row action-space queries use Rayon over existing `action_space_for_def` calls,
+  skip STOP and inactive samples, preserve sample order, and query only selected
+  definitions.
 - Exact-empty selected definitions refine only the owning scalar state.
 - Action-space snapshots are deterministic plain host data.
-- Row action validation is all-or-nothing and does not mutate state.
-- Validated row rewrite application matches scalar behavior for width-1 and
-  mixed multi-sample rows.
+- Row action validation uses Rayon over scalar `validate_decision` semantics, is
+  all-or-nothing, and does not mutate state.
+- Validated row rewrite application uses Rayon over scalar `step_with_space`
+  calls and matches scalar behavior for width-1 and mixed multi-sample rows.
 - The PyO3 row query, validation, and application paths use Rayon-backed Rust
   parallelism.
 - Tests cover STOP, inactive, exact-empty, invalid action, and valid rewrite
