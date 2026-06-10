@@ -30,7 +30,7 @@ with snapshots from the row environment.
 - Implement target sampling and target scoring.
 - Implement action sampling and action scoring.
 - Decode left and right masks as constrained bit sequences.
-- Support padded `jax.vmap` scoring for rows and chunks.
+- Support padded `jax.vmap` sampling and scoring for rows and chunks.
 - Make immediate STOP rare through model initialization, not trainer masking.
 - Fail clearly for illegal stored choices.
 
@@ -188,6 +188,11 @@ They are not legality masks. `def_mask` is the target legality mask.
 Sampled rollout logp is diagnostic. Training must recompute differentiable logp
 with the `score_*` functions from stored arrays and choices.
 
+Row-level policy sampling is expected to parallelize through `jax.vmap` over the
+scalar `sample_*` functions. Rollout code should provide row-aligned arrays and
+one RNG key per sampled row entry, then call the vectorized sampler instead of a
+Python loop over samples.
+
 ## Tokenization
 
 The tokenizer is a faithful serializer from snapshots to deterministic token
@@ -319,7 +324,8 @@ Target vectorization pads:
 - state token-tree leaves;
 - state token masks;
 - definition masks;
-- target choices.
+- target choices for scoring;
+- RNG keys for sampling.
 
 Action vectorization pads:
 
@@ -327,18 +333,27 @@ Action vectorization pads:
 - action-space token-tree leaves;
 - token masks;
 - selected definition indices;
-- candidate choices;
+- candidate choices for scoring;
 - left and right bit sequences;
-- left and right valid masks.
+- left and right valid masks;
+- RNG keys for sampling.
 
 Padding values must be safe for scalar model functions under `jax.vmap`.
 Structural marker padding uses sentinels such as `-1` that do not point to real
 definitions, candidates, sides, or terms.
 
 Masked score entries contribute no logp, loss, or metrics. Padding must not
-change logp for real decisions.
+change logp for real decisions. Sampling masks must ensure padded entries do not
+produce choices that are interpreted as real rollout decisions.
 
-## Row And Chunk Scoring
+## Row Sampling And Chunk Scoring
+
+The intended row sampling shape is:
+
+```text
+jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))
+jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))
+```
 
 The intended row scoring shape is:
 
@@ -350,8 +365,10 @@ jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0, 0, 0))
 For `TokenTree` arguments, `in_axes=0` maps every token-tree leaf over its
 leading sample axis.
 
-Scoring code may split rows into chunks for memory control. Chunking must return
-the same logp values as scoring the full row at once.
+Sampling and scoring code may split rows into chunks for memory control.
+Chunking must return the same logp values as scoring the full row at once.
+Sampling with chunks must preserve the same per-sample RNG-key assignment as
+unchunked row sampling.
 
 ## Error Handling
 
@@ -404,9 +421,15 @@ Action tests:
 
 Vectorization tests:
 
+- `jax.vmap(sample_target)` over padded arrays returns row-aligned target choices
+  and sampled logp;
+- `jax.vmap(sample_action)` over padded arrays returns row-aligned action choices
+  and sampled logp;
 - `jax.vmap(score_target)` over padded arrays matches scalar target scoring;
 - `jax.vmap(score_action)` over padded arrays matches scalar action scoring;
 - masked padded entries do not affect real-choice logp;
+- masked padded entries are not interpreted as real sampled choices;
+- chunked sampling preserves row-aligned RNG assignment;
 - chunked scoring matches unchunked scoring;
 - width-1 row scoring matches scalar scoring.
 
@@ -421,7 +444,10 @@ Phase 2 is complete when:
 - scalar action sampling and scoring work for selected non-empty action spaces;
 - left and right masks are modeled as constrained bit sequences;
 - stored target/action arrays are immutable plain data sufficient for rescoring;
+- padded `jax.vmap` sampling returns row-aligned target/action choices and
+  sampled logp;
 - padded `jax.vmap` scoring matches scalar scoring;
+- chunked sampling preserves row-aligned RNG assignment;
 - chunked scoring matches unchunked scoring;
 - STOP bias initialization is implemented and tested;
 - tests do not require the trainer or deprecated policy APIs.
