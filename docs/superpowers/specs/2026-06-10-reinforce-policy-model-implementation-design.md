@@ -78,6 +78,82 @@ term_index: int32[T]       # -1 outside side-term tokens
 Padding masks remain explicit arrays because attention and `jax.vmap` need
 stable rectangular shapes.
 
+## Concrete TokenTree Encoding
+
+The first implementation should represent a token position as a typed record of
+fields, stored column-wise as a JAX pytree. A token is not one vocabulary id.
+
+For one scalar state:
+
+```text
+state_tokens = {
+  token_kind: int32[T],
+  segment: int32[T],
+  def_index: int32[T],
+  term_index: int32[T],
+  factor_index: int32[T],
+  tensor_id: int32[T],
+  range_id: int32[T],
+  index_id: int32[T],
+  coeff_num: int32[T],
+  coeff_den: int32[T],
+  position: int32[T],
+}
+```
+
+For one scalar action space:
+
+```text
+action_space_tokens = {
+  token_kind: int32[T],
+  segment: int32[T],
+  candidate_index: int32[T],
+  side: int32[T],
+  term_index: int32[T],
+  factor_index: int32[T],
+  tensor_id: int32[T],
+  range_id: int32[T],
+  index_id: int32[T],
+  coeff_num: int32[T],
+  coeff_den: int32[T],
+  position: int32[T],
+}
+```
+
+The exact field set may grow if implementation needs more structural markers,
+but v1 should start with this columnar field-record representation. Row batches
+add a leading sample axis to every leaf:
+
+```text
+state_tokens.token_kind[sample, token]
+action_space_tokens.candidate_index[sample, token]
+```
+
+Sentinel values such as `-1` mark fields that are not meaningful for a token.
+Sentinels must not point to real definitions, candidates, tensors, ranges,
+indices, terms, factors, sides, or segments.
+
+Ids are scoped to the current snapshot. Equal ids within one snapshot should
+remain equal in the token fields so the model can learn local reference
+structure. The same numeric id in unrelated samples must not be treated as the
+same global semantic object.
+
+Example factor serialization:
+
+```text
+Factor { tensor: 7, indices: [2, 5, 8] }
+
+FACTOR_START  tensor_id=7
+FACTOR_INDEX  index_id=2
+FACTOR_INDEX  index_id=5
+FACTOR_INDEX  index_id=8
+FACTOR_END
+```
+
+The tokenizer may emit additional `DEF_START`, `TERM_START`, `COEFF`,
+`SUM_INDEX`, and matching end-marker tokens as needed to preserve snapshot
+structure.
+
 ## Target Arrays
 
 One scalar target decision stores:
@@ -249,9 +325,34 @@ selected action-space attention encoder
 semantic policy heads
 ```
 
-The token embedder maps token-tree leaves to vectors. It may combine token kind
-embeddings, numeric projections, position embeddings, and segment/type
-embeddings.
+The token embedder maps token-tree leaves to one dense vector per token position.
+It should compose field embeddings and numeric projections, for example:
+
+```text
+x[t] =
+  embed_token_kind(token_kind[t])
++ embed_segment(segment[t])
++ embed_side(side[t])
++ embed_scoped_tensor_id(tensor_id[t])
++ embed_scoped_range_id(range_id[t])
++ embed_scoped_index_id(index_id[t])
++ embed_def_index(def_index[t])
++ embed_candidate_index(candidate_index[t])
++ project_numeric(coeff_num[t], coeff_den[t], position[t])
+```
+
+Sentinel field values contribute zero for that field. The output of the embedder
+is a dense array:
+
+```text
+embedded_tokens[token, d_model]
+```
+
+For row batches, the output is:
+
+```text
+embedded_tokens[sample, token, d_model]
+```
 
 The state encoder attends over `state_tokens` with `state_token_mask` and
 returns:
