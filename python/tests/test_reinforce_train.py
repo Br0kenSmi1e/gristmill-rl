@@ -1,12 +1,14 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from gristmill_symbolics import RewriteState, TensorComputation
 from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce import (
     OptimizerConfig,
     RolloutConfig,
+    TrainingError,
     init_train_state,
     make_optimizer,
     train_update,
@@ -28,6 +30,14 @@ def test_make_optimizer_returns_optax_gradient_transformation():
 
     assert hasattr(optimizer, "init")
     assert hasattr(optimizer, "update")
+
+
+@pytest.mark.parametrize("learning_rate", [np.nan, 0.0, -1.0e-3])
+def test_make_optimizer_rejects_non_finite_or_non_positive_learning_rate(
+    learning_rate,
+):
+    with pytest.raises(TrainingError, match="learning_rate"):
+        make_optimizer(OptimizerConfig(learning_rate=learning_rate))
 
 
 def test_init_train_state_creates_policy_params_and_opt_state():

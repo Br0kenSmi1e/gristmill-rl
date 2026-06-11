@@ -33,7 +33,7 @@ from .types import (
 
 
 def make_optimizer(config: OptimizerConfig) -> optax.GradientTransformation:
-    if config.learning_rate <= 0.0:
+    if not (np.isfinite(config.learning_rate) and config.learning_rate > 0.0):
         raise TrainingError("learning_rate must be positive")
     return optax.adam(
         learning_rate=config.learning_rate,
