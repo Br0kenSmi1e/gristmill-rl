@@ -131,6 +131,14 @@ def test_stack_token_trees_rejects_empty_input():
         stack_token_trees([])
 
 
+def test_stack_token_trees_rejects_non_1d_mask_before_inferring_length():
+    tokens = {"token_kind": jnp.asarray([TOKEN_KIND.RANGE], dtype=jnp.int32)}
+    mask = jnp.asarray(True)
+
+    with pytest.raises(ValueError, match="mask must be 1D"):
+        stack_token_trees([(tokens, mask)])
+
+
 def test_stack_token_trees_rejects_mismatched_field_sets():
     left, left_mask = make_token_tree(
         [{"token_kind": TOKEN_KIND.RANGE, "range_id": 0, "position": 0}],

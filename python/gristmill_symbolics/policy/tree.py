@@ -73,6 +73,8 @@ def stack_token_trees(
             raise ValueError(
                 f"token tree field set mismatch: {set(tokens)} != {fields}"
             )
+    for tokens, mask in materialized:
+        _validate_token_tree(tokens, mask)
     length = (
         pad_to
         if pad_to is not None
