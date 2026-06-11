@@ -13,6 +13,8 @@ EXPECTED_POLICY_EXPORTS = (
     "init_policy_params",
     "sample_target",
     "score_target",
+    "sample_action",
+    "score_action",
 )
 
 
