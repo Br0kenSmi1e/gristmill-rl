@@ -34,7 +34,13 @@ from .types import (
 
 def make_optimizer(config: OptimizerConfig) -> optax.GradientTransformation:
     if not (np.isfinite(config.learning_rate) and config.learning_rate > 0.0):
-        raise TrainingError("learning_rate must be positive")
+        raise TrainingError("learning_rate must be finite and positive")
+    if not (np.isfinite(config.b1) and 0.0 <= config.b1 < 1.0):
+        raise TrainingError("b1 must be finite and satisfy 0.0 <= b1 < 1.0")
+    if not (np.isfinite(config.b2) and 0.0 <= config.b2 < 1.0):
+        raise TrainingError("b2 must be finite and satisfy 0.0 <= b2 < 1.0")
+    if not (np.isfinite(config.eps) and config.eps > 0.0):
+        raise TrainingError("eps must be finite and positive")
     return optax.adam(
         learning_rate=config.learning_rate,
         b1=config.b1,
@@ -72,9 +78,18 @@ def _params_changed(before, after) -> bool:
     after_leaves = jax.tree_util.tree_leaves(after)
     for left, right in zip(before_leaves, after_leaves, strict=True):
         if hasattr(left, "dtype") and jnp.issubdtype(left.dtype, jnp.floating):
-            if not bool(jnp.allclose(left, right)):
+            if not bool(jnp.array_equal(left, right)):
                 return True
     return False
+
+
+def _validate_finite_params(params) -> None:
+    for leaf in jax.tree_util.tree_leaves(params):
+        if hasattr(leaf, "dtype") and jnp.issubdtype(leaf.dtype, jnp.floating):
+            if not bool(jnp.all(jnp.isfinite(leaf))):
+                raise TrainingError(
+                    "updated policy parameters contain non-finite values"
+                )
 
 
 def _metric_counts(table):
@@ -96,6 +111,9 @@ def train_update(
     baseline_config: BaselineConfig = BaselineConfig(),
     loss_config: LossConfig = LossConfig(),
 ):
+    # Stateful training owns rollout RNG through TrainState.root_key and
+    # update_index; RolloutConfig.seed is retained for standalone rollout and
+    # serialization compatibility.
     table, final = collect_rollout_batch(
         state.policy,
         initial_states,
@@ -125,6 +143,7 @@ def train_update(
     optimizer = make_optimizer(state.optimizer_config)
     updates, opt_state = optimizer.update(grads, state.opt_state, state.policy.params)
     new_params = optax.apply_updates(state.policy.params, updates)
+    _validate_finite_params(new_params)
     params_changed = _params_changed(state.policy.params, new_params)
 
     counts = _metric_counts(table)
