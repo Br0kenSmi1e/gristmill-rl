@@ -49,6 +49,29 @@ def test_target_all_masked_definitions_make_stop_probability_one():
     assert float(logp) == pytest.approx(0.0)
 
 
+def test_target_all_masked_definitions_keep_stop_legal_when_stop_logit_is_tiny():
+    params = _params()
+    params = {
+        **params,
+        "target": {
+            **params["target"],
+            "stop_bias": jnp.asarray(-1.0e35, dtype=jnp.float32),
+        },
+    }
+    state_tokens, state_mask = _state()
+    def_mask = jnp.asarray([False])
+
+    logp = score_target(
+        params, state_tokens, state_mask, def_mask, jnp.asarray(-1, dtype=jnp.int32)
+    )
+    choice, _ = sample_target(
+        params, state_tokens, state_mask, def_mask, jax.random.PRNGKey(1)
+    )
+
+    assert float(logp) == pytest.approx(0.0)
+    assert int(choice) == -1
+
+
 def test_target_sampling_never_returns_masked_definition():
     params = _params()
     state_tokens, state_mask = _state()
@@ -69,6 +92,16 @@ def test_target_scoring_rejects_masked_definition_for_concrete_input():
 
     with pytest.raises(ValueError, match="masked definition"):
         score_target(params, state_tokens, state_mask, def_mask, 0)
+
+
+def test_target_scoring_rejects_out_of_range_static_input_before_mask_values():
+    params = _params()
+    state_tokens, state_mask = _state()
+    def_mask = jnp.asarray([True])
+    jitted = jax.jit(lambda p, st, sm, dm: score_target(p, st, sm, dm, 1))
+
+    with pytest.raises(ValueError, match="outside STOP"):
+        jitted(params, state_tokens, state_mask, def_mask)
 
 
 def test_target_sampling_is_deterministic_for_same_rng():
