@@ -122,8 +122,9 @@ the existing scalar types and refactored scalar helpers directly. If the row cod
 lives outside `rewrite.rs`, expose only the smallest required scalar boundary
 rather than duplicating validation or apply logic.
 
-The scalar `RewriteState`, `ActionSpace`, and `Decision` APIs remain the
-authoritative behavior for row tests, width-1 equivalence checks, and debugging.
+The refactored scalar `RewriteState`, `ActionSpace`, and `Decision` boundaries
+are the authoritative behavior for row tests, width-1 equivalence checks, and
+debugging.
 
 ## Scalar Rewrite Boundary Refactor
 
@@ -152,11 +153,14 @@ It must not change:
 - decision validation errors;
 - rewrite application output;
 - definition-mask refresh after rewrite;
-- existing scalar PyO3 behavior.
+- scalar PyO3 behavior except for the intentional API rename/split needed to
+  expose the new boundaries.
 
-The existing `RewriteState::step_with_space(&ActionSpace, &Decision)` API should
-remain available for scalar callers. It should become a convenience method that
-uses the same validate/prepare and apply boundaries as the row wrappers.
+This phase should replace the old scalar Rust/PyO3 apply functions after tests
+and callers are updated to the new boundary. In particular,
+`RewriteState::step_with_space(&ActionSpace, &Decision)` and the scalar PyO3
+`RewriteState.step_with_space(...)` method should be removed or renamed instead
+of kept as compatibility wrappers.
 
 The prepared scalar value may be private to `rewrite.rs` unless row code needs it
 across modules. It should represent the current planned rewrite work, not a new
@@ -385,11 +389,12 @@ Scalar refactor tests:
 
 - refactored validate/prepare accepts and rejects the same decisions as the
   previous scalar validation behavior;
-- `RewriteState::step_with_space` produces the same result after the refactor as
-  before the refactor;
+- the new scalar validate/prepare/apply sequence produces the same rewrite result
+  as the previous `RewriteState::step_with_space` workflow;
 - prepared rewrite application refreshes definition masks exactly as
-  `step_with_space` does;
-- scalar PyO3 `RewriteState.step_with_space` behavior remains unchanged.
+  the previous scalar apply workflow did;
+- scalar PyO3 tests cover the replacement boundary instead of requiring the old
+  `RewriteState.step_with_space` method to remain.
 
 Action-space query tests:
 
@@ -414,7 +419,8 @@ Validation tests:
 
 Application tests:
 
-- width-1 validated application matches scalar `step_with_space`;
+- width-1 validated application matches the new scalar validate/prepare/apply
+  sequence;
 - multi-sample validated application mutates only valid-action positions;
 - row application delegates each valid rewrite to the scalar apply boundary;
 - skipped, STOP, inactive, and exact-empty positions do not apply rewrites;
@@ -431,7 +437,8 @@ Binding tests:
 - PyO3 rejects inconsistent padded action input shapes before calling Rust row
   validation;
 - row Rust work releases the GIL where the binding can do so safely;
-- scalar APIs remain available after adding row APIs.
+- scalar PyO3 bindings expose the new scalar boundary and do not keep old
+  functions solely for backward compatibility.
 
 ## Exit Criteria
 
@@ -439,8 +446,8 @@ Phase 1 is complete when:
 
 - `src/rewrite.rs` exposes scalar generate, validate/prepare, and apply
   boundaries without changing scalar rewrite semantics.
-- Existing scalar `RewriteState::step_with_space` and PyO3 scalar behavior remain
-  compatible with current callers.
+- Old scalar Rust/PyO3 apply functions are removed or renamed when replaced by
+  the new validate/prepare/apply boundary; compatibility wrappers are not kept.
 - `RewriteStateRow`, `ActionSpaceRow`, and `ValidatedActionRow` exist in Rust as
   thin wrappers around existing scalar rewrite types.
 - PyO3 exposes the row methods needed by later phases.
