@@ -5,16 +5,36 @@ use crate::{
 use ::gristmill_symbolics::cost;
 use ::gristmill_symbolics::io;
 use ::gristmill_symbolics::rewrite::{
-    ActionSpace as RustActionSpace, ActionSpaceRow as RustActionSpaceRow, Decision, Factorization,
+    ActionSpace as RustActionSpace, ActionSpaceEntry as RustActionSpaceEntry,
+    ActionSpaceRow as RustActionSpaceRow, Decision, Factorization,
     RewriteState as RustRewriteState, RewriteStateRow as RustRewriteStateRow,
     ValidatedActionRow as RustValidatedActionRow, validate_decision as rust_validate_decision,
 };
+use pyo3::PyRef;
 use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList};
 use pythonize::pythonize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+
+trait PythonAllowThreadsCompat {
+    fn allow_threads<T, F>(self, f: F) -> T
+    where
+        F: Ungil + FnOnce() -> T,
+        T: Ungil;
+}
+
+impl PythonAllowThreadsCompat for Python<'_> {
+    fn allow_threads<T, F>(self, f: F) -> T
+    where
+        F: Ungil + FnOnce() -> T,
+        T: Ungil,
+    {
+        self.detach(f)
+    }
+}
 
 fn factorization_value(factorization: &Factorization) -> Value {
     json!({
@@ -67,6 +87,27 @@ fn parse_candidate_index(value: &Bound<'_, PyAny>) -> PyResult<usize> {
     value.extract::<usize>().map_err(|_| {
         PyValueError::new_err("decision field 'candidate_index' must be a non-negative integer")
     })
+}
+
+fn parse_target_choices(value: &Bound<'_, PyAny>) -> PyResult<Vec<isize>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("target_choices must be a list"))?;
+
+    let mut choices = Vec::with_capacity(list.len());
+    for (sample, item) in list.iter().enumerate() {
+        if item.is_exact_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(format!(
+                "target_choices[{sample}] must be an integer, not bool"
+            )));
+        }
+        choices.push(item.extract::<isize>().map_err(|_| {
+            PyValueError::new_err(format!(
+                "target_choices[{sample}] must be an integer target choice"
+            ))
+        })?);
+    }
+    Ok(choices)
 }
 
 fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
@@ -173,10 +214,88 @@ struct PyRewriteStateRow {
     inner: RustRewriteStateRow,
 }
 
+#[pymethods]
+impl PyRewriteStateRow {
+    #[staticmethod]
+    fn from_states(states: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let list = states
+            .cast::<PyList>()
+            .map_err(|_| PyTypeError::new_err("states must be a list of RewriteState objects"))?;
+
+        let mut rust_states = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            let state = item.extract::<PyRef<'_, PyRewriteState>>()?;
+            rust_states.push(state.inner.clone());
+        }
+
+        Ok(Self {
+            inner: RustRewriteStateRow::from_states(rust_states),
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn definition_masks(&self) -> Vec<Vec<bool>> {
+        self.inner.definition_masks()
+    }
+
+    fn snapshots<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let snapshots = self
+            .inner
+            .states()
+            .iter()
+            .map(|state| computation_value(state.computation()))
+            .collect::<Vec<_>>();
+        pythonize(py, &snapshots).map_err(py_gristmill_display_error)
+    }
+
+    fn query_action_spaces_for_row(
+        &mut self,
+        py: Python<'_>,
+        target_choices: &Bound<'_, PyAny>,
+        active_mask: Vec<bool>,
+    ) -> PyResult<PyActionSpaceRow> {
+        let target_choices = parse_target_choices(target_choices)?;
+        let inner = py
+            .allow_threads(|| {
+                self.inner
+                    .query_action_spaces_for_row(&target_choices, &active_mask)
+            })
+            .map_err(py_gristmill_error)?;
+        Ok(PyActionSpaceRow { inner })
+    }
+}
+
 #[allow(dead_code)]
 #[pyclass(name = "ActionSpaceRow")]
 struct PyActionSpaceRow {
     inner: RustActionSpaceRow,
+}
+
+#[pymethods]
+impl PyActionSpaceRow {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn entry_kinds(&self) -> Vec<&'static str> {
+        self.inner.entry_kinds()
+    }
+
+    fn snapshots<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let snapshots = self
+            .inner
+            .entries()
+            .iter()
+            .map(|entry| match entry {
+                RustActionSpaceEntry::NonEmpty(space) => Some(action_space_value(space)),
+                RustActionSpaceEntry::Skipped | RustActionSpaceEntry::ExactEmpty => None,
+            })
+            .collect::<Vec<Option<Value>>>();
+        pythonize(py, &snapshots).map_err(py_gristmill_display_error)
+    }
 }
 
 #[allow(dead_code)]

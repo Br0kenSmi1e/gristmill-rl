@@ -6,8 +6,10 @@ import pytest
 
 from gristmill_symbolics import (
     ActionSpace,
+    ActionSpaceRow,
     GristmillSymbolicsError,
     RewriteState,
+    RewriteStateRow,
     TensorComputation,
     validate_decision,
 )
@@ -218,6 +220,73 @@ def test_rewrite_state_refines_exact_empty_mask_to_false():
     assert state.definition_mask() == [True]
     assert state.action_space_for_def(0) is None
     assert state.definition_mask() == [False]
+
+
+def test_rewrite_state_row_from_states_preserves_length_masks_and_snapshots():
+    left = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
+    right = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
+
+    row = RewriteStateRow.from_states([left, right])
+
+    assert row.len() == 2
+    assert row.definition_masks() == [left.definition_mask(), right.definition_mask()]
+    assert row.snapshots() == [left.snapshot(), right.snapshot()]
+
+
+def test_row_query_action_spaces_skips_stop_and_inactive_and_snapshots_non_empty():
+    active = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
+    stop = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
+    inactive = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
+    row = RewriteStateRow.from_states([active, stop, inactive])
+
+    spaces = row.query_action_spaces_for_row([0, -1, 0], [True, True, False])
+
+    assert isinstance(spaces, ActionSpaceRow)
+    assert spaces.len() == 3
+    assert spaces.entry_kinds() == ["non_empty", "skipped", "skipped"]
+    snapshots = spaces.snapshots()
+    assert snapshots[0] is not None
+    assert snapshots[0]["def_index"] == 0
+    assert snapshots[1] is None
+    assert snapshots[2] is None
+
+
+def test_row_query_exact_empty_refines_only_owning_python_row_state():
+    exact = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
+    actionable = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
+    row = RewriteStateRow.from_states([exact, actionable])
+
+    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
+
+    assert spaces.entry_kinds() == ["exact_empty", "non_empty"]
+    assert spaces.snapshots()[0] is None
+    assert row.definition_masks() == [[False], [True]]
+
+
+def test_row_query_rejects_python_length_mismatches():
+    row = RewriteStateRow.from_states(
+        [
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+        ]
+    )
+
+    with pytest.raises(GristmillSymbolicsError, match="target_choices"):
+        row.query_action_spaces_for_row([0], [True, True])
+
+    with pytest.raises(GristmillSymbolicsError, match="active_mask"):
+        row.query_action_spaces_for_row([0, 0], [True])
+
+
+def test_row_query_rejects_bool_target_choices():
+    row = RewriteStateRow.from_states(
+        [
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+        ]
+    )
+
+    with pytest.raises(TypeError, match=r"target_choices\[0\].*not bool"):
+        row.query_action_spaces_for_row([True], [True])
 
 
 def test_rewrite_state_action_space_handle_and_public_snapshot():
