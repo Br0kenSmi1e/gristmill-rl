@@ -161,8 +161,19 @@ def test_multi_sample_update_reports_finite_loss_and_core_metrics():
     )
 
     assert new_state.update_index == 1
-    assert np.isfinite(metrics.loss)
-    assert metrics.reward_std >= 0.0
+    core_float_metrics = [
+        metrics.loss,
+        metrics.reward_mean,
+        metrics.reward_std,
+        metrics.advantage_mean,
+        metrics.advantage_std,
+        metrics.initial_log_flops_mean,
+        metrics.final_log_flops_mean,
+        metrics.final_log_flops_best,
+        metrics.target_logp_mean,
+        metrics.action_logp_mean,
+    ]
+    assert np.all(np.isfinite(core_float_metrics))
+    assert metrics.valid_action_count >= 1
+    assert metrics.empty_action_space_count >= 1
     assert metrics.target_score_count >= metrics.action_score_count
-    assert metrics.stop_count >= 0
-    assert metrics.empty_action_space_count >= 0

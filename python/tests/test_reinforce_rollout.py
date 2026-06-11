@@ -149,12 +149,19 @@ def test_rng_assignment_for_sample_is_stable_when_previous_sample_stops():
         root_key=root,
     )
 
+    assert int(first_stops.step_case[0, 0]) == CASE_STOP
+    assert bool(first_stops.action_score_mask[0, 0]) is False
+    assert int(first_stops.step_case[0, 1]) == CASE_VALID_ACTION
+    assert bool(first_stops.action_score_mask[0, 1]) is True
     assert both_active.target_choice[0, 1] == first_stops.target_choice[0, 1]
-    assert (
-        both_active.action_choice["candidate_index"][0, 1]
-        == first_stops.action_choice["candidate_index"][0, 1]
-    )
-    assert jnp.array_equal(
-        both_active.action_choice["left_mask"][0, 1],
-        first_stops.action_choice["left_mask"][0, 1],
-    )
+    for choice_key in (
+        "candidate_index",
+        "left_mask",
+        "left_valid_mask",
+        "right_mask",
+        "right_valid_mask",
+    ):
+        assert jnp.array_equal(
+            both_active.action_choice[choice_key][0, 1],
+            first_stops.action_choice[choice_key][0, 1],
+        )

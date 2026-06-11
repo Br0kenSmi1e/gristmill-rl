@@ -132,8 +132,11 @@ def test_masked_dummy_entries_do_not_affect_loss_or_metrics():
     )
 
     assert float(loss) == pytest.approx(1.0)
+    assert diagnostics.column_logp_sum.tolist() == pytest.approx([-2.0, 0.0])
     assert diagnostics.target_score_count == 1
     assert diagnostics.action_score_count == 0
+    assert diagnostics.target_logp_mean == pytest.approx(-2.0)
+    assert diagnostics.action_logp_mean == pytest.approx(0.0)
 
 
 def test_reinforce_loss_rejects_no_scored_terms_by_default():
