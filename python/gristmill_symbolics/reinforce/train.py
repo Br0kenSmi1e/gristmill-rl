@@ -19,12 +19,22 @@ from .types import (
 )
 
 
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Smoke-run on-policy REINFORCE updates."
     )
     parser.add_argument("--input", required=True)
-    parser.add_argument("--updates", type=int, default=1)
+    parser.add_argument("--updates", type=_positive_int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
