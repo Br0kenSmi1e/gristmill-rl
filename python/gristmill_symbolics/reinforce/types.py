@@ -147,13 +147,21 @@ class CheckpointData:
 
 
 def validate_rollout_config(config: RolloutConfig) -> None:
+    if type(config.batch_size) is not int:
+        raise TrainingError("batch_size must be an int")
     if config.batch_size <= 0:
         raise TrainingError("batch_size must be positive")
+    if type(config.max_steps) is not int:
+        raise TrainingError("max_steps must be an int")
     if config.max_steps <= 0:
         raise TrainingError("max_steps must be positive")
+    if type(config.seed) is not int:
+        raise TrainingError("seed must be an int")
 
 
 def validate_policy_state(policy: PolicyState) -> None:
+    if not isinstance(policy, PolicyState):
+        raise TrainingError("policy must be a PolicyState")
     if not isinstance(policy.config, PolicyConfig):
         raise TrainingError("policy.config must be a PolicyConfig")
     if not isinstance(policy.params, dict):

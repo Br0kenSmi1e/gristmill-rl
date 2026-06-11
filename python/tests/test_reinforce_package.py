@@ -23,8 +23,10 @@ from gristmill_symbolics.reinforce.types import (
     CASE_EMPTY_ACTION_SPACE,
     CASE_STOP,
     CASE_VALID_ACTION,
+    CHECKPOINT_SCHEMA_VERSION,
     DECISION_ACTION,
     DECISION_TARGET,
+    TOKENIZER_SCHEMA_VERSION,
     validate_policy_state,
     validate_rollout_config,
 )
@@ -58,6 +60,8 @@ def test_reinforce_case_and_rng_constants_are_stable():
     assert CASE_VALID_ACTION == 3
     assert DECISION_TARGET == 0
     assert DECISION_ACTION == 1
+    assert CHECKPOINT_SCHEMA_VERSION == 1
+    assert TOKENIZER_SCHEMA_VERSION == 1
 
 
 def test_rollout_config_validation_rejects_non_positive_values():
@@ -67,7 +71,18 @@ def test_rollout_config_validation_rejects_non_positive_values():
         validate_rollout_config(RolloutConfig(batch_size=1, max_steps=0))
 
 
+def test_rollout_config_validation_requires_integer_values():
+    with pytest.raises(TrainingError, match="batch_size"):
+        validate_rollout_config(RolloutConfig(batch_size=True, max_steps=1))
+    with pytest.raises(TrainingError, match="max_steps"):
+        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1.5))
+    with pytest.raises(TrainingError, match="seed"):
+        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1, seed=False))
+
+
 def test_policy_state_validation_requires_config_and_params_dict():
+    with pytest.raises(TrainingError, match="PolicyState"):
+        validate_policy_state(None)
     with pytest.raises(TrainingError, match="PolicyConfig"):
         validate_policy_state(PolicyState(config=object(), params={}))
     with pytest.raises(TrainingError, match="params"):
