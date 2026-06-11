@@ -247,6 +247,16 @@ def test_rewrite_state_row_from_states_preserves_length_masks_and_snapshots():
     assert row.snapshots() == [left.snapshot(), right.snapshot()]
 
 
+def test_rewrite_state_row_log_total_flops_matches_scalar_states():
+    left = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
+    right = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
+    row = RewriteStateRow.from_states([left, right])
+
+    values = row.log_total_flops()
+
+    assert values == pytest.approx([left.log_total_flops(), right.log_total_flops()])
+
+
 def test_row_query_action_spaces_skips_stop_and_inactive_and_snapshots_non_empty():
     active = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
     stop = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))

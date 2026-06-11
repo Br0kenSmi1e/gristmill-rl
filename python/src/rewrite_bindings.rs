@@ -308,6 +308,14 @@ impl PyRewriteStateRow {
         pythonize(py, &snapshots).map_err(py_gristmill_display_error)
     }
 
+    fn log_total_flops(&self) -> PyResult<Vec<f64>> {
+        self.inner
+            .states()
+            .iter()
+            .map(|state| cost::log_total_flops(state.computation()).map_err(py_gristmill_error))
+            .collect()
+    }
+
     fn query_action_spaces_for_row(
         &mut self,
         py: Python<'_>,
