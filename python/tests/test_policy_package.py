@@ -7,10 +7,11 @@ def test_existing_extension_exports_still_import_from_package_root():
     assert hasattr(gristmill_symbolics, "validate_decision")
 
 
-def test_policy_package_imports_without_training_modules():
+def test_policy_package_imports_without_training_modules(monkeypatch):
     import sys
 
-    sys.modules.pop("reinforce_training", None)
+    monkeypatch.delitem(sys.modules, "reinforce_training", raising=False)
+    monkeypatch.delitem(sys.modules, "gristmill_symbolics.policy", raising=False)
 
     import gristmill_symbolics.policy as policy
 
