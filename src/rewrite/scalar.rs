@@ -109,12 +109,62 @@ pub enum RewriteError {
     Split(SplitError),
     Canon(CanonError),
     Graph(GraphError),
-    CandidateIndexOutOfRange { index: usize, len: usize },
-    LeftMaskLengthMismatch { expected: usize, got: usize },
-    RightMaskLengthMismatch { expected: usize, got: usize },
+    CandidateIndexOutOfRange {
+        index: usize,
+        len: usize,
+    },
+    LeftMaskLengthMismatch {
+        expected: usize,
+        got: usize,
+    },
+    RightMaskLengthMismatch {
+        expected: usize,
+        got: usize,
+    },
     EmptyLeftMask,
     EmptyRightMask,
-    DefinitionIndexOutOfRange { index: usize, len: usize },
+    DefinitionIndexOutOfRange {
+        index: usize,
+        len: usize,
+    },
+    RowLengthMismatch {
+        operation: &'static str,
+        field: &'static str,
+        expected: usize,
+        got: usize,
+    },
+    InvalidTargetChoice {
+        sample: usize,
+        target: isize,
+    },
+    TargetDefinitionIndexOutOfRange {
+        sample: usize,
+        index: usize,
+        len: usize,
+    },
+    TargetDefinitionMasked {
+        sample: usize,
+        index: usize,
+    },
+    RowQueryFailed {
+        sample: usize,
+        source: Box<RewriteError>,
+    },
+    ActionSpaceEntryNotActionable {
+        sample: usize,
+        entry_kind: &'static str,
+    },
+    MissingScoredDecision {
+        sample: usize,
+    },
+    RowValidationFailed {
+        sample: usize,
+        source: Box<RewriteError>,
+    },
+    RowApplyFailed {
+        sample: usize,
+        source: Box<RewriteError>,
+    },
 }
 
 impl From<SplitError> for RewriteError {
