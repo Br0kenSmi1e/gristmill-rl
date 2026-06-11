@@ -62,8 +62,13 @@ def score_target(params, state_tokens, state_token_mask, def_mask, target_choice
     legal = jnp.concatenate([jnp.asarray([True]), def_mask.astype(jnp.bool_)], axis=0)
     log_probs = _masked_log_softmax(logits, legal)
     choice = jnp.asarray(target_choice, dtype=jnp.int32)
+    valid = (choice == -1) | ((choice >= 0) & (choice < def_mask.shape[0]))
     logit_index = jnp.where(choice == -1, 0, choice + 1)
-    return log_probs[logit_index]
+    safe_logit_index = jnp.clip(logit_index, 0, def_mask.shape[0])
+    gathered_logp = log_probs[safe_logit_index]
+    return jnp.where(
+        valid, gathered_logp, jnp.asarray(-jnp.inf, dtype=gathered_logp.dtype)
+    )
 
 
 def sample_target(params, state_tokens, state_token_mask, def_mask, rng):

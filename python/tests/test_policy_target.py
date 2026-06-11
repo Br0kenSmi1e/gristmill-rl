@@ -104,6 +104,22 @@ def test_target_scoring_rejects_out_of_range_static_input_before_mask_values():
         jitted(params, state_tokens, state_mask, def_mask)
 
 
+def test_target_scoring_traced_invalid_choices_return_negative_infinity():
+    params = _params()
+    state_tokens, state_mask = _state()
+    def_mask = jnp.asarray([True])
+    choices = jnp.asarray([-2, 1, 99], dtype=jnp.int32)
+
+    scores = jax.jit(
+        lambda p, st, sm, dm, target_choices: jax.vmap(
+            lambda target_choice: score_target(p, st, sm, dm, target_choice)
+        )(target_choices)
+    )(params, state_tokens, state_mask, def_mask, choices)
+
+    assert scores.shape == (3,)
+    assert bool(jnp.all(jnp.isneginf(scores)))
+
+
 def test_target_sampling_is_deterministic_for_same_rng():
     params = _params()
     state_tokens, state_mask = _state()
