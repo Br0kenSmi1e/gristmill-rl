@@ -1,0 +1,108 @@
+import jax.numpy as jnp
+
+from gristmill_symbolics.policy import (
+    ACTION_TOKEN_FIELDS,
+    SENTINEL,
+    STATE_TOKEN_FIELDS,
+    PolicyConfig,
+    action_choice_to_python,
+    make_action_choice,
+    pad_token_tree,
+    stack_token_trees,
+)
+from gristmill_symbolics.policy.constants import TOKEN_KIND
+from gristmill_symbolics.policy.tree import make_token_tree
+
+
+def test_state_and_action_field_sets_are_concrete_columnar_records():
+    assert STATE_TOKEN_FIELDS == (
+        "token_kind",
+        "segment",
+        "def_index",
+        "term_index",
+        "factor_index",
+        "tensor_id",
+        "range_id",
+        "index_id",
+        "coeff_num",
+        "coeff_den",
+        "position",
+    )
+    assert ACTION_TOKEN_FIELDS == STATE_TOKEN_FIELDS + ("candidate_index", "side")
+    assert SENTINEL == -1
+
+
+def test_make_token_tree_uses_int32_leaves_and_shared_length():
+    rows = [
+        {"token_kind": TOKEN_KIND.RANGE, "range_id": 0, "position": 0},
+        {"token_kind": TOKEN_KIND.TENSOR, "tensor_id": 7, "position": 1},
+    ]
+
+    tokens, mask = make_token_tree(rows, STATE_TOKEN_FIELDS)
+
+    assert mask.dtype == jnp.bool_
+    assert mask.tolist() == [True, True]
+    assert tokens["token_kind"].dtype == jnp.int32
+    assert tokens["tensor_id"].tolist() == [SENTINEL, 7]
+    assert set(tokens) == set(STATE_TOKEN_FIELDS)
+
+
+def test_padding_preserves_real_tokens_and_uses_safe_values():
+    rows = [{"token_kind": TOKEN_KIND.RANGE, "range_id": 0, "position": 0}]
+    tokens, mask = make_token_tree(rows, STATE_TOKEN_FIELDS)
+
+    padded, padded_mask = pad_token_tree(tokens, mask, 3)
+
+    assert padded_mask.tolist() == [True, False, False]
+    assert padded["token_kind"].tolist() == [TOKEN_KIND.RANGE, TOKEN_KIND.PAD, TOKEN_KIND.PAD]
+    assert padded["range_id"].tolist() == [0, SENTINEL, SENTINEL]
+
+
+def test_stack_token_trees_adds_sample_axis_and_pads_to_row_width():
+    left, left_mask = make_token_tree(
+        [{"token_kind": TOKEN_KIND.RANGE, "range_id": 0, "position": 0}],
+        STATE_TOKEN_FIELDS,
+    )
+    right, right_mask = make_token_tree(
+        [
+            {"token_kind": TOKEN_KIND.RANGE, "range_id": 0, "position": 0},
+            {"token_kind": TOKEN_KIND.TENSOR, "tensor_id": 1, "position": 1},
+        ],
+        STATE_TOKEN_FIELDS,
+    )
+
+    stacked, stacked_mask = stack_token_trees([(left, left_mask), (right, right_mask)])
+
+    assert stacked_mask.shape == (2, 2)
+    assert stacked["token_kind"].shape == (2, 2)
+    assert stacked_mask.tolist() == [[True, False], [True, True]]
+
+
+def test_action_choice_tree_round_trips_to_python_padded_choice():
+    choice = make_action_choice(
+        candidate_index=2,
+        left_mask=[True, False],
+        left_valid_mask=[True, True],
+        right_mask=[False, True],
+        right_valid_mask=[True, True],
+    )
+
+    assert choice["candidate_index"].shape == ()
+    assert action_choice_to_python(choice) == {
+        "candidate_index": 2,
+        "left_mask": [True, False],
+        "left_valid_mask": [True, True],
+        "right_mask": [False, True],
+        "right_valid_mask": [True, True],
+    }
+
+
+def test_policy_config_defaults_match_phase_2_small_model():
+    config = PolicyConfig()
+
+    assert config.d_model == 32
+    assert config.num_attention_layers == 1
+    assert config.max_candidates == 32
+    assert config.max_side_terms == 32
+    assert config.stop_bias_init == -20.0
+    assert config.id_vocab_size >= 64
