@@ -110,6 +110,32 @@ def test_reinforce_loss_is_column_normalized_not_decision_normalized():
     assert diagnostics.action_score_count == 1
 
 
+def test_masked_dummy_entries_do_not_affect_loss_or_metrics():
+    rollout = type(
+        "Rollout",
+        (),
+        {
+            "target_score_mask": jnp.asarray([[True, False]], dtype=jnp.bool_),
+            "action_score_mask": jnp.asarray([[False, False]], dtype=jnp.bool_),
+        },
+    )()
+    scores = ScoreOutputs(
+        target_logp=jnp.asarray([[-2.0, -9999.0]], dtype=jnp.float32),
+        action_logp=jnp.asarray([[0.0, -9999.0]], dtype=jnp.float32),
+    )
+
+    loss, diagnostics = reinforce_loss(
+        rollout,
+        scores,
+        np.asarray([1.0, 1.0], dtype=np.float64),
+        LossConfig(),
+    )
+
+    assert float(loss) == pytest.approx(1.0)
+    assert diagnostics.target_score_count == 1
+    assert diagnostics.action_score_count == 0
+
+
 def test_reinforce_loss_rejects_no_scored_terms_by_default():
     rollout = type(
         "Rollout",

@@ -141,3 +141,28 @@ def test_train_update_rejects_non_finite_updated_params(monkeypatch):
             _mixed_initial_states(),
             RolloutConfig(batch_size=2, max_steps=1, seed=12),
         )
+
+
+def test_multi_sample_update_reports_finite_loss_and_core_metrics():
+    state = init_train_state(
+        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4, stop_bias_init=-20.0),
+        OptimizerConfig(learning_rate=1.0e-2),
+        seed=17,
+    )
+
+    new_state, metrics, _table = train_update(
+        state,
+        [
+            actionable_state(),
+            actionable_state(),
+            RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json())),
+        ],
+        RolloutConfig(batch_size=3, max_steps=2, seed=17),
+    )
+
+    assert new_state.update_index == 1
+    assert np.isfinite(metrics.loss)
+    assert metrics.reward_std >= 0.0
+    assert metrics.target_score_count >= metrics.action_score_count
+    assert metrics.stop_count >= 0
+    assert metrics.empty_action_space_count >= 0

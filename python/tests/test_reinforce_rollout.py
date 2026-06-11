@@ -20,7 +20,7 @@ from gristmill_symbolics.reinforce.types import (
     DECISION_TARGET,
 )
 from tests.policy_fixtures import actionable_json
-from tests.test_bindings import exact_empty_json
+from tests.test_bindings import BASIC_FIXTURE, exact_empty_json
 
 
 def _policy(*, stop_bias_init=-20.0):
@@ -125,3 +125,36 @@ def test_multi_sample_rollout_preserves_sample_axis_alignment():
     assert table.action_score_mask.tolist() == [[True, False]]
     assert final.initial_log_flops.shape == (2,)
     assert final.final_log_flops.shape == (2,)
+
+
+def test_rng_assignment_for_sample_is_stable_when_previous_sample_stops():
+    normal_policy = _policy(stop_bias_init=-20.0)
+    root = jax.random.PRNGKey(16)
+
+    both_active, _ = collect_rollout_batch(
+        normal_policy,
+        [_state_from_json(actionable_json()), _state_from_json(actionable_json())],
+        RolloutConfig(batch_size=2, max_steps=1, seed=16),
+        update_index=0,
+        root_key=root,
+    )
+    first_stops, _ = collect_rollout_batch(
+        normal_policy,
+        [
+            RewriteState.from_computation(TensorComputation.load_json(BASIC_FIXTURE)),
+            _state_from_json(actionable_json()),
+        ],
+        RolloutConfig(batch_size=2, max_steps=1, seed=16),
+        update_index=0,
+        root_key=root,
+    )
+
+    assert both_active.target_choice[0, 1] == first_stops.target_choice[0, 1]
+    assert (
+        both_active.action_choice["candidate_index"][0, 1]
+        == first_stops.action_choice["candidate_index"][0, 1]
+    )
+    assert jnp.array_equal(
+        both_active.action_choice["left_mask"][0, 1],
+        first_stops.action_choice["left_mask"][0, 1],
+    )
