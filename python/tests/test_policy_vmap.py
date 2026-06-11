@@ -141,6 +141,35 @@ def test_vmap_score_action_matches_scalar_rows_for_vmapped_samples():
     assert jnp.allclose(vmapped, scalar)
 
 
+def test_vmap_sample_action_matches_scalar_rows_with_same_keys():
+    params = _params()
+    state_tokens, state_mask = _two_row_state_batch()
+    action_tokens, action_mask = _two_row_action_batch()
+    selected_defs = jnp.asarray([0, 0], dtype=jnp.int32)
+    keys = jax.random.split(jax.random.PRNGKey(25), 2)
+
+    vmapped_choices, vmapped_logp = jax.vmap(
+        sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0)
+    )(params, state_tokens, state_mask, selected_defs, action_tokens, action_mask, keys)
+    scalar = [
+        sample_action(
+            params,
+            _slice_tree(state_tokens, index),
+            state_mask[index],
+            selected_defs[index],
+            _slice_tree(action_tokens, index),
+            action_mask[index],
+            keys[index],
+        )
+        for index in range(2)
+    ]
+    scalar_logp = jnp.asarray([logp for _, logp in scalar])
+
+    for index, (scalar_choice, _) in enumerate(scalar):
+        _assert_choice_equal(_slice_tree(vmapped_choices, index), scalar_choice)
+    assert jnp.allclose(vmapped_logp, scalar_logp)
+
+
 def test_width_one_vmap_sample_action_matches_scalar_with_same_key():
     params = _params()
     state_tokens, state_mask = stack_token_trees([_state_tree()])
