@@ -24,16 +24,27 @@ class PolicyConfig:
 
 def make_action_choice(
     *,
-    candidate_index: int,
+    candidate_index: int | list[int] | tuple[int, ...] | np.ndarray,
     left_mask: list[bool] | tuple[bool, ...] | np.ndarray,
     left_valid_mask: list[bool] | tuple[bool, ...] | np.ndarray,
     right_mask: list[bool] | tuple[bool, ...] | np.ndarray,
     right_valid_mask: list[bool] | tuple[bool, ...] | np.ndarray,
 ) -> ActionChoiceTree:
+    candidate = jnp.asarray(candidate_index, dtype=jnp.int32)
     left = jnp.asarray(left_mask, dtype=jnp.bool_)
     left_valid = jnp.asarray(left_valid_mask, dtype=jnp.bool_)
     right = jnp.asarray(right_mask, dtype=jnp.bool_)
     right_valid = jnp.asarray(right_valid_mask, dtype=jnp.bool_)
+    if candidate.shape != ():
+        raise ValueError(f"candidate_index must be scalar, got shape {candidate.shape}")
+    for name, values in (
+        ("left_mask", left),
+        ("left_valid_mask", left_valid),
+        ("right_mask", right),
+        ("right_valid_mask", right_valid),
+    ):
+        if values.ndim != 1:
+            raise ValueError(f"{name} must be 1D, got shape {values.shape}")
     if left.shape != left_valid.shape:
         raise ValueError(
             f"left_mask and left_valid_mask shapes differ: {left.shape} != {left_valid.shape}"
@@ -47,7 +58,7 @@ def make_action_choice(
             f"left and right mask shapes differ: {left.shape} != {right.shape}"
         )
     return {
-        "candidate_index": jnp.asarray(candidate_index, dtype=jnp.int32),
+        "candidate_index": candidate,
         "left_mask": left,
         "left_valid_mask": left_valid,
         "right_mask": right,
