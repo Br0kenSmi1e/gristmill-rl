@@ -30,12 +30,13 @@ File: `2026-06-10-reinforce-row-env-implementation-design.md`
 Refactors scalar rewrite boundaries without semantic changes, then builds thin
 Rust/PyO3 row wrappers over those boundaries:
 
-- scalar generate, validate/prepare, and apply boundaries in `src/rewrite.rs`;
+- scalar generate, public decision validation, and apply boundaries in
+  `src/rewrite.rs`;
 - `RewriteStateRow`;
 - `ActionSpaceRow`;
 - row action-space query over `RewriteState::action_space_for_def`;
 - deterministic row action-space snapshots;
-- row action validation over the scalar validate/prepare boundary before
+- row action validation over the scalar `validate_decision` boundary before
   mutation;
 - row rewrite application over the scalar apply boundary;
 - PyO3 conversion from padded row action input to exact scalar `Decision` values;

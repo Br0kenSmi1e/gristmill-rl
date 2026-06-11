@@ -16,8 +16,8 @@ Rayon:
 
 ```text
 RewriteState::action_space_for_def
-validate/prepare one Decision for one ActionSpace without mutation
-apply one prepared rewrite through one RewriteState
+validate_decision for one Decision and one ActionSpace without mutation
+apply one already-validated Decision through one RewriteState
 ActionSpace snapshot conversion used by PyO3
 RewriteState snapshot/cost helpers used by PyO3
 ```
@@ -32,9 +32,9 @@ training loop.
 ## Goals
 
 - Add row-owned Rust structures as thin wrappers around `Vec<RewriteState>`,
-  row-aligned `ActionSpace` entries, and row-aligned validated `Decision`
-  entries.
-- Refactor `src/rewrite.rs` to expose scalar generate, validate/prepare, and
+  row-aligned `ActionSpace` entries, and row-aligned validated
+  `ActionSpace`/`Decision` pairs.
+- Refactor `src/rewrite.rs` to expose scalar generate, decision validation, and
   apply boundaries without semantic changes.
 - Preserve scalar rewrite behavior for every sample position.
 - Query exact action spaces only for selected, non-STOP definitions.
@@ -111,7 +111,7 @@ ValidatedActionRow {
 
 ValidatedActionEntry =
   skipped
-  valid(Decision)
+  valid { space: ActionSpace, decision: Decision }
 ```
 
 `ActionSpaceRow` and `ValidatedActionRow` are live runtime handles. They must
@@ -136,23 +136,32 @@ generate:
   RewriteState::action_space_for_def(def_index)
     -> Result<Option<ActionSpace>, RewriteError>
 
-validate/prepare:
-  validate one Decision against one ActionSpace and current computation
-    -> Result<PreparedRewrite, RewriteError>
+validate:
+  validate_decision(space, decision)
+    -> Result<(), RewriteError>
 
 apply:
-  apply one PreparedRewrite to one RewriteState
+  apply one already-validated Decision with one ActionSpace to one RewriteState
     -> Result<(), RewriteError>
 ```
 
-The refactor is a reordering and boundary extraction of the current workflow.
-It must not change:
+The refactor is a reordering and boundary extraction of the current workflow. The
+validation currently inside `build_rewrite` and `step_with_space` should become
+an explicit public scalar validation boundary. The scalar apply boundary should
+assume the caller already validated the decision and should not call
+`validate_decision` internally.
+
+The refactor must not change:
 
 - action-space generation results;
 - exact-empty definition-mask refinement;
 - decision validation errors;
+- current computation checks in rewrite building/application, such as
+  definition-index bounds;
 - rewrite application output;
 - definition-mask refresh after rewrite;
+- current no state-provenance behavior: an `ActionSpace` is not tied to the
+  identity of the `RewriteState` that produced it;
 - scalar PyO3 behavior except for the intentional API rename/split needed to
   expose the new boundaries.
 
@@ -162,9 +171,9 @@ and callers are updated to the new boundary. In particular,
 `RewriteState.step_with_space(...)` method should be removed or renamed instead
 of kept as compatibility wrappers.
 
-The prepared scalar value may be private to `rewrite.rs` unless row code needs it
-across modules. It should represent the current planned rewrite work, not a new
-row-specific algorithm.
+The apply boundary may continue using private helpers such as `build_rewrite` and
+`apply_rewrite`. Those helpers should preserve their current computation checks,
+but should not repeat `validate_decision` after the caller has already validated.
 
 ## PyO3 Surface
 
@@ -314,15 +323,14 @@ clearly with sample position information.
 ## Validation Before Mutation
 
 `validate_actions_for_row` must be a Rayon iterator over row action entries that
-uses the refactored scalar validate/prepare boundary and does not mutate any
-`RewriteState`.
+uses scalar `validate_decision` and does not mutate any `RewriteState`.
 
 If any scored action choice is invalid, validation fails and no rewrite is
 applied for the row. This all-or-nothing validation boundary protects rollout
 from partially applying a row after one bad sampled action.
 
-`ValidatedActionRow` should store the prepared scalar rewrite value returned by
-the scalar validate/prepare boundary. It must not store a new row-specific plan.
+`ValidatedActionRow` should store exact scalar `Decision` values and the matching
+`ActionSpace` values needed to apply them, not a new row-specific rewrite plan.
 `apply_validated_actions_for_row` may mutate states only after validation has
 succeeded for the row. Application mutates each owning scalar `RewriteState` by
 calling the refactored scalar apply boundary; it skips all other entries.
@@ -369,9 +377,8 @@ The row environment should fail clearly when:
 - an action choice selects an invalid candidate;
 - left or right bit lengths do not match the selected candidate;
 - a scored left or right mask is empty;
-- validation is asked to use an action-space row from a different state row;
-- rewrite application is asked to use a validated-action row from a different
-  state row.
+- scalar apply reports a current-computation error such as an out-of-range
+  definition index.
 
 Errors should include sample position and operation name when available.
 
@@ -387,12 +394,16 @@ Contract tests:
 
 Scalar refactor tests:
 
-- refactored validate/prepare accepts and rejects the same decisions as the
-  previous scalar validation behavior;
-- the new scalar validate/prepare/apply sequence produces the same rewrite result
+- public `validate_decision` accepts and rejects the same decisions as the
+  previous private scalar validation behavior;
+- `build_rewrite` and the scalar apply boundary do not call `validate_decision`
+  internally after the refactor;
+- the new scalar validate/apply sequence produces the same rewrite result
   as the previous `RewriteState::step_with_space` workflow;
-- prepared rewrite application refreshes definition masks exactly as
+- scalar apply refreshes definition masks exactly as
   the previous scalar apply workflow did;
+- current stale/no-state-provenance behavior is preserved: an `ActionSpace`
+  generated from one equivalent state can be applied to another equivalent state;
 - scalar PyO3 tests cover the replacement boundary instead of requiring the old
   `RewriteState.step_with_space` method to remain.
 
@@ -409,8 +420,7 @@ Action-space query tests:
 Validation tests:
 
 - valid injected choices produce a `ValidatedActionRow`;
-- validation accepts and rejects the same choices as the scalar validate/prepare
-  boundary;
+- validation accepts and rejects the same choices as scalar `validate_decision`;
 - invalid candidate indices fail before any state mutation;
 - wrong-length masks fail before any state mutation;
 - empty left or right masks fail before any state mutation;
@@ -419,8 +429,7 @@ Validation tests:
 
 Application tests:
 
-- width-1 validated application matches the new scalar validate/prepare/apply
-  sequence;
+- width-1 validated application matches the new scalar validate/apply sequence;
 - multi-sample validated application mutates only valid-action positions;
 - row application delegates each valid rewrite to the scalar apply boundary;
 - skipped, STOP, inactive, and exact-empty positions do not apply rewrites;
@@ -444,10 +453,10 @@ Binding tests:
 
 Phase 1 is complete when:
 
-- `src/rewrite.rs` exposes scalar generate, validate/prepare, and apply
+- `src/rewrite.rs` exposes scalar generate, public `validate_decision`, and apply
   boundaries without changing scalar rewrite semantics.
 - Old scalar Rust/PyO3 apply functions are removed or renamed when replaced by
-  the new validate/prepare/apply boundary; compatibility wrappers are not kept.
+  the new validate/apply boundary; compatibility wrappers are not kept.
 - `RewriteStateRow`, `ActionSpaceRow`, and `ValidatedActionRow` exist in Rust as
   thin wrappers around existing scalar rewrite types.
 - PyO3 exposes the row methods needed by later phases.
@@ -456,7 +465,7 @@ Phase 1 is complete when:
   definitions.
 - Exact-empty selected definitions refine only the owning scalar state.
 - Action-space snapshots are deterministic plain host data.
-- Row action validation uses Rayon over the scalar validate/prepare boundary, is
+- Row action validation uses Rayon over scalar `validate_decision`, is
   all-or-nothing, and does not mutate state.
 - Validated row rewrite application uses Rayon over the scalar apply boundary
   and matches scalar behavior for width-1 and mixed multi-sample rows.
