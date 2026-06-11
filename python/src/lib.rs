@@ -146,7 +146,7 @@ impl PyTensorComputation {
     }
 }
 
-#[pymodule]
+#[pymodule(name = "_core")]
 fn gristmill_symbolics(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTensorComputation>()?;
     rewrite_bindings::register(py, module)?;
