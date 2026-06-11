@@ -474,6 +474,8 @@ def score_action(
     candidate_embedding = candidate_embeddings[safe_candidate]
     left_logits = _left_logits(params, context, candidate_embedding, left_embeddings)
     left_mask = jnp.asarray(action_choice["left_mask"], dtype=jnp.bool_)
+    provided_left_valid = jnp.asarray(action_choice["left_valid_mask"], dtype=jnp.bool_)
+    left_valid_matches = jnp.all(provided_left_valid == left_valid)
     left_logp, left_is_valid = _score_side(left_logits, left_valid, left_mask)
     left_summary = masked_mean(left_embeddings, left_valid & left_mask)
 
@@ -488,13 +490,23 @@ def score_action(
     right_logits = _right_logits(
         params, context, candidate_embedding, right_embeddings, left_summary
     )
+    provided_right_valid = jnp.asarray(
+        action_choice["right_valid_mask"], dtype=jnp.bool_
+    )
+    right_valid_matches = jnp.all(provided_right_valid == right_valid)
     right_logp, right_is_valid = _score_side(
         right_logits,
         right_valid,
         jnp.asarray(action_choice["right_mask"], dtype=jnp.bool_),
     )
     logp = candidate_log_probs[safe_candidate] + left_logp + right_logp
-    valid = candidate_is_valid & left_is_valid & right_is_valid
+    valid = (
+        candidate_is_valid
+        & left_is_valid
+        & right_is_valid
+        & left_valid_matches
+        & right_valid_matches
+    )
     return jnp.where(valid, logp, jnp.asarray(-jnp.inf, dtype=logp.dtype))
 
 

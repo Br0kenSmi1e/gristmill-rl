@@ -256,6 +256,99 @@ def test_action_score_traced_invalid_candidate_index_returns_negative_infinity()
     assert bool(jnp.all(jnp.isneginf(scores)))
 
 
+def test_action_score_traced_valid_mask_mismatch_returns_negative_infinity():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+    bad_left_valid = ~choice["left_valid_mask"]
+    bad_right_valid = ~choice["right_valid_mask"]
+
+    scores = jax.jit(
+        lambda left_valid, right_valid: jnp.asarray(
+            [
+                score_action(
+                    params,
+                    state_tokens,
+                    state_mask,
+                    jnp.asarray(0, dtype=jnp.int32),
+                    action_tokens,
+                    action_mask,
+                    {**choice, "left_valid_mask": left_valid},
+                ),
+                score_action(
+                    params,
+                    state_tokens,
+                    state_mask,
+                    jnp.asarray(0, dtype=jnp.int32),
+                    action_tokens,
+                    action_mask,
+                    {**choice, "right_valid_mask": right_valid},
+                ),
+            ]
+        )
+    )(bad_left_valid, bad_right_valid)
+
+    assert scores.shape == (2,)
+    assert bool(jnp.all(jnp.isneginf(scores)))
+
+
+def test_action_score_traced_empty_side_mask_returns_negative_infinity():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+    empty_left = jnp.zeros_like(choice["left_mask"], dtype=jnp.bool_)
+
+    score = jax.jit(
+        lambda left_mask: score_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(0, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            {**choice, "left_mask": left_mask},
+        )
+    )(empty_left)
+
+    assert bool(jnp.isneginf(score))
+
+
+def test_action_score_traced_padded_slot_selection_returns_negative_infinity():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+    padded_left = jnp.zeros_like(choice["left_mask"], dtype=jnp.bool_).at[-1].set(True)
+
+    score = jax.jit(
+        lambda left_mask: score_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(0, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            {**choice, "left_mask": left_mask},
+        )
+    )(padded_left)
+
+    assert bool(jnp.isneginf(score))
+
+
 def test_action_sample_validates_through_scalar_and_row_boundaries():
     (
         _params,
