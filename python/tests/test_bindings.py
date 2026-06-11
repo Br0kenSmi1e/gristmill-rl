@@ -11,6 +11,7 @@ from gristmill_symbolics import (
     RewriteState,
     RewriteStateRow,
     TensorComputation,
+    ValidatedActionRow,
     validate_decision,
 )
 
@@ -181,6 +182,19 @@ def first_full_decision(space):
     }
 
 
+def first_padded_choice(space_snapshot, *, left_pad=2, right_pad=2):
+    template = space_snapshot["candidate_templates"][0]
+    left_len = len(template["left_definition"]["terms"])
+    right_len = len(template["right_definition"]["terms"])
+    return {
+        "candidate_index": 0,
+        "left_mask": [True] * left_len + [False] * left_pad,
+        "left_valid_mask": [True] * left_len + [False] * left_pad,
+        "right_mask": [True] * right_len + [False] * right_pad,
+        "right_valid_mask": [True] * right_len + [False] * right_pad,
+    }
+
+
 def test_rewrite_state_from_computation_clones_input_computation():
     comp = TensorComputation.from_json_string(actionable_json())
     before = comp.snapshot()
@@ -276,6 +290,119 @@ def test_row_query_rejects_python_length_mismatches():
 
     with pytest.raises(GristmillSymbolicsError, match="active_mask"):
         row.query_action_spaces_for_row([0, 0], [True])
+
+
+def test_row_validate_actions_trims_padded_masks_and_application_matches_scalar():
+    comp = TensorComputation.from_json_string(actionable_json())
+    scalar = RewriteState.from_computation(comp)
+    scalar_space = scalar.action_space_for_def(0)
+    scalar_decision = first_full_decision(scalar_space)
+    validate_decision(scalar_space, scalar_decision)
+    scalar.apply_validated_decision(scalar_space, scalar_decision)
+
+    row = RewriteStateRow.from_states([RewriteState.from_computation(comp)])
+    spaces = row.query_action_spaces_for_row([0], [True])
+    choice = first_padded_choice(spaces.snapshots()[0], left_pad=3, right_pad=4)
+
+    validated = row.validate_actions_for_row(spaces, [choice], [True])
+    applied = row.apply_validated_actions_for_row(validated)
+
+    assert isinstance(validated, ValidatedActionRow)
+    assert validated.len() == 1
+    assert validated.entry_kinds() == ["valid"]
+    assert applied == [True]
+    assert row.snapshots()[0] == scalar.snapshot()
+
+
+def test_row_validate_actions_skips_unscored_padded_entries():
+    row = RewriteStateRow.from_states(
+        [
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+            RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json())),
+        ]
+    )
+    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
+    choice = first_padded_choice(spaces.snapshots()[0])
+
+    validated = row.validate_actions_for_row(spaces, [choice, None], [True, False])
+    applied = row.apply_validated_actions_for_row(validated)
+
+    assert validated.entry_kinds() == ["valid", "skipped"]
+    assert applied == [True, False]
+
+
+def test_row_validate_actions_rejects_padded_shape_errors_before_rust_validation():
+    row = RewriteStateRow.from_states(
+        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
+    )
+    spaces = row.query_action_spaces_for_row([0], [True])
+    choice = first_padded_choice(spaces.snapshots()[0])
+    choice["left_valid_mask"] = [True]
+
+    with pytest.raises(ValueError, match="sample 0.*left"):
+        row.validate_actions_for_row(spaces, [choice], [True])
+
+    choice = first_padded_choice(spaces.snapshots()[0])
+    choice["right_valid_mask"] = [False] * len(choice["right_valid_mask"])
+
+    with pytest.raises(ValueError, match="sample 0.*right_valid_mask"):
+        row.validate_actions_for_row(spaces, [choice], [True])
+
+
+def test_row_validate_actions_invalid_choice_does_not_mutate_row():
+    row = RewriteStateRow.from_states(
+        [
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+        ]
+    )
+    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
+    bad = first_padded_choice(spaces.snapshots()[0])
+    bad["candidate_index"] = 999
+    good = first_padded_choice(spaces.snapshots()[1])
+    before = row.snapshots()
+
+    with pytest.raises(GristmillSymbolicsError, match="sample: 0"):
+        row.validate_actions_for_row(spaces, [bad, good], [True, True])
+
+    assert row.snapshots() == before
+
+
+def test_row_validate_actions_rejects_python_length_mismatches():
+    row = RewriteStateRow.from_states(
+        [
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
+        ]
+    )
+    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
+    choice = first_padded_choice(spaces.snapshots()[0])
+
+    with pytest.raises(ValueError, match="action_choices.*1.*action_score_mask.*2"):
+        row.validate_actions_for_row(spaces, [choice], [True, True])
+
+    with pytest.raises(ValueError, match="action_choices.*2.*action_score_mask.*1"):
+        row.validate_actions_for_row(spaces, [choice, choice], [True])
+
+    width_one = RewriteStateRow.from_states(
+        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
+    )
+    short_spaces = width_one.query_action_spaces_for_row([0], [True])
+
+    with pytest.raises(GristmillSymbolicsError, match="action_space_row"):
+        row.validate_actions_for_row(short_spaces, [choice, choice], [True, True])
+
+
+def test_row_validate_actions_rejects_bool_candidate_index():
+    row = RewriteStateRow.from_states(
+        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
+    )
+    spaces = row.query_action_spaces_for_row([0], [True])
+    choice = first_padded_choice(spaces.snapshots()[0])
+    choice["candidate_index"] = True
+
+    with pytest.raises(TypeError, match="candidate_index.*not bool"):
+        row.validate_actions_for_row(spaces, [choice], [True])
 
 
 def test_row_query_rejects_bool_target_choices():

@@ -126,6 +126,63 @@ fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
     })
 }
 
+fn parse_optional_padded_decision(
+    value: &Bound<'_, PyAny>,
+    scored: bool,
+    sample: usize,
+) -> PyResult<Option<Decision>> {
+    if !scored {
+        return Ok(None);
+    }
+
+    let dict = value.cast::<PyDict>().map_err(|_| {
+        PyTypeError::new_err(format!("sample {sample} action choice must be a dict"))
+    })?;
+    let candidate_index = parse_candidate_index(&required_dict_item(dict, "candidate_index")?)?;
+    let left_mask = parse_bool_mask(&required_dict_item(dict, "left_mask")?, "left_mask")?;
+    let left_valid_mask = parse_bool_mask(
+        &required_dict_item(dict, "left_valid_mask")?,
+        "left_valid_mask",
+    )?;
+    let right_mask = parse_bool_mask(&required_dict_item(dict, "right_mask")?, "right_mask")?;
+    let right_valid_mask = parse_bool_mask(
+        &required_dict_item(dict, "right_valid_mask")?,
+        "right_valid_mask",
+    )?;
+
+    Ok(Some(Decision {
+        candidate_index,
+        left_mask: trim_padded_mask(sample, "left", left_mask, left_valid_mask)?,
+        right_mask: trim_padded_mask(sample, "right", right_mask, right_valid_mask)?,
+    }))
+}
+
+fn trim_padded_mask(
+    sample: usize,
+    side: &str,
+    mask: Vec<bool>,
+    valid_mask: Vec<bool>,
+) -> PyResult<Vec<bool>> {
+    if mask.len() != valid_mask.len() {
+        return Err(PyValueError::new_err(format!(
+            "sample {sample} {side}_mask and {side}_valid_mask lengths differ: {} != {}",
+            mask.len(),
+            valid_mask.len()
+        )));
+    }
+    if !valid_mask.iter().any(|valid| *valid) {
+        return Err(PyValueError::new_err(format!(
+            "sample {sample} {side}_valid_mask selects no usable bits"
+        )));
+    }
+
+    Ok(mask
+        .into_iter()
+        .zip(valid_mask)
+        .filter_map(|(keep, valid)| valid.then_some(keep))
+        .collect())
+}
+
 #[pyfunction(name = "validate_decision")]
 fn py_validate_decision(space: &PyActionSpace, decision: &Bound<'_, PyAny>) -> PyResult<()> {
     let decision = parse_decision(decision)?;
@@ -266,6 +323,55 @@ impl PyRewriteStateRow {
             .map_err(py_gristmill_error)?;
         Ok(PyActionSpaceRow { inner })
     }
+
+    fn validate_actions_for_row(
+        &self,
+        py: Python<'_>,
+        action_space_row: &PyActionSpaceRow,
+        action_choices: &Bound<'_, PyAny>,
+        action_score_mask: Vec<bool>,
+    ) -> PyResult<PyValidatedActionRow> {
+        let action_choices = action_choices
+            .cast::<PyList>()
+            .map_err(|_| PyTypeError::new_err("action_choices must be a list"))?;
+        if action_choices.len() != action_score_mask.len() {
+            return Err(PyValueError::new_err(format!(
+                "action_choices length {} differs from action_score_mask length {}",
+                action_choices.len(),
+                action_score_mask.len()
+            )));
+        }
+
+        let decisions = action_choices
+            .iter()
+            .zip(action_score_mask.iter().copied())
+            .enumerate()
+            .map(|(sample, (value, scored))| parse_optional_padded_decision(&value, scored, sample))
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = py
+            .allow_threads(|| {
+                self.inner.validate_actions_for_row(
+                    &action_space_row.inner,
+                    &decisions,
+                    &action_score_mask,
+                )
+            })
+            .map_err(py_gristmill_error)?;
+        Ok(PyValidatedActionRow { inner })
+    }
+
+    fn apply_validated_actions_for_row(
+        &mut self,
+        py: Python<'_>,
+        validated_action_row: &PyValidatedActionRow,
+    ) -> PyResult<Vec<bool>> {
+        py.allow_threads(|| {
+            self.inner
+                .apply_validated_actions_for_row(&validated_action_row.inner)
+        })
+        .map_err(py_gristmill_error)
+    }
 }
 
 #[allow(dead_code)]
@@ -302,6 +408,17 @@ impl PyActionSpaceRow {
 #[pyclass(name = "ValidatedActionRow")]
 struct PyValidatedActionRow {
     inner: RustValidatedActionRow,
+}
+
+#[pymethods]
+impl PyValidatedActionRow {
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn entry_kinds(&self) -> Vec<&'static str> {
+        self.inner.entry_kinds()
+    }
 }
 
 pub(crate) fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
