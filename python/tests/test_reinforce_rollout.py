@@ -1,3 +1,5 @@
+import json
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -35,6 +37,13 @@ def _policy(*, stop_bias_init=-20.0):
 
 def _state_from_json(text):
     return RewriteState.from_computation(TensorComputation.from_json_string(text))
+
+
+def _two_actionable_json():
+    data = json.loads(actionable_json())
+    data["tensors"].append({"id": 4, "symmetry": []})
+    data["definitions"].append({**data["definitions"][0], "base": 4})
+    return json.dumps(data)
 
 
 def test_make_rng_grid_uses_step_sample_decision_kind_axes():
@@ -129,12 +138,13 @@ def test_multi_sample_rollout_preserves_sample_axis_alignment():
 
 def test_rng_assignment_for_sample_is_stable_when_previous_sample_stops():
     normal_policy = _policy(stop_bias_init=-20.0)
+    two_step_actionable = _two_actionable_json()
     root = jax.random.PRNGKey(16)
 
     both_active, _ = collect_rollout_batch(
         normal_policy,
-        [_state_from_json(actionable_json()), _state_from_json(actionable_json())],
-        RolloutConfig(batch_size=2, max_steps=1, seed=16),
+        [_state_from_json(two_step_actionable), _state_from_json(two_step_actionable)],
+        RolloutConfig(batch_size=2, max_steps=2, seed=16),
         update_index=0,
         root_key=root,
     )
@@ -142,18 +152,23 @@ def test_rng_assignment_for_sample_is_stable_when_previous_sample_stops():
         normal_policy,
         [
             RewriteState.from_computation(TensorComputation.load_json(BASIC_FIXTURE)),
-            _state_from_json(actionable_json()),
+            _state_from_json(two_step_actionable),
         ],
-        RolloutConfig(batch_size=2, max_steps=1, seed=16),
+        RolloutConfig(batch_size=2, max_steps=2, seed=16),
         update_index=0,
         root_key=root,
     )
 
     assert int(first_stops.step_case[0, 0]) == CASE_STOP
-    assert bool(first_stops.action_score_mask[0, 0]) is False
+    assert int(first_stops.step_case[1, 0]) == CASE_ALREADY_FINISHED
+    assert first_stops.action_score_mask[:, 0].tolist() == [False, False]
     assert int(first_stops.step_case[0, 1]) == CASE_VALID_ACTION
+    assert int(first_stops.step_case[1, 1]) == CASE_VALID_ACTION
     assert bool(first_stops.action_score_mask[0, 1]) is True
+    assert bool(first_stops.target_score_mask[1, 1]) is True
+    assert bool(first_stops.action_score_mask[1, 1]) is True
     assert both_active.target_choice[0, 1] == first_stops.target_choice[0, 1]
+    assert both_active.target_choice[1, 1] == first_stops.target_choice[1, 1]
     for choice_key in (
         "candidate_index",
         "left_mask",
@@ -161,7 +176,8 @@ def test_rng_assignment_for_sample_is_stable_when_previous_sample_stops():
         "right_mask",
         "right_valid_mask",
     ):
-        assert jnp.array_equal(
-            both_active.action_choice[choice_key][0, 1],
-            first_stops.action_choice[choice_key][0, 1],
-        )
+        for step in (0, 1):
+            assert jnp.array_equal(
+                both_active.action_choice[choice_key][step, 1],
+                first_stops.action_choice[choice_key][step, 1],
+            )
