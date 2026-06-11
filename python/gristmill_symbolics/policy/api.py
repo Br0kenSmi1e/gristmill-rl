@@ -108,6 +108,52 @@ def _candidate_indices(params):
     return jnp.arange(params["action"]["candidate_slot_bias"].shape[0], dtype=jnp.int32)
 
 
+def _state_definition_start_mask(state_tokens, state_token_mask):
+    return (
+        state_token_mask
+        & (state_tokens["token_kind"] == int(TOKEN_KIND.DEF_START))
+        & (state_tokens["def_index"] >= 0)
+    )
+
+
+def _state_definition_token_mask(state_tokens, state_token_mask):
+    return state_token_mask & (state_tokens["def_index"] >= 0)
+
+
+def _action_space_start_mask(action_space_tokens, action_space_token_mask):
+    return (
+        action_space_token_mask
+        & (action_space_tokens["token_kind"] == int(TOKEN_KIND.ACTION_SPACE_START))
+    )
+
+
+def _action_space_def_index(action_space_tokens, action_space_token_mask):
+    starts = _action_space_start_mask(action_space_tokens, action_space_token_mask)
+    start_defs = jnp.where(starts, action_space_tokens["def_index"], -1)
+    return jnp.max(start_defs), jnp.any(starts)
+
+
+def _selected_def_valid(
+    state_tokens,
+    state_token_mask,
+    selected_def_index,
+    action_space_tokens,
+    action_space_token_mask,
+):
+    selected = jnp.asarray(selected_def_index, dtype=jnp.int32)
+    state_defs = _state_definition_start_mask(state_tokens, state_token_mask)
+    state_has_selected = jnp.any(state_defs & (state_tokens["def_index"] == selected))
+    action_space_def, has_action_space_start = _action_space_def_index(
+        action_space_tokens, action_space_token_mask
+    )
+    return (
+        (selected >= 0)
+        & state_has_selected
+        & has_action_space_start
+        & (action_space_def == selected)
+    )
+
+
 def _encoded_action_context(
     params,
     state_tokens,
@@ -120,13 +166,26 @@ def _encoded_action_context(
     action_encoded = encode_tokens(
         params, embed_tokens(params, action_space_tokens), action_space_token_mask
     )
+    selected = jnp.asarray(selected_def_index, dtype=jnp.int32)
+    selected_def_mask = _state_definition_token_mask(state_tokens, state_token_mask)
     selected_def = pool_by_index(
         state_encoded,
         state_tokens["def_index"],
-        state_token_mask,
-        jnp.asarray(selected_def_index, dtype=jnp.int32).reshape((1,)),
+        selected_def_mask,
+        selected.reshape((1,)),
     )[0]
-    return action_encoded, masked_mean(state_encoded, state_token_mask) + selected_def
+    valid = _selected_def_valid(
+        state_tokens,
+        state_token_mask,
+        selected,
+        action_space_tokens,
+        action_space_token_mask,
+    )
+    return (
+        action_encoded,
+        masked_mean(state_encoded, state_token_mask) + selected_def,
+        valid,
+    )
 
 
 def _candidate_valid_mask(action_space_tokens, action_space_token_mask, indices):
@@ -150,7 +209,7 @@ def _candidate_logits(
     action_space_tokens,
     action_space_token_mask,
 ):
-    action_encoded, context = _encoded_action_context(
+    action_encoded, context, selected_def_valid = _encoded_action_context(
         params,
         state_tokens,
         state_token_mask,
@@ -177,6 +236,7 @@ def _candidate_logits(
         candidate_embeddings,
         action_encoded,
         context,
+        selected_def_valid,
     )
 
 
@@ -348,6 +408,62 @@ def _concrete_side_valid_mask(
     )
 
 
+def _concrete_state_def_indices(state_tokens, state_token_mask):
+    token_defs = _concrete_array(state_tokens["def_index"])
+    token_kinds = _concrete_array(state_tokens["token_kind"])
+    token_mask = _concrete_array(state_token_mask)
+    if token_defs is None or token_kinds is None or token_mask is None:
+        return None
+    real_defs = (
+        token_mask.astype(bool)
+        & (token_kinds == int(TOKEN_KIND.DEF_START))
+        & (token_defs >= 0)
+    )
+    return {int(value) for value in token_defs[real_defs].tolist()}
+
+
+def _concrete_action_space_def_index(action_space_tokens, action_space_token_mask):
+    token_defs = _concrete_array(action_space_tokens["def_index"])
+    token_kinds = _concrete_array(action_space_tokens["token_kind"])
+    token_mask = _concrete_array(action_space_token_mask)
+    if token_defs is None or token_kinds is None or token_mask is None:
+        return None
+    starts = token_mask.astype(bool) & (
+        token_kinds == int(TOKEN_KIND.ACTION_SPACE_START)
+    )
+    if not bool(np.any(starts)):
+        raise ValueError("action space tokens contain no ACTION_SPACE_START")
+    start_defs = token_defs[starts]
+    return int(start_defs[0])
+
+
+def _validate_selected_def_index(
+    state_tokens,
+    state_token_mask,
+    selected_def_index,
+    action_space_tokens,
+    action_space_token_mask,
+):
+    selected = _concrete_int(selected_def_index)
+    if selected is None:
+        return
+    if selected < 0:
+        raise ValueError(f"selected_def_index {selected} must select a definition")
+
+    state_defs = _concrete_state_def_indices(state_tokens, state_token_mask)
+    if state_defs is not None and selected not in state_defs:
+        raise ValueError(f"selected_def_index {selected} is not present in state tokens")
+
+    action_space_def = _concrete_action_space_def_index(
+        action_space_tokens, action_space_token_mask
+    )
+    if action_space_def is not None and action_space_def != selected:
+        raise ValueError(
+            f"selected_def_index {selected} does not match action space def_index "
+            f"{action_space_def}"
+        )
+
+
 def _validate_side_choice(
     params,
     action_space_tokens,
@@ -442,6 +558,13 @@ def score_action(
     action_space_token_mask,
     action_choice,
 ):
+    _validate_selected_def_index(
+        state_tokens,
+        state_token_mask,
+        selected_def_index,
+        action_space_tokens,
+        action_space_token_mask,
+    )
     _validate_action_choice(params, action_space_tokens, action_space_token_mask, action_choice)
     (
         candidate_logits,
@@ -449,6 +572,7 @@ def score_action(
         candidate_embeddings,
         action_encoded,
         context,
+        selected_def_is_valid,
     ) = _candidate_logits(
         params,
         state_tokens,
@@ -501,7 +625,8 @@ def score_action(
     )
     logp = candidate_log_probs[safe_candidate] + left_logp + right_logp
     valid = (
-        candidate_is_valid
+        selected_def_is_valid
+        & candidate_is_valid
         & left_is_valid
         & right_is_valid
         & left_valid_matches
@@ -519,6 +644,13 @@ def sample_action(
     action_space_token_mask,
     rng,
 ):
+    _validate_selected_def_index(
+        state_tokens,
+        state_token_mask,
+        selected_def_index,
+        action_space_tokens,
+        action_space_token_mask,
+    )
     candidate_rng, left_rng, right_rng = jax.random.split(rng, 3)
     (
         candidate_logits,
@@ -526,6 +658,7 @@ def sample_action(
         candidate_embeddings,
         action_encoded,
         context,
+        _selected_def_is_valid,
     ) = _candidate_logits(
         params,
         state_tokens,

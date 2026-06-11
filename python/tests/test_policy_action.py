@@ -12,6 +12,7 @@ from gristmill_symbolics.policy import (
     tokenize_action_space_snapshot,
     tokenize_state_snapshot,
 )
+from gristmill_symbolics.policy.constants import TOKEN_KIND
 from tests.policy_fixtures import actionable_state, actionable_state_snapshot
 
 
@@ -57,6 +58,21 @@ def _sample():
             jax.random.PRNGKey(1),
         ),
     )
+
+
+def _with_action_space_start_def_index(action_tokens, def_index):
+    start = (
+        jnp.asarray(action_tokens["token_kind"])
+        == jnp.asarray(int(TOKEN_KIND.ACTION_SPACE_START), dtype=jnp.int32)
+    )
+    return {
+        **action_tokens,
+        "def_index": jnp.where(
+            start,
+            jnp.asarray(def_index, dtype=jnp.int32),
+            action_tokens["def_index"],
+        ),
+    }
 
 
 def _trimmed_decision(choice):
@@ -251,6 +267,135 @@ def test_action_score_traced_invalid_candidate_index_returns_negative_infinity()
             )
         )(candidates)
     )(candidate_indices)
+
+    assert scores.shape == (3,)
+    assert bool(jnp.all(jnp.isneginf(scores)))
+
+
+def test_action_rejects_concrete_stop_selected_def_index():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+
+    with pytest.raises(ValueError, match="selected_def_index"):
+        score_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(-1, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            choice,
+        )
+
+    with pytest.raises(ValueError, match="selected_def_index"):
+        sample_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(-1, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            jax.random.PRNGKey(3),
+        )
+
+
+def test_action_rejects_concrete_missing_selected_def_index():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+
+    with pytest.raises(ValueError, match="selected_def_index"):
+        score_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(1, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            choice,
+        )
+
+    with pytest.raises(ValueError, match="selected_def_index"):
+        sample_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(1, dtype=jnp.int32),
+            action_tokens,
+            action_mask,
+            jax.random.PRNGKey(4),
+        )
+
+
+def test_action_rejects_concrete_action_space_def_mismatch():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+    mismatched_action_tokens = _with_action_space_start_def_index(action_tokens, 1)
+
+    with pytest.raises(ValueError, match="action space"):
+        score_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(0, dtype=jnp.int32),
+            mismatched_action_tokens,
+            action_mask,
+            choice,
+        )
+
+    with pytest.raises(ValueError, match="action space"):
+        sample_action(
+            params,
+            state_tokens,
+            state_mask,
+            jnp.asarray(0, dtype=jnp.int32),
+            mismatched_action_tokens,
+            action_mask,
+            jax.random.PRNGKey(5),
+        )
+
+
+def test_action_score_traced_invalid_selected_def_index_returns_negative_infinity():
+    (
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        (choice, _),
+    ) = _sample()
+    selected_defs = jnp.asarray([-1, 1, 99], dtype=jnp.int32)
+
+    scores = jax.jit(
+        lambda indices: jax.vmap(
+            lambda selected_def: score_action(
+                params,
+                state_tokens,
+                state_mask,
+                selected_def,
+                action_tokens,
+                action_mask,
+                choice,
+            )
+        )(indices)
+    )(selected_defs)
 
     assert scores.shape == (3,)
     assert bool(jnp.all(jnp.isneginf(scores)))
