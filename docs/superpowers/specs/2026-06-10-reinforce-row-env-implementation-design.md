@@ -126,6 +126,65 @@ The refactored scalar `RewriteState`, `ActionSpace`, and `Decision` boundaries
 are the authoritative behavior for row tests, width-1 equivalence checks, and
 debugging.
 
+## File Layout
+
+Phase 1 should split rewrite code enough to make the scalar and row boundaries
+clear without redesigning the whole rewrite module:
+
+```text
+src/rewrite.rs
+src/rewrite/scalar.rs
+src/rewrite/row.rs
+
+python/src/lib.rs
+python/src/rewrite_bindings.rs
+```
+
+`src/rewrite.rs` should become the public facade for the rewrite module:
+
+```text
+mod scalar;
+mod row;
+
+pub use scalar::{
+  ActionSpace,
+  Decision,
+  Factorization,
+  RewriteError,
+  RewriteState,
+  validate_decision,
+};
+
+pub use row::{
+  ActionSpaceEntry,
+  ActionSpaceRow,
+  RewriteStateRow,
+  ValidatedActionEntry,
+  ValidatedActionRow,
+};
+```
+
+`src/rewrite/scalar.rs` should contain today's scalar rewrite implementation,
+plus only the scalar boundary refactor described below.
+
+`src/rewrite/row.rs` should stay small. It owns row-aligned entry enums and Rayon
+wrappers over scalar generation, validation, and apply boundaries. It must not
+duplicate scalar rewrite planning logic.
+
+`python/src/rewrite_bindings.rs` should own rewrite-related PyO3 classes and
+conversion:
+
+- `PyRewriteState`;
+- `PyActionSpace`;
+- `PyRewriteStateRow`;
+- `PyActionSpaceRow`;
+- `PyValidatedActionRow`;
+- Python action input parsing;
+- padded row action mask trimming into exact Rust `Decision` values.
+
+`python/src/lib.rs` should keep shared module setup and class registration. It
+should not keep growing as the home for rewrite binding implementation details.
+
 ## Scalar Rewrite Boundary Refactor
 
 Before adding row wrappers, refactor the current scalar workflow in
@@ -455,6 +514,10 @@ Binding tests:
 
 Phase 1 is complete when:
 
+- rewrite code is split into a scalar implementation file, a small row wrapper
+  file, and a facade `src/rewrite.rs`;
+- rewrite PyO3 code is moved into a rewrite-specific binding module instead of
+  continuing to grow inside `python/src/lib.rs`;
 - `src/rewrite.rs` exposes scalar generate, public `validate_decision`, and apply
   boundaries without changing scalar rewrite semantics.
 - Old scalar Rust/PyO3 apply functions are removed or renamed when replaced by
