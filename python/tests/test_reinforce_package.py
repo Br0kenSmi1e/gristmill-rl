@@ -1,14 +1,22 @@
 import pytest
 
+import gristmill_symbolics.reinforce as reinforce
 from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
+    CheckpointData,
+    FinalColumnMetrics,
     LossConfig,
+    LossDiagnostics,
     OptimizerConfig,
     PolicyState,
     RewardConfig,
     RolloutConfig,
+    RolloutTable,
+    ScoreOutputs,
+    TrainState,
     TrainingError,
+    UpdateMetrics,
 )
 from gristmill_symbolics.reinforce.types import (
     CASE_ALREADY_FINISHED,
@@ -34,6 +42,13 @@ def test_reinforce_package_exports_phase3_contracts():
     assert LossConfig().require_scored_terms is True
     assert OptimizerConfig().learning_rate == pytest.approx(1.0e-3)
     assert issubclass(TrainingError, RuntimeError)
+    assert reinforce.CheckpointData is CheckpointData
+    assert reinforce.FinalColumnMetrics is FinalColumnMetrics
+    assert reinforce.LossDiagnostics is LossDiagnostics
+    assert reinforce.RolloutTable is RolloutTable
+    assert reinforce.ScoreOutputs is ScoreOutputs
+    assert reinforce.TrainState is TrainState
+    assert reinforce.UpdateMetrics is UpdateMetrics
 
 
 def test_reinforce_case_and_rng_constants_are_stable():
