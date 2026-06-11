@@ -17,6 +17,9 @@ _ID_FIELDS = (
     "index_id",
     "candidate_index",
 )
+_FIELD_EMBEDDING_KEY_COUNT = 3 + len(_ID_FIELDS)
+_FIXED_PARAM_KEY_COUNT = _FIELD_EMBEDDING_KEY_COUNT + 1 + 2 + 4
+_ATTENTION_KEYS_PER_LAYER = 8
 
 
 def _normal(key, shape, scale):
@@ -28,7 +31,10 @@ def _split(key, count):
 
 
 def init_policy_params(config: PolicyConfig, rng) -> dict[str, object]:
-    keys = _split(rng, 64)
+    key_count = _FIXED_PARAM_KEY_COUNT + (
+        _ATTENTION_KEYS_PER_LAYER * config.num_attention_layers
+    )
+    keys = _split(rng, key_count)
     d = config.d_model
     params: dict[str, object] = {
         "field_embeddings": {

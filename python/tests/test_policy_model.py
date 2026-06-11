@@ -17,6 +17,20 @@ def test_init_policy_params_shapes_and_stop_bias():
     assert float(params["target"]["stop_bias"]) == -20.0
 
 
+def test_init_policy_params_supports_configured_attention_layer_count():
+    config = PolicyConfig(
+        d_model=8,
+        num_attention_layers=8,
+        max_candidates=4,
+        max_side_terms=4,
+        id_vocab_size=16,
+    )
+    params = init_policy_params(config, jax.random.PRNGKey(3))
+
+    assert len(params["attention"]) == 8
+    assert params["attention"][-1]["w2"].shape == (16, 8)
+
+
 def test_embed_tokens_and_encoder_return_dense_token_vectors():
     params = init_policy_params(PolicyConfig(d_model=16), jax.random.PRNGKey(1))
     tokens, mask = tokenize_state_snapshot(actionable_state_snapshot())
