@@ -10,6 +10,7 @@ EXPECTED_POLICY_EXPORTS = (
     "stack_token_trees",
     "tokenize_state_snapshot",
     "tokenize_action_space_snapshot",
+    "init_policy_params",
 )
 
 
