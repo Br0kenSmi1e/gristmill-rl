@@ -1,5 +1,6 @@
 """On-policy REINFORCE trainer over the row rewrite environment."""
 
+from .rollout import collect_rollout_batch, make_rng_grid
 from .types import (
     BaselineConfig,
     CheckpointData,
@@ -20,6 +21,8 @@ from .types import (
 __all__ = (
     "BaselineConfig",
     "CheckpointData",
+    "collect_rollout_batch",
+    "make_rng_grid",
     "FinalColumnMetrics",
     "LossConfig",
     "LossDiagnostics",
