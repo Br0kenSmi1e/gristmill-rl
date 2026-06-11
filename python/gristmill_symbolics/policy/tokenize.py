@@ -15,14 +15,13 @@ def _coeff_parts(coeff: Any) -> tuple[int, int]:
     return int(coeff[0]), int(coeff[1])
 
 
-def _index_ranges(snapshot: dict[str, Any]) -> dict[int, int]:
+def _definition_index_ranges(definition: dict[str, Any]) -> dict[int, int]:
     ranges: dict[int, int] = {}
-    for definition in snapshot.get("definitions", []):
-        for index in definition.get("ext_indices", []):
+    for index in definition.get("ext_indices", []):
+        ranges[int(index["id"])] = int(index["range"])
+    for term in definition.get("terms", []):
+        for index in term.get("sum_indices", []):
             ranges[int(index["id"])] = int(index["range"])
-        for term in definition.get("terms", []):
-            for index in term.get("sum_indices", []):
-                ranges[int(index["id"])] = int(index["range"])
     return ranges
 
 
@@ -144,7 +143,6 @@ def _serialize_definition(
 
 def tokenize_state_snapshot(snapshot: dict[str, Any]) -> tuple[TokenTree, jax.Array]:
     rows: list[dict[str, int]] = []
-    index_ranges = _index_ranges(snapshot)
     for range_info in snapshot.get("ranges", []):
         _append(
             rows,
@@ -167,6 +165,6 @@ def tokenize_state_snapshot(snapshot: dict[str, Any]) -> tuple[TokenTree, jax.Ar
             definition,
             def_index=def_index,
             segment=SEGMENT.DEFINITIONS,
-            index_ranges=index_ranges,
+            index_ranges=_definition_index_ranges(definition),
         )
     return make_token_tree(rows, STATE_TOKEN_FIELDS)

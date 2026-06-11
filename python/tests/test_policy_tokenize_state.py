@@ -69,3 +69,43 @@ def test_state_tokenization_uses_scoped_ids_and_sentinels():
         for value, kind in zip(tokens["segment"].tolist(), tokens["token_kind"].tolist())
         if kind == TOKEN_KIND.DEF_START
     )
+
+
+def test_state_tokenization_scopes_factor_index_ranges_per_definition():
+    snapshot = {
+        "ranges": [{"id": 0, "size": 3}, {"id": 1, "size": 5}],
+        "tensors": [{"id": 0, "symmetry": []}, {"id": 1, "symmetry": []}],
+        "definitions": [
+            {
+                "base": 0,
+                "ext_indices": [{"id": 0, "range": 0}],
+                "terms": [
+                    {
+                        "coeff": {"numer": 1, "denom": 1},
+                        "sum_indices": [],
+                        "factors": [{"tensor": 0, "indices": [0]}],
+                    }
+                ],
+            },
+            {
+                "base": 1,
+                "ext_indices": [{"id": 0, "range": 1}],
+                "terms": [
+                    {
+                        "coeff": {"numer": 1, "denom": 1},
+                        "sum_indices": [],
+                        "factors": [{"tensor": 1, "indices": [0]}],
+                    }
+                ],
+            },
+        ],
+    }
+
+    tokens, _ = tokenize_state_snapshot(snapshot)
+    factor_ranges_by_def = {
+        tokens["def_index"][i].item(): tokens["range_id"][i].item()
+        for i, kind in enumerate(tokens["token_kind"].tolist())
+        if kind == TOKEN_KIND.FACTOR_INDEX
+    }
+
+    assert factor_ranges_by_def == {0: 0, 1: 1}
