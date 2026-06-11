@@ -42,6 +42,10 @@ def make_action_choice(
         raise ValueError(
             f"right_mask and right_valid_mask shapes differ: {right.shape} != {right_valid.shape}"
         )
+    if left.shape != right.shape:
+        raise ValueError(
+            f"left and right mask shapes differ: {left.shape} != {right.shape}"
+        )
     return {
         "candidate_index": jnp.asarray(candidate_index, dtype=jnp.int32),
         "left_mask": left,

@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+import pytest
 
 from gristmill_symbolics.policy import (
     ACTION_TOKEN_FIELDS,
@@ -95,6 +96,17 @@ def test_action_choice_tree_round_trips_to_python_padded_choice():
         "right_mask": [False, True],
         "right_valid_mask": [True, True],
     }
+
+
+def test_action_choice_rejects_different_left_and_right_widths():
+    with pytest.raises(ValueError, match="left and right mask shapes differ"):
+        make_action_choice(
+            candidate_index=2,
+            left_mask=[True],
+            left_valid_mask=[True],
+            right_mask=[True, False],
+            right_valid_mask=[True, True],
+        )
 
 
 def test_policy_config_defaults_match_phase_2_small_model():
