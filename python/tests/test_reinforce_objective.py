@@ -17,6 +17,7 @@ from gristmill_symbolics.reinforce import (
     reinforce_loss,
     score_rollout,
 )
+from gristmill_symbolics.reinforce.objective import _reinforce_loss_value
 from gristmill_symbolics.reinforce.types import ScoreOutputs, TrainingError
 from tests.policy_fixtures import actionable_state
 
@@ -42,6 +43,30 @@ def test_compute_rewards_uses_float64_log_flops_improvement():
     assert reward.dtype == np.float64
     assert reward.tolist()[0] == pytest.approx(2.5)
     assert reward.tolist()[1] == pytest.approx(1.0e-12)
+
+
+def test_compute_rewards_rejects_non_1d_log_flops():
+    final = FinalColumnMetrics(
+        initial_log_flops=np.asarray([[10.0, 9.0]], dtype=np.float64),
+        final_log_flops=np.asarray([[7.5, 6.0]], dtype=np.float64),
+        stopped=np.asarray([[False, True]], dtype=bool),
+        max_steps=np.asarray([[True, False]], dtype=bool),
+    )
+
+    with pytest.raises(TrainingError, match="initial_log_flops.*1D"):
+        compute_rewards(final, RewardConfig())
+
+
+def test_compute_rewards_rejects_metric_shape_mismatch():
+    final = FinalColumnMetrics(
+        initial_log_flops=np.asarray([10.0, 9.0], dtype=np.float64),
+        final_log_flops=np.asarray([7.5, 6.0], dtype=np.float64),
+        stopped=np.asarray([False], dtype=bool),
+        max_steps=np.asarray([True, False], dtype=bool),
+    )
+
+    with pytest.raises(TrainingError, match="stopped.*shape"):
+        compute_rewards(final, RewardConfig())
 
 
 def test_compute_advantages_batch_mean_and_optional_standardization():
@@ -156,3 +181,77 @@ def test_score_rollout_gates_masked_invalid_action_entries_before_policy_scoring
     scores = score_rollout(policy, masked_table)
 
     assert float(scores.action_logp[0, 0]) == pytest.approx(0.0)
+
+
+def test_score_rollout_gates_masked_invalid_target_entries_before_policy_scoring():
+    policy = _policy()
+    table, _final = collect_rollout_batch(
+        policy,
+        [actionable_state()],
+        RolloutConfig(batch_size=1, max_steps=1, seed=11),
+        update_index=0,
+        root_key=jax.random.PRNGKey(11),
+    )
+    masked_table = type(table)(
+        **{
+            **table.__dict__,
+            "target_choice": jnp.asarray([[999]], dtype=jnp.int32),
+            "target_score_mask": jnp.asarray([[False]], dtype=jnp.bool_),
+            "action_score_mask": jnp.asarray([[False]], dtype=jnp.bool_),
+        }
+    )
+
+    scores = score_rollout(policy, masked_table)
+
+    assert float(scores.target_logp[0, 0]) == pytest.approx(0.0)
+
+
+def test_score_rollout_rejects_action_scored_without_target_scored():
+    policy = _policy()
+    table, _final = collect_rollout_batch(
+        policy,
+        [actionable_state()],
+        RolloutConfig(batch_size=1, max_steps=1, seed=12),
+        update_index=0,
+        root_key=jax.random.PRNGKey(12),
+    )
+    invalid_table = type(table)(
+        **{
+            **table.__dict__,
+            "target_score_mask": jnp.asarray([[False]], dtype=jnp.bool_),
+            "action_score_mask": jnp.asarray([[True]], dtype=jnp.bool_),
+        }
+    )
+
+    with pytest.raises(TrainingError, match="action_score_mask=true"):
+        score_rollout(policy, invalid_table)
+
+
+def test_reinforce_loss_value_preserves_score_rollout_gradients():
+    policy = _policy()
+    table, _final = collect_rollout_batch(
+        policy,
+        [actionable_state()],
+        RolloutConfig(batch_size=1, max_steps=1, seed=13),
+        update_index=0,
+        root_key=jax.random.PRNGKey(13),
+    )
+    advantage = jnp.asarray([1.0], dtype=jnp.float32)
+
+    def objective(params):
+        policy_with_params = PolicyState(config=policy.config, params=params)
+        scores = score_rollout(policy_with_params, table, check_finite=False)
+        loss, _column_logp_sum = _reinforce_loss_value(table, scores, advantage)
+        return loss
+
+    loss, grads = jax.value_and_grad(objective)(policy.params)
+    floating_grads = [
+        np.asarray(leaf)
+        for leaf in jax.tree_util.tree_leaves(grads)
+        if np.issubdtype(np.asarray(leaf).dtype, np.floating)
+    ]
+
+    assert np.isfinite(np.asarray(loss))
+    assert floating_grads
+    assert all(np.all(np.isfinite(grad)) for grad in floating_grads)
+    assert any(np.any(np.abs(grad) > 0.0) for grad in floating_grads)

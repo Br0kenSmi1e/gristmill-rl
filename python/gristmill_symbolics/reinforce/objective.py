@@ -24,10 +24,28 @@ def compute_rewards(final_metrics: FinalColumnMetrics, config: RewardConfig) -> 
         raise TrainingError(f"unsupported reward kind {config.kind!r}")
     initial = np.asarray(final_metrics.initial_log_flops, dtype=np.float64)
     final = np.asarray(final_metrics.final_log_flops, dtype=np.float64)
+    if initial.ndim != 1:
+        raise TrainingError(
+            f"initial_log_flops must be 1D, got shape {initial.shape}"
+        )
+    if final.ndim != 1:
+        raise TrainingError(f"final_log_flops must be 1D, got shape {final.shape}")
     if initial.shape != final.shape:
         raise TrainingError(
-            f"initial and final log-flops shapes differ: {initial.shape} != {final.shape}"
+            "initial_log_flops and final_log_flops shapes differ: "
+            f"{initial.shape} != {final.shape}"
         )
+    for field_name in ("stopped", "max_steps"):
+        if hasattr(final_metrics, field_name):
+            field_value = getattr(final_metrics, field_name)
+            if field_value is None:
+                continue
+            field_array = np.asarray(field_value)
+            if field_array.shape != initial.shape:
+                raise TrainingError(
+                    f"{field_name} shape {field_array.shape} does not match "
+                    f"reward shape {initial.shape}"
+                )
     reward = initial - final
     if not bool(np.all(np.isfinite(reward))):
         raise TrainingError("reward contains non-finite values")
@@ -70,9 +88,7 @@ def _reinforce_loss_value(
     target_terms = jnp.where(target_mask, scores.target_logp, 0.0)
     action_terms = jnp.where(action_mask, scores.action_logp, 0.0)
     column_logp_sum = jnp.sum(target_terms + action_terms, axis=0)
-    advantage_array = jax.lax.stop_gradient(
-        jnp.asarray(np.asarray(advantage, dtype=np.float64))
-    )
+    advantage_array = jax.lax.stop_gradient(jnp.asarray(advantage))
     return -jnp.mean(advantage_array * column_logp_sum), column_logp_sum
 
 
@@ -94,7 +110,8 @@ def reinforce_loss(
         raise TrainingError(f"advantage must be 1D, got shape {advantage_np.shape}")
     if advantage_np.shape[0] != int(target_mask.shape[1]):
         raise TrainingError(
-            f"advantage length {advantage_np.shape[0]} does not match rollout width {target_mask.shape[1]}"
+            f"advantage length {advantage_np.shape[0]} does not match "
+            f"rollout width {target_mask.shape[1]}"
         )
 
     loss, column_logp_sum = _reinforce_loss_value(rollout, scores, advantage_np)
