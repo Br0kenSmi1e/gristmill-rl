@@ -1,5 +1,6 @@
 """JAX policy model for REINFORCE rewrite sampling and scoring."""
 
+from .api import sample_target, score_target
 from .constants import ACTION_TOKEN_FIELDS, SENTINEL, STATE_TOKEN_FIELDS
 from .model import init_policy_params
 from .tree import pad_token_tree, stack_token_trees
@@ -24,4 +25,6 @@ __all__ = (
     "tokenize_state_snapshot",
     "tokenize_action_space_snapshot",
     "init_policy_params",
+    "sample_target",
+    "score_target",
 )

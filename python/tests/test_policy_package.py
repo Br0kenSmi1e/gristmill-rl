@@ -11,6 +11,8 @@ EXPECTED_POLICY_EXPORTS = (
     "tokenize_state_snapshot",
     "tokenize_action_space_snapshot",
     "init_policy_params",
+    "sample_target",
+    "score_target",
 )
 
 
