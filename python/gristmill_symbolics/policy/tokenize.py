@@ -4,7 +4,14 @@ from typing import Any
 
 import jax
 
-from .constants import SENTINEL, SEGMENT, STATE_TOKEN_FIELDS, TOKEN_KIND
+from .constants import (
+    ACTION_TOKEN_FIELDS,
+    SENTINEL,
+    SEGMENT,
+    SIDE,
+    STATE_TOKEN_FIELDS,
+    TOKEN_KIND,
+)
 from .tree import make_token_tree
 from .types import TokenTree
 
@@ -168,3 +175,98 @@ def tokenize_state_snapshot(snapshot: dict[str, Any]) -> tuple[TokenTree, jax.Ar
             index_ranges=_definition_index_ranges(definition),
         )
     return make_token_tree(rows, STATE_TOKEN_FIELDS)
+
+
+def tokenize_action_space_snapshot(snapshot: dict[str, Any]) -> tuple[TokenTree, jax.Array]:
+    rows: list[dict[str, int]] = []
+    selected_def_index = int(snapshot["def_index"])
+    _append(
+        rows,
+        TOKEN_KIND.ACTION_SPACE_START,
+        segment=SEGMENT.ACTION_SPACE,
+        def_index=selected_def_index,
+    )
+    for candidate_index, candidate in enumerate(snapshot.get("candidate_templates", [])):
+        _append(
+            rows,
+            TOKEN_KIND.CANDIDATE_START,
+            segment=SEGMENT.ACTION_SPACE,
+            def_index=selected_def_index,
+            candidate_index=candidate_index,
+        )
+        for side_name, side_value in (
+            ("left_definition", SIDE.LEFT),
+            ("right_definition", SIDE.RIGHT),
+            ("rewritten_definition", SIDE.REWRITTEN),
+        ):
+            _append(
+                rows,
+                TOKEN_KIND.SIDE_START,
+                segment=SEGMENT.ACTION_SPACE,
+                def_index=selected_def_index,
+                candidate_index=candidate_index,
+                side=int(side_value),
+            )
+            definition = candidate[side_name]
+            _serialize_definition(
+                rows,
+                definition,
+                def_index=selected_def_index,
+                segment=SEGMENT.ACTION_SPACE,
+                index_ranges=_definition_index_ranges(definition),
+                candidate_index=candidate_index,
+                side=int(side_value),
+            )
+            _append(
+                rows,
+                TOKEN_KIND.SIDE_END,
+                segment=SEGMENT.ACTION_SPACE,
+                def_index=selected_def_index,
+                candidate_index=candidate_index,
+                side=int(side_value),
+            )
+        _append(
+            rows,
+            TOKEN_KIND.CANDIDATE_END,
+            segment=SEGMENT.ACTION_SPACE,
+            def_index=selected_def_index,
+            candidate_index=candidate_index,
+        )
+    _append(
+        rows,
+        TOKEN_KIND.ACTION_SPACE_END,
+        segment=SEGMENT.ACTION_SPACE,
+        def_index=selected_def_index,
+    )
+    return make_token_tree(rows, ACTION_TOKEN_FIELDS)
+
+
+def candidate_count(tokens: TokenTree, mask: Any) -> int:
+    candidates = {
+        int(candidate)
+        for candidate, valid in zip(tokens["candidate_index"].tolist(), mask.tolist())
+        if valid and int(candidate) >= 0
+    }
+    return len(candidates)
+
+
+def side_term_counts(
+    tokens: TokenTree, mask: Any, *, candidate_index: int, side: SIDE | int
+) -> int:
+    side_value = int(side)
+    terms = {
+        int(term)
+        for kind, candidate, token_side, term, valid in zip(
+            tokens["token_kind"].tolist(),
+            tokens["candidate_index"].tolist(),
+            tokens["side"].tolist(),
+            tokens["term_index"].tolist(),
+            mask.tolist(),
+        )
+        if valid
+        and int(kind) == TOKEN_KIND.TERM_START
+        and int(candidate) == candidate_index
+        and int(token_side) == side_value
+        and int(term) >= 0
+    }
+    return len(terms)

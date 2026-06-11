@@ -9,6 +9,7 @@ EXPECTED_POLICY_EXPORTS = (
     "pad_token_tree",
     "stack_token_trees",
     "tokenize_state_snapshot",
+    "tokenize_action_space_snapshot",
 )
 
 
@@ -40,4 +41,3 @@ def test_policy_package_star_import_exports_bound_names():
 
     for name in EXPECTED_POLICY_EXPORTS:
         assert name in namespace
-    assert "tokenize_action_space_snapshot" not in namespace

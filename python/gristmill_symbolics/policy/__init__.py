@@ -2,7 +2,7 @@
 
 from .constants import ACTION_TOKEN_FIELDS, SENTINEL, STATE_TOKEN_FIELDS
 from .tree import pad_token_tree, stack_token_trees
-from .tokenize import tokenize_state_snapshot
+from .tokenize import tokenize_action_space_snapshot, tokenize_state_snapshot
 from .types import (
     ActionChoiceTree,
     PolicyConfig,
@@ -21,4 +21,5 @@ __all__ = (
     "pad_token_tree",
     "stack_token_trees",
     "tokenize_state_snapshot",
+    "tokenize_action_space_snapshot",
 )
