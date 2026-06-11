@@ -94,6 +94,7 @@ def collect_rollout_batch(
 
     active = [True] * config.batch_size
     stopped = [False] * config.batch_size
+    exact_empty_def_masks: list[jax.Array | None] = [None] * config.batch_size
     records_by_step: list[list[_SampleRecord]] = []
     action_width = int(policy.config.max_side_terms)
 
@@ -111,12 +112,20 @@ def collect_rollout_batch(
             target_keys: list[jax.Array] = []
             state_by_sample: dict[int, tuple[TokenTree, jax.Array]] = {}
             def_mask_by_sample: dict[int, jax.Array] = {}
+            replay_exact_empty_samples: set[int] = set()
 
             for sample in active_indices:
                 state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
-                target_def_mask = jnp.asarray(
+                row_def_mask = jnp.asarray(
                     definition_masks[sample], dtype=jnp.bool_
                 )
+                target_def_mask = row_def_mask
+                if (
+                    exact_empty_def_masks[sample] is not None
+                    and not _has_target_definition(row_def_mask)
+                ):
+                    target_def_mask = exact_empty_def_masks[sample]
+                    replay_exact_empty_samples.add(sample)
                 state_by_sample[sample] = (state_tokens, state_token_mask)
                 def_mask_by_sample[sample] = target_def_mask
                 state_items.append((state_tokens, state_token_mask))
@@ -131,15 +140,53 @@ def collect_rollout_batch(
             )
             target_choice_list = [-1] * config.batch_size
             target_logp_by_sample: dict[int, jax.Array] = {}
+            query_active = active.copy()
 
             for position, sample in enumerate(active_indices):
                 target_choice = int(np.asarray(target_choices[position]))
                 target_choice_list[sample] = target_choice
                 target_logp_by_sample[sample] = target_logps[position]
+                if target_choice == -1:
+                    state_tokens, state_token_mask = state_by_sample[sample]
+                    step_records[sample] = _record_without_action(
+                        state_tokens=state_tokens,
+                        state_token_mask=state_token_mask,
+                        target_def_mask=def_mask_by_sample[sample],
+                        target_choice=target_choice,
+                        target_score_mask=True,
+                        selected_def_index=0,
+                        step_case=CASE_STOP,
+                        sampled_target_logp=target_logps[position],
+                        action_width=action_width,
+                    )
+                    active[sample] = False
+                    query_active[sample] = False
+                    stopped[sample] = True
+                    exact_empty_def_masks[sample] = None
+                    continue
 
-            spaces = row.query_action_spaces_for_row(target_choice_list, active)
-            space_kinds = spaces.entry_kinds()
-            space_snapshots = spaces.snapshots()
+                if sample in replay_exact_empty_samples:
+                    state_tokens, state_token_mask = state_by_sample[sample]
+                    step_records[sample] = _record_without_action(
+                        state_tokens=state_tokens,
+                        state_token_mask=state_token_mask,
+                        target_def_mask=def_mask_by_sample[sample],
+                        target_choice=target_choice,
+                        target_score_mask=True,
+                        selected_def_index=target_choice,
+                        step_case=CASE_EMPTY_ACTION_SPACE,
+                        sampled_target_logp=target_logps[position],
+                        action_width=action_width,
+                    )
+                    query_active[sample] = False
+
+            spaces = None
+            space_kinds = None
+            space_snapshots = None
+            if any(query_active):
+                spaces = row.query_action_spaces_for_row(target_choice_list, query_active)
+                space_kinds = spaces.entry_kinds()
+                space_snapshots = spaces.snapshots()
 
             non_empty_samples: list[int] = []
             non_empty_state_items: list[tuple[TokenTree, jax.Array]] = []
@@ -148,26 +195,14 @@ def collect_rollout_batch(
             action_keys: list[jax.Array] = []
 
             for sample in active_indices:
+                if not query_active[sample]:
+                    continue
+                if spaces is None or space_kinds is None or space_snapshots is None:
+                    raise TrainingError("active target query was not performed")
                 target_choice = target_choice_list[sample]
                 target_logp = target_logp_by_sample[sample]
                 state_tokens, state_token_mask = state_by_sample[sample]
                 target_def_mask = def_mask_by_sample[sample]
-
-                if target_choice == -1:
-                    step_records[sample] = _record_without_action(
-                        state_tokens=state_tokens,
-                        state_token_mask=state_token_mask,
-                        target_def_mask=target_def_mask,
-                        target_choice=target_choice,
-                        target_score_mask=True,
-                        selected_def_index=0,
-                        step_case=CASE_STOP,
-                        sampled_target_logp=target_logp,
-                        action_width=action_width,
-                    )
-                    active[sample] = False
-                    stopped[sample] = True
-                    continue
 
                 if space_kinds[sample] == "exact_empty":
                     step_records[sample] = _record_without_action(
@@ -180,6 +215,9 @@ def collect_rollout_batch(
                         step_case=CASE_EMPTY_ACTION_SPACE,
                         sampled_target_logp=target_logp,
                         action_width=action_width,
+                    )
+                    exact_empty_def_masks[sample] = _one_hot_def_mask(
+                        target_choice, int(target_def_mask.shape[0])
                     )
                     continue
 
@@ -203,6 +241,7 @@ def collect_rollout_batch(
                 selected_def_indices.append(target_choice)
                 action_items.append((action_tokens, action_token_mask))
                 action_keys.append(rng_grid[step, sample, DECISION_ACTION])
+                exact_empty_def_masks[sample] = None
 
             action_choices_for_row: list[dict[str, object] | None] = [
                 None
@@ -528,6 +567,18 @@ def _pad_bool_mask(mask: jax.Array, length: int) -> jax.Array:
             f"cannot pad bool mask of length {mask.shape[0]} to shorter length {length}"
         )
     return jnp.pad(mask, (0, length - int(mask.shape[0])), constant_values=False)
+
+
+def _has_target_definition(mask: jax.Array) -> bool:
+    return bool(np.asarray(jnp.any(jnp.asarray(mask, dtype=jnp.bool_))))
+
+
+def _one_hot_def_mask(target_choice: int, length: int) -> jax.Array:
+    if target_choice < 0 or target_choice >= length:
+        raise TrainingError(
+            f"target_choice {target_choice} is outside definition mask length {length}"
+        )
+    return jnp.zeros((length,), dtype=jnp.bool_).at[target_choice].set(True)
 
 
 def _max_mask_length(masks: list[jax.Array]) -> int:

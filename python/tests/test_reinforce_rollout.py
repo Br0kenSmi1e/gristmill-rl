@@ -88,19 +88,23 @@ def test_rollout_records_stop_then_already_finished_without_action_score():
     assert final.max_steps.tolist() == [False]
 
 
-def test_exact_empty_rollout_scores_target_only_and_keeps_sample_active():
+def test_exact_empty_rollout_scores_target_only_and_keeps_sample_active_until_max_steps():
     policy = _policy(stop_bias_init=-20.0)
     table, final = collect_rollout_batch(
         policy,
         [_state_from_json(exact_empty_json())],
-        RolloutConfig(batch_size=1, max_steps=1, seed=7),
+        RolloutConfig(batch_size=1, max_steps=3, seed=7),
         update_index=0,
         root_key=jax.random.PRNGKey(7),
     )
 
-    assert table.step_case.tolist() == [[CASE_EMPTY_ACTION_SPACE]]
-    assert table.target_score_mask.tolist() == [[True]]
-    assert table.action_score_mask.tolist() == [[False]]
+    assert table.step_case.tolist() == [
+        [CASE_EMPTY_ACTION_SPACE],
+        [CASE_EMPTY_ACTION_SPACE],
+        [CASE_EMPTY_ACTION_SPACE],
+    ]
+    assert table.target_score_mask.tolist() == [[True], [True], [True]]
+    assert table.action_score_mask.tolist() == [[False], [False], [False]]
     assert final.stopped.tolist() == [False]
     assert final.max_steps.tolist() == [True]
 
