@@ -160,8 +160,9 @@ The refactor must not change:
   definition-index bounds;
 - rewrite application output;
 - definition-mask refresh after rewrite;
-- current no state-provenance behavior: an `ActionSpace` is not tied to the
-  identity of the `RewriteState` that produced it;
+- current caller-owned provenance behavior: callers are responsible for applying
+  an `ActionSpace` to the intended compatible `RewriteState`, and the rewrite
+  module does not add an identity/provenance check;
 - scalar PyO3 behavior except for the intentional API rename/split needed to
   expose the new boundaries.
 
@@ -402,8 +403,9 @@ Scalar refactor tests:
   as the previous `RewriteState::step_with_space` workflow;
 - scalar apply refreshes definition masks exactly as
   the previous scalar apply workflow did;
-- current stale/no-state-provenance behavior is preserved: an `ActionSpace`
-  generated from one equivalent state can be applied to another equivalent state;
+- current caller-owned provenance behavior is preserved: tests cover that an
+  `ActionSpace` generated from one equivalent state can be applied to another
+  equivalent state, and no new identity/provenance check rejects it;
 - scalar PyO3 tests cover the replacement boundary instead of requiring the old
   `RewriteState.step_with_space` method to remain.
 
