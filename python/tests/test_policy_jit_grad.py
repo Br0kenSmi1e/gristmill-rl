@@ -23,6 +23,18 @@ def _params():
     )
 
 
+def _gradient_params():
+    return init_policy_params(
+        PolicyConfig(
+            d_model=16,
+            max_candidates=8,
+            max_side_terms=4,
+            stop_bias_init=0.0,
+        ),
+        jax.random.PRNGKey(0),
+    )
+
+
 def _state():
     return tokenize_state_snapshot(actionable_state_snapshot())
 
@@ -46,7 +58,7 @@ def _sampled_action(params):
     return state_tokens, state_mask, action_tokens, action_mask, choice
 
 
-def _assert_floating_tree_finite(tree):
+def _assert_floating_tree_finite_and_nonzero(tree):
     leaves = [
         leaf
         for leaf in jax.tree_util.tree_leaves(tree)
@@ -55,6 +67,7 @@ def _assert_floating_tree_finite(tree):
     assert leaves
     for leaf in leaves:
         assert bool(jnp.all(jnp.isfinite(leaf)))
+    assert any(float(jnp.linalg.norm(leaf)) > 0.0 for leaf in leaves)
 
 
 def test_jit_score_target_returns_finite_scalar():
@@ -93,7 +106,7 @@ def test_jit_score_action_returns_finite_scalar_for_valid_sample():
 
 
 def test_score_target_gradients_are_finite():
-    params = _params()
+    params = _gradient_params()
     state_tokens, state_mask = _state()
     def_mask = jnp.asarray([True])
 
@@ -107,11 +120,11 @@ def test_score_target_gradients_are_finite():
         )
     )(params)
 
-    _assert_floating_tree_finite(grads)
+    _assert_floating_tree_finite_and_nonzero(grads)
 
 
 def test_score_action_gradients_are_finite_for_valid_sample():
-    params = _params()
+    params = _gradient_params()
     state_tokens, state_mask, action_tokens, action_mask, choice = _sampled_action(params)
 
     grads = jax.grad(
@@ -126,4 +139,4 @@ def test_score_action_gradients_are_finite_for_valid_sample():
         )
     )(params)
 
-    _assert_floating_tree_finite(grads)
+    _assert_floating_tree_finite_and_nonzero(grads)
