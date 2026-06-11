@@ -9,6 +9,13 @@ from gristmill_symbolics.policy.constants import SEGMENT, TOKEN_KIND
 from tests.policy_fixtures import actionable_state_snapshot
 
 
+def _selected_row_values(tokens, fields):
+    return [
+        tuple(tokens[field][position].item() for field in fields)
+        for position in range(int(tokens["token_kind"].shape[0]))
+    ]
+
+
 def test_state_tokenization_returns_complete_jax_token_tree():
     tokens, mask = tokenize_state_snapshot(actionable_state_snapshot())
 
@@ -109,3 +116,52 @@ def test_state_tokenization_scopes_factor_index_ranges_per_definition():
     }
 
     assert factor_ranges_by_def == {0: 0, 1: 1}
+
+
+def test_state_tokenization_matches_compact_golden_row_sequence():
+    snapshot = {
+        "ranges": [{"id": 0, "size": 4}, {"id": 1, "size": 6}],
+        "tensors": [{"id": 0, "symmetry": []}, {"id": 1, "symmetry": []}],
+        "definitions": [
+            {
+                "base": 1,
+                "ext_indices": [{"id": 0, "range": 0}],
+                "terms": [
+                    {
+                        "coeff": [2, 3],
+                        "sum_indices": [{"id": 1, "range": 1}],
+                        "factors": [{"tensor": 0, "indices": [0, 1]}],
+                    }
+                ],
+            }
+        ],
+    }
+
+    tokens, _ = tokenize_state_snapshot(snapshot)
+    fields = (
+        "token_kind",
+        "term_index",
+        "factor_index",
+        "tensor_id",
+        "range_id",
+        "coeff_num",
+        "coeff_den",
+    )
+
+    assert _selected_row_values(tokens, fields) == [
+        (TOKEN_KIND.RANGE, SENTINEL, SENTINEL, SENTINEL, 0, 4, 1),
+        (TOKEN_KIND.RANGE, SENTINEL, SENTINEL, SENTINEL, 1, 6, 1),
+        (TOKEN_KIND.TENSOR, SENTINEL, SENTINEL, 0, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.TENSOR, SENTINEL, SENTINEL, 1, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.DEF_START, SENTINEL, SENTINEL, 1, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.EXT_INDEX, SENTINEL, SENTINEL, SENTINEL, 0, SENTINEL, SENTINEL),
+        (TOKEN_KIND.TERM_START, 0, SENTINEL, SENTINEL, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.COEFF, 0, SENTINEL, SENTINEL, SENTINEL, 2, 3),
+        (TOKEN_KIND.SUM_INDEX, 0, SENTINEL, SENTINEL, 1, SENTINEL, SENTINEL),
+        (TOKEN_KIND.FACTOR_START, 0, 0, 0, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.FACTOR_INDEX, 0, 0, SENTINEL, 0, SENTINEL, SENTINEL),
+        (TOKEN_KIND.FACTOR_INDEX, 0, 0, SENTINEL, 1, SENTINEL, SENTINEL),
+        (TOKEN_KIND.FACTOR_END, 0, 0, SENTINEL, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.TERM_END, 0, SENTINEL, SENTINEL, SENTINEL, SENTINEL, SENTINEL),
+        (TOKEN_KIND.DEF_END, SENTINEL, SENTINEL, SENTINEL, SENTINEL, SENTINEL, SENTINEL),
+    ]

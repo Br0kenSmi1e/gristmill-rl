@@ -1,3 +1,17 @@
+EXPECTED_POLICY_EXPORTS = (
+    "ACTION_TOKEN_FIELDS",
+    "SENTINEL",
+    "STATE_TOKEN_FIELDS",
+    "ActionChoiceTree",
+    "PolicyConfig",
+    "action_choice_to_python",
+    "make_action_choice",
+    "pad_token_tree",
+    "stack_token_trees",
+    "tokenize_state_snapshot",
+)
+
+
 def test_existing_extension_exports_still_import_from_package_root():
     import gristmill_symbolics
 
@@ -16,21 +30,14 @@ def test_policy_package_imports_without_training_modules(monkeypatch):
     import gristmill_symbolics.policy as policy
 
     assert "reinforce_training" not in sys.modules
-    assert policy.__all__ == (
-        "ACTION_TOKEN_FIELDS",
-        "SENTINEL",
-        "STATE_TOKEN_FIELDS",
-        "ActionChoiceTree",
-        "PolicyConfig",
-        "action_choice_to_python",
-        "make_action_choice",
-        "pad_token_tree",
-        "stack_token_trees",
-        "tokenize_state_snapshot",
-        "tokenize_action_space_snapshot",
-        "init_policy_params",
-        "sample_target",
-        "score_target",
-        "sample_action",
-        "score_action",
-    )
+    assert policy.__all__ == EXPECTED_POLICY_EXPORTS
+
+
+def test_policy_package_star_import_exports_bound_names():
+    namespace: dict[str, object] = {}
+
+    exec("from gristmill_symbolics.policy import *", namespace)
+
+    for name in EXPECTED_POLICY_EXPORTS:
+        assert name in namespace
+    assert "tokenize_action_space_snapshot" not in namespace
