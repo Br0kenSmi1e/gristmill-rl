@@ -113,11 +113,16 @@ seed
 The rollout table is rectangular over row and sample axes. A sample position is
 the column identity for reward assignment.
 
+Shared state fields:
+
+```text
+state_tokens.<leaf>[row, sample, token, ...]
+state_token_mask[row, sample, token]
+```
+
 Target fields:
 
 ```text
-target_state_tokens.<leaf>[row, sample, token, ...]
-target_state_token_mask[row, sample, token]
 target_def_mask[row, sample, def]
 target_choice[row, sample]
 target_score_mask[row, sample]
@@ -126,8 +131,6 @@ target_score_mask[row, sample]
 Action fields:
 
 ```text
-action_state_tokens.<leaf>[row, sample, token, ...]
-action_state_token_mask[row, sample, token]
 selected_def_index[row, sample]
 action_space_tokens.<leaf>[row, sample, token, ...]
 action_space_token_mask[row, sample, token]
@@ -159,20 +162,26 @@ valid action          true                 true
 Masked entries must contain safe padded values so scoring can run over
 rectangular arrays. Masked entries contribute no logp, loss, or metric totals.
 
+The table stores one physical state-token table per row/sample. Target scoring
+uses that shared state table with target fields. Action scoring uses the same
+shared state table with selected definition and action-space fields. The rollout
+table must not store separate duplicated target-state and action-state token
+tables.
+
 ## Row Rollout Algorithm
 
 For one row:
 
 ```text
 1. Identify active and finished sample positions.
-2. Snapshot active row states and tokenize target arrays.
+2. Snapshot active row states and tokenize the shared state table.
 3. Sample target choices with per-sample RNG streams.
-4. Store target arrays, target choices, and target score masks.
+4. Store shared state arrays, target choices, and target score masks.
 5. Query row action spaces for selected non-STOP targets.
 6. Mark STOP and exact-empty cases in the stored row.
-7. Tokenize non-empty action-space snapshots into action arrays.
+7. Tokenize non-empty action-space snapshots into action-space arrays.
 8. Sample action choices with per-sample RNG streams.
-9. Store action arrays, action choices, and action score masks.
+9. Store action-space arrays, action choices, and action score masks.
 10. Validate sampled actions for the row.
 11. Apply validated rewrites through the row environment.
 12. Scatter all results back to stable sample positions.
@@ -233,10 +242,14 @@ Training recomputes:
 
 ```text
 target_logp[row, sample] =
-  log p(target_choice[row, sample] | target arrays[row, sample])
+  log p(target_choice[row, sample] |
+        shared state arrays[row, sample],
+        target fields[row, sample])
 
 action_logp[row, sample] =
-  log p(action_choice[row, sample] | action arrays[row, sample])
+  log p(action_choice[row, sample] |
+        shared state arrays[row, sample],
+        action fields[row, sample])
 ```
 
 Only recomputed logp terms are differentiable. Sampled rollout logp may be

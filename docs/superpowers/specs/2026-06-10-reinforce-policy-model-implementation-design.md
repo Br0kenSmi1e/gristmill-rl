@@ -120,6 +120,11 @@ Action arrays are built only after the environment returns a non-empty action
 space for one selected definition. They contain enough plain data to score the
 sampled action later without a live `ActionSpace` or `ActionSpaceRow` handle.
 
+In rollout-table storage, `state_tokens` and `state_token_mask` should be stored
+once per row/sample and shared by target and action scoring. The action model API
+still receives state tokens as inputs; that does not require a second physical
+state-token table.
+
 ## Choices
 
 Target choices are semantic:
