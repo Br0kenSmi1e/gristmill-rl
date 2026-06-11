@@ -5,7 +5,8 @@ use ::gristmill_symbolics::repr::{
     TensorComputation as RustTensorComputation, TensorDef, TensorInfo, Term,
 };
 use ::gristmill_symbolics::rewrite::{
-    ActionSpace as RustActionSpace, Decision, Factorization, RewriteState as RustRewriteState,
+    validate_decision as rust_validate_decision, ActionSpace as RustActionSpace, Decision,
+    Factorization, RewriteState as RustRewriteState,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -176,6 +177,12 @@ fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
     })
 }
 
+#[pyfunction(name = "validate_decision")]
+fn py_validate_decision(space: &PyActionSpace, decision: &Bound<'_, PyAny>) -> PyResult<()> {
+    let decision = parse_decision(decision)?;
+    rust_validate_decision(&space.inner, &decision).map_err(py_gristmill_error)
+}
+
 #[pyclass(name = "TensorComputation")]
 struct PyTensorComputation {
     inner: RustTensorComputation,
@@ -243,14 +250,14 @@ impl PyRewriteState {
             .map_err(py_gristmill_error)
     }
 
-    fn step_with_space(
+    fn apply_validated_decision(
         &mut self,
         space: &PyActionSpace,
         decision: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let decision = parse_decision(decision)?;
         self.inner
-            .step_with_space(&space.inner, &decision)
+            .apply_validated_decision(&space.inner, &decision)
             .map_err(py_gristmill_error)
     }
 
@@ -299,6 +306,7 @@ fn gristmill_symbolics(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult
     module.add_class::<PyTensorComputation>()?;
     module.add_class::<PyRewriteState>()?;
     module.add_class::<PyActionSpace>()?;
+    module.add_function(wrap_pyfunction!(py_validate_decision, module)?)?;
     module.add(
         "GristmillSymbolicsError",
         py.get_type::<GristmillSymbolicsError>(),

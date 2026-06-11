@@ -3,7 +3,7 @@ use gristmill_symbolics::graph::GraphError;
 use gristmill_symbolics::repr::{
     Factor, Index, IndexId, RangeId, Rational, TensorComputation, TensorId, Term,
 };
-use gristmill_symbolics::rewrite::{Decision, RewriteError, RewriteState};
+use gristmill_symbolics::rewrite::{Decision, RewriteError, RewriteState, validate_decision};
 use gristmill_symbolics::split::SplitError;
 
 fn one() -> Rational {
@@ -97,6 +97,76 @@ fn first_full_decision(space: &gristmill_symbolics::rewrite::ActionSpace) -> Dec
 }
 
 #[test]
+fn public_validate_decision_rejects_the_same_decision_errors() {
+    let mut state = RewriteState::new(comp_with_shared_left_candidate());
+    let space = state.action_space_for_def(0).unwrap().unwrap();
+    let template = &space.candidate_templates[0];
+
+    assert_eq!(
+        validate_decision(
+            &space,
+            &Decision {
+                candidate_index: space.candidate_templates.len(),
+                left_mask: vec![true; template.left_definition.terms.len()],
+                right_mask: vec![true; template.right_definition.terms.len()],
+            },
+        ),
+        Err(RewriteError::CandidateIndexOutOfRange {
+            index: space.candidate_templates.len(),
+            len: space.candidate_templates.len(),
+        })
+    );
+
+    assert_eq!(
+        validate_decision(
+            &space,
+            &Decision {
+                candidate_index: 0,
+                left_mask: vec![],
+                right_mask: vec![true; template.right_definition.terms.len()],
+            },
+        ),
+        Err(RewriteError::LeftMaskLengthMismatch {
+            expected: template.left_definition.terms.len(),
+            got: 0,
+        })
+    );
+}
+
+#[test]
+fn apply_validated_decision_preserves_caller_owned_action_space_provenance() {
+    let comp = comp_with_shared_left_candidate();
+    let mut source_state = RewriteState::new(comp.clone());
+    let space = source_state.action_space_for_def(0).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+    validate_decision(&space, &decision).unwrap();
+
+    let mut left = RewriteState::new(comp.clone());
+    let mut right = RewriteState::new(comp);
+
+    left.apply_validated_decision(&space, &decision).unwrap();
+    right.apply_validated_decision(&space, &decision).unwrap();
+
+    assert_eq!(left.computation(), right.computation());
+    assert_eq!(left.definition_mask(), right.definition_mask());
+}
+
+#[test]
+fn validate_decision_rejects_invalid_decision_before_state_mutation() {
+    let mut state = RewriteState::new(comp_with_shared_left_candidate());
+    let space = state.action_space_for_def(0).unwrap().unwrap();
+    let before = state.computation().clone();
+    let bad_decision = Decision {
+        candidate_index: 0,
+        left_mask: vec![],
+        right_mask: vec![true],
+    };
+
+    assert!(validate_decision(&space, &bad_decision).is_err());
+    assert_eq!(state.computation(), &before);
+}
+
+#[test]
 fn rewrite_state_initializes_definition_mask_from_term_count() {
     let basic = {
         let mut comp = TensorComputation::new();
@@ -162,7 +232,7 @@ fn action_space_for_def_rejects_out_of_range_definition_index() {
 }
 
 #[test]
-fn rewrite_state_step_with_space_mutates_computation_and_updates_mask() {
+fn rewrite_state_apply_validated_decision_mutates_computation_and_updates_mask() {
     let original = comp_with_unsplittable_then_actionable_definition();
     let original_tensors = original.tensors().len();
     let original_definitions = original.definitions().len();
@@ -171,7 +241,8 @@ fn rewrite_state_step_with_space_mutates_computation_and_updates_mask() {
     let space = state.action_space_for_def(1).unwrap().unwrap();
     let decision = first_full_decision(&space);
 
-    state.step_with_space(&space, &decision).unwrap();
+    validate_decision(&space, &decision).unwrap();
+    state.apply_validated_decision(&space, &decision).unwrap();
 
     assert_eq!(state.computation().tensors().len(), original_tensors + 2);
     assert_eq!(

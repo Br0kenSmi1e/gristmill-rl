@@ -74,7 +74,7 @@ impl RewriteState {
         Ok(Some(space))
     }
 
-    pub fn step_with_space(
+    pub fn apply_validated_decision(
         &mut self,
         space: &ActionSpace,
         decision: &Decision,
@@ -212,7 +212,7 @@ fn enumerate_candidates(
     Ok((candidate_graphs, candidate_bicliques))
 }
 
-fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
+pub fn validate_decision(space: &ActionSpace, decision: &Decision) -> Result<(), RewriteError> {
     let Some(template) = space.candidate_templates.get(decision.candidate_index) else {
         return Err(RewriteError::CandidateIndexOutOfRange {
             index: decision.candidate_index,
@@ -259,8 +259,6 @@ fn build_rewrite(
                 index: space.def_index,
                 len: comp.definitions().len(),
             })?;
-
-    validate_decision(space, decision)?;
 
     let graph = space.candidate_graphs.get(decision.candidate_index).ok_or(
         RewriteError::CandidateIndexOutOfRange {
@@ -840,6 +838,26 @@ mod tests {
             rewrite.factorization.rewritten_definition.terms[1],
             comp.definitions()[0].terms[2]
         );
+    }
+
+    #[test]
+    fn build_rewrite_does_not_repeat_public_mask_validation() {
+        let comp = comp_with_definition(source_def_for_factorization());
+        let space = action_space_for_factorization(&comp);
+        let invalid_for_public_boundary = Decision {
+            candidate_index: 0,
+            left_mask: vec![],
+            right_mask: vec![true, true],
+        };
+
+        assert_eq!(
+            validate_decision(&space, &invalid_for_public_boundary),
+            Err(RewriteError::LeftMaskLengthMismatch {
+                expected: 1,
+                got: 0,
+            })
+        );
+        assert!(build_rewrite(&comp, &space, &invalid_for_public_boundary).is_ok());
     }
 
     #[test]
