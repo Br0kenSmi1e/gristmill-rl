@@ -2,7 +2,7 @@ use clap::Parser;
 use gristmill_symbolics::io::{self, IoJsonError};
 use gristmill_symbolics::repr::TensorComputation;
 use gristmill_symbolics::rewrite::{
-    ActionSpace, Decision, Factorization, RewriteError, RewriteState,
+    ActionSpace, Decision, Factorization, RewriteError, RewriteState, validate_decision,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -233,8 +233,10 @@ fn run(args: Args) -> Result<RunSummary, CliError> {
         };
 
         let decision = random_decision(&space, args.random_subsets, &mut rng);
+        validate_decision(&space, &decision)
+            .map_err(|source| CliError::Rewrite { step, source })?;
         state
-            .step_with_space(&space, &decision)
+            .apply_validated_decision(&space, &decision)
             .map_err(|source| CliError::Rewrite { step, source })?;
 
         applied_rewrites += 1;
