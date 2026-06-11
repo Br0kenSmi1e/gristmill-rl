@@ -19,7 +19,7 @@ _ID_FIELDS = (
 )
 _FIELD_EMBEDDING_KEY_COUNT = 3 + len(_ID_FIELDS)
 _FIXED_PARAM_KEY_COUNT = _FIELD_EMBEDDING_KEY_COUNT + 1 + 2 + 4
-_ATTENTION_KEYS_PER_LAYER = 8
+_ATTENTION_KEYS_PER_LAYER = 6
 
 
 def _normal(key, shape, scale):
@@ -147,6 +147,11 @@ def _embedding_index(values, table):
     return jnp.where(values < 0, 0, (values % size) + 1)
 
 
+def _masked_embedding(table, index):
+    gathered = table[index]
+    return gathered * (index != 0).astype(gathered.dtype)[:, None]
+
+
 def _field(tokens: TokenTree, name: str, length: int):
     return tokens.get(name, jnp.full((length,), SENTINEL, dtype=jnp.int32))
 
@@ -157,22 +162,24 @@ def embed_tokens(params, tokens: TokenTree):
     length = tokens["token_kind"].shape[0]
     out = jnp.zeros((length, d), dtype=jnp.float32)
     if "token_kind" in tokens:
-        out = out + tables["token_kind"][
-            _token_kind_index(tokens["token_kind"], tables["token_kind"])
-        ]
+        index = _token_kind_index(tokens["token_kind"], tables["token_kind"])
+        out = out + _masked_embedding(tables["token_kind"], index)
     for field in ("segment", "side"):
         if field in tokens:
-            out = out + tables[field][_embedding_index(tokens[field], tables[field])]
+            index = _embedding_index(tokens[field], tables[field])
+            out = out + _masked_embedding(tables[field], index)
     for field in _ID_FIELDS:
         if field in tokens:
-            out = out + tables[field][_embedding_index(tokens[field], tables[field])]
+            index = _embedding_index(tokens[field], tables[field])
+            out = out + _masked_embedding(tables[field], index)
     coeff_num = _field(tokens, "coeff_num", length)
     coeff_den = _field(tokens, "coeff_den", length)
     position = _field(tokens, "position", length)
+    coeff_present = coeff_den >= 0
     numeric = jnp.stack(
         [
-            jnp.where(coeff_num < 0, 0.0, coeff_num.astype(jnp.float32)),
-            jnp.where(coeff_den < 0, 0.0, coeff_den.astype(jnp.float32)),
+            jnp.where(coeff_present, coeff_num.astype(jnp.float32), 0.0),
+            jnp.where(coeff_present, coeff_den.astype(jnp.float32), 0.0),
             jnp.where(position < 0, 0.0, position.astype(jnp.float32)),
         ],
         axis=-1,
