@@ -27,14 +27,19 @@ split by conceptual ownership.
 
 File: `2026-06-10-reinforce-row-env-implementation-design.md`
 
-Builds the Rust-owned row rewrite environment and PyO3 bindings:
+Refactors scalar rewrite boundaries without semantic changes, then builds thin
+Rust/PyO3 row wrappers over those boundaries:
 
+- scalar generate, public decision validation, and apply boundaries in
+  `src/rewrite.rs`;
 - `RewriteStateRow`;
 - `ActionSpaceRow`;
-- row action-space query;
+- row action-space query over `RewriteState::action_space_for_def`;
 - deterministic row action-space snapshots;
-- row action validation before mutation;
-- row rewrite application;
+- row action validation over the scalar `validate_decision` boundary before
+  mutation;
+- row rewrite application over the scalar apply boundary;
+- PyO3 conversion from padded row action input to exact scalar `Decision` values;
 - Rayon-backed parallelism for row query, validation, and application;
 - scalar-equivalence tests with injected choices.
 
