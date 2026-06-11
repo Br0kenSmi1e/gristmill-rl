@@ -116,6 +116,13 @@ fn first_full_decision(space: &gristmill_symbolics::rewrite::ActionSpace) -> Dec
     }
 }
 
+fn first_non_empty_decision(spaces: &gristmill_symbolics::rewrite::ActionSpaceRow) -> Decision {
+    let ActionSpaceEntry::NonEmpty(space) = &spaces.entries()[0] else {
+        panic!("expected first row entry to be non-empty");
+    };
+    first_full_decision(space)
+}
+
 fn computation_snapshots(row: &RewriteStateRow) -> Vec<TensorComputation> {
     row.states()
         .iter()
@@ -156,6 +163,7 @@ fn row_query_width_one_matches_scalar_action_space_for_def() {
     let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
 
     assert_eq!(spaces.len(), 1);
+    assert!(!spaces.is_empty());
     assert_eq!(spaces.entry_kinds(), vec!["non_empty"]);
     assert_eq!(
         spaces.entries(),
@@ -262,6 +270,236 @@ fn row_query_rejects_length_mismatches_and_masked_definitions() {
         Err(RewriteError::TargetDefinitionMasked {
             sample: 0,
             index: 0,
+        })
+    );
+}
+
+#[test]
+fn row_validation_accepts_valid_injected_choices_and_skips_unscored_entries() {
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_two_unsplittable_terms()),
+    ]);
+    let spaces = row
+        .query_action_spaces_for_row(&[0, 0], &[true, true])
+        .unwrap();
+    assert_eq!(spaces.entry_kinds(), vec!["non_empty", "exact_empty"]);
+    let decision = first_non_empty_decision(&spaces);
+
+    let validated = row
+        .validate_actions_for_row(&spaces, &[Some(decision), None], &[true, false])
+        .unwrap();
+
+    assert_eq!(validated.len(), 2);
+    assert!(!validated.is_empty());
+    assert_eq!(validated.entry_kinds(), vec!["valid", "skipped"]);
+}
+
+#[test]
+fn row_validation_rejects_invalid_choice_before_any_state_mutation() {
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_shared_left_candidate()),
+    ]);
+    let spaces = row
+        .query_action_spaces_for_row(&[0, 0], &[true, true])
+        .unwrap();
+    let before = computation_snapshots(&row);
+    let expected_len = match &spaces.entries()[0] {
+        ActionSpaceEntry::NonEmpty(space) => space.candidate_templates.len(),
+        _ => panic!("expected first row entry to be non-empty"),
+    };
+    let bad = Decision {
+        candidate_index: usize::MAX,
+        left_mask: vec![true],
+        right_mask: vec![true],
+    };
+    let good = first_non_empty_decision(&spaces);
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[Some(bad), Some(good)], &[true, true]),
+        Err(RewriteError::RowValidationFailed {
+            sample: 0,
+            source: Box::new(RewriteError::CandidateIndexOutOfRange {
+                index: usize::MAX,
+                len: expected_len,
+            }),
+        })
+    );
+    assert_eq!(computation_snapshots(&row), before);
+}
+
+#[test]
+fn row_validation_rejects_scored_skipped_or_exact_empty_entries() {
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_two_unsplittable_terms()),
+    ]);
+    let spaces = row
+        .query_action_spaces_for_row(&[-1, 0], &[true, true])
+        .unwrap();
+    let dummy = Decision {
+        candidate_index: 0,
+        left_mask: vec![true],
+        right_mask: vec![true],
+    };
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[Some(dummy.clone()), None], &[true, false]),
+        Err(RewriteError::ActionSpaceEntryNotActionable {
+            sample: 0,
+            entry_kind: "skipped",
+        })
+    );
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[None, Some(dummy)], &[false, true]),
+        Err(RewriteError::ActionSpaceEntryNotActionable {
+            sample: 1,
+            entry_kind: "exact_empty",
+        })
+    );
+}
+
+#[test]
+fn row_validation_rejects_missing_scored_decision() {
+    let mut row =
+        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
+    let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[None], &[true]),
+        Err(RewriteError::MissingScoredDecision { sample: 0 })
+    );
+}
+
+#[test]
+fn row_validation_rejects_length_mismatches() {
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_shared_left_candidate()),
+    ]);
+    let spaces = row
+        .query_action_spaces_for_row(&[0, 0], &[true, true])
+        .unwrap();
+    let mut width_one =
+        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
+    let short_spaces = width_one
+        .query_action_spaces_for_row(&[0], &[true])
+        .unwrap();
+    let decision = first_non_empty_decision(&spaces);
+
+    assert_eq!(
+        row.validate_actions_for_row(
+            &short_spaces,
+            &[Some(decision.clone()), Some(decision.clone())],
+            &[true, true],
+        ),
+        Err(RewriteError::RowLengthMismatch {
+            operation: "validate_actions_for_row",
+            field: "action_space_row",
+            expected: 2,
+            got: 1,
+        })
+    );
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[Some(decision.clone())], &[true, true]),
+        Err(RewriteError::RowLengthMismatch {
+            operation: "validate_actions_for_row",
+            field: "decisions",
+            expected: 2,
+            got: 1,
+        })
+    );
+
+    assert_eq!(
+        row.validate_actions_for_row(&spaces, &[Some(decision.clone()), Some(decision)], &[true]),
+        Err(RewriteError::RowLengthMismatch {
+            operation: "validate_actions_for_row",
+            field: "action_score_mask",
+            expected: 2,
+            got: 1,
+        })
+    );
+}
+
+#[test]
+fn row_application_matches_scalar_for_width_one() {
+    let comp = comp_with_shared_left_candidate();
+    let mut scalar = RewriteState::new(comp.clone());
+    let scalar_space = scalar.action_space_for_def(0).unwrap().unwrap();
+    let scalar_decision = first_full_decision(&scalar_space);
+    validate_decision(&scalar_space, &scalar_decision).unwrap();
+    scalar
+        .apply_validated_decision(&scalar_space, &scalar_decision)
+        .unwrap();
+
+    let mut row = RewriteStateRow::from_states(vec![RewriteState::new(comp)]);
+    let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
+    let row_decision = first_non_empty_decision(&spaces);
+    let validated = row
+        .validate_actions_for_row(&spaces, &[Some(row_decision)], &[true])
+        .unwrap();
+    let applied = row.apply_validated_actions_for_row(&validated).unwrap();
+
+    assert_eq!(applied, vec![true]);
+    assert_eq!(row.states()[0].computation(), scalar.computation());
+    assert_eq!(row.states()[0].definition_mask(), scalar.definition_mask());
+}
+
+#[test]
+fn row_application_mutates_only_valid_action_positions() {
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_two_unsplittable_terms()),
+    ]);
+    let spaces = row
+        .query_action_spaces_for_row(&[0, -1, 0], &[true, true, true])
+        .unwrap();
+    let before = computation_snapshots(&row);
+    let decision = first_non_empty_decision(&spaces);
+    let validated = row
+        .validate_actions_for_row(
+            &spaces,
+            &[Some(decision), None, None],
+            &[true, false, false],
+        )
+        .unwrap();
+
+    let applied = row.apply_validated_actions_for_row(&validated).unwrap();
+
+    assert_eq!(applied, vec![true, false, false]);
+    assert_ne!(row.states()[0].computation(), &before[0]);
+    assert_eq!(row.states()[1].computation(), &before[1]);
+    assert_eq!(row.states()[2].computation(), &before[2]);
+}
+
+#[test]
+fn row_application_rejects_length_mismatch() {
+    let mut width_one =
+        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
+    let spaces = width_one
+        .query_action_spaces_for_row(&[0], &[true])
+        .unwrap();
+    let decision = first_non_empty_decision(&spaces);
+    let validated = width_one
+        .validate_actions_for_row(&spaces, &[Some(decision)], &[true])
+        .unwrap();
+
+    let mut row = RewriteStateRow::from_states(vec![
+        RewriteState::new(comp_with_shared_left_candidate()),
+        RewriteState::new(comp_with_shared_left_candidate()),
+    ]);
+
+    assert_eq!(
+        row.apply_validated_actions_for_row(&validated),
+        Err(RewriteError::RowLengthMismatch {
+            operation: "apply_validated_actions_for_row",
+            field: "validated_action_row",
+            expected: 2,
+            got: 1,
         })
     );
 }

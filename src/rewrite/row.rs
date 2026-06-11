@@ -1,4 +1,4 @@
-use super::scalar::{ActionSpace, Decision, RewriteError, RewriteState};
+use super::scalar::{ActionSpace, Decision, RewriteError, RewriteState, validate_decision};
 use rayon::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,11 +95,77 @@ impl RewriteStateRow {
 
         Ok(ActionSpaceRow { entries })
     }
+
+    pub fn validate_actions_for_row(
+        &self,
+        action_spaces: &ActionSpaceRow,
+        decisions: &[Option<Decision>],
+        action_score_mask: &[bool],
+    ) -> Result<ValidatedActionRow, RewriteError> {
+        check_row_len(
+            "validate_actions_for_row",
+            "action_space_row",
+            self.states.len(),
+            action_spaces.len(),
+        )?;
+        check_row_len(
+            "validate_actions_for_row",
+            "decisions",
+            self.states.len(),
+            decisions.len(),
+        )?;
+        check_row_len(
+            "validate_actions_for_row",
+            "action_score_mask",
+            self.states.len(),
+            action_score_mask.len(),
+        )?;
+
+        let results: Vec<Result<ValidatedActionEntry, RewriteError>> = action_spaces
+            .entries
+            .par_iter()
+            .zip(decisions.par_iter())
+            .zip(action_score_mask.par_iter())
+            .enumerate()
+            .map(|(sample, ((entry, decision), scored))| {
+                validate_action_entry(sample, entry, decision.as_ref(), *scored)
+            })
+            .collect();
+        let entries = results.into_iter().collect::<Result<Vec<_>, _>>()?;
+
+        Ok(ValidatedActionRow { entries })
+    }
+
+    pub fn apply_validated_actions_for_row(
+        &mut self,
+        validated: &ValidatedActionRow,
+    ) -> Result<Vec<bool>, RewriteError> {
+        check_row_len(
+            "apply_validated_actions_for_row",
+            "validated_action_row",
+            self.states.len(),
+            validated.len(),
+        )?;
+
+        let results: Vec<Result<bool, RewriteError>> = self
+            .states
+            .par_iter_mut()
+            .zip(validated.entries.par_iter())
+            .enumerate()
+            .map(|(sample, (state, entry))| apply_validated_action_entry(state, sample, entry))
+            .collect();
+
+        results.into_iter().collect()
+    }
 }
 
 impl ActionSpaceRow {
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     pub fn entries(&self) -> &[ActionSpaceEntry] {
@@ -121,9 +187,33 @@ impl ActionSpaceEntry {
     }
 }
 
+impl ValidatedActionEntry {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ValidatedActionEntry::Skipped => "skipped",
+            ValidatedActionEntry::Valid { .. } => "valid",
+        }
+    }
+}
+
 impl ValidatedActionRow {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn entries(&self) -> &[ValidatedActionEntry] {
         &self.entries
+    }
+
+    pub fn entry_kinds(&self) -> Vec<&'static str> {
+        self.entries
+            .iter()
+            .map(ValidatedActionEntry::kind)
+            .collect()
     }
 }
 
@@ -163,6 +253,53 @@ fn query_action_space_entry(
         Some(space) => Ok(ActionSpaceEntry::NonEmpty(space)),
         None => Ok(ActionSpaceEntry::ExactEmpty),
     }
+}
+
+fn validate_action_entry(
+    sample: usize,
+    entry: &ActionSpaceEntry,
+    decision: Option<&Decision>,
+    scored: bool,
+) -> Result<ValidatedActionEntry, RewriteError> {
+    if !scored {
+        return Ok(ValidatedActionEntry::Skipped);
+    }
+
+    let ActionSpaceEntry::NonEmpty(space) = entry else {
+        return Err(RewriteError::ActionSpaceEntryNotActionable {
+            sample,
+            entry_kind: entry.kind(),
+        });
+    };
+    let decision = decision.ok_or(RewriteError::MissingScoredDecision { sample })?;
+
+    validate_decision(space, decision).map_err(|source| RewriteError::RowValidationFailed {
+        sample,
+        source: Box::new(source),
+    })?;
+
+    Ok(ValidatedActionEntry::Valid {
+        space: space.clone(),
+        decision: decision.clone(),
+    })
+}
+
+fn apply_validated_action_entry(
+    state: &mut RewriteState,
+    sample: usize,
+    entry: &ValidatedActionEntry,
+) -> Result<bool, RewriteError> {
+    let ValidatedActionEntry::Valid { space, decision } = entry else {
+        return Ok(false);
+    };
+
+    state
+        .apply_validated_decision(space, decision)
+        .map_err(|source| RewriteError::RowApplyFailed {
+            sample,
+            source: Box::new(source),
+        })?;
+    Ok(true)
 }
 
 fn check_row_len(
