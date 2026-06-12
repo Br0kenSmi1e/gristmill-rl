@@ -10,6 +10,7 @@ description = "Python bindings for the gristmill-symbolics rewrite kernel"
 dependencies = [
     "jax>=0.4",
     "numpy>=1.26",
+    "optax>=0.2",
 ]
 
 [dependency-groups]
