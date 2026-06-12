@@ -7,7 +7,7 @@ use crate::split::SplitError;
 use crate::{biclique, canon, graph, split};
 use std::collections::HashSet;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Factorization {
     pub left_definition: TensorDef,
     pub right_definition: TensorDef,
@@ -200,16 +200,27 @@ fn action_space_for_definition(
     }
 
     let (left_tid, right_tid) = fresh_rewrite_tensor_ids(comp);
-    let (candidate_graphs, candidate_bicliques) = enumerate_candidates(comp, def)?;
-    if candidate_bicliques.is_empty() {
+    let (raw_candidate_graphs, raw_candidate_bicliques) = enumerate_candidates(comp, def)?;
+    if raw_candidate_bicliques.is_empty() {
         return Ok(None);
     }
 
-    let candidate_templates = candidate_graphs
-        .iter()
-        .zip(&candidate_bicliques)
-        .map(|(graph, biclique)| build_factorization(def, graph, biclique, left_tid, right_tid))
-        .collect();
+    let mut seen_templates = HashSet::new();
+    let mut candidate_templates = Vec::new();
+    let mut candidate_graphs = Vec::new();
+    let mut candidate_bicliques = Vec::new();
+
+    for (graph, biclique) in raw_candidate_graphs
+        .into_iter()
+        .zip(raw_candidate_bicliques.into_iter())
+    {
+        let template = build_factorization(def, &graph, &biclique, left_tid, right_tid);
+        if seen_templates.insert(template.clone()) {
+            candidate_templates.push(template);
+            candidate_graphs.push(graph);
+            candidate_bicliques.push(biclique);
+        }
+    }
 
     Ok(Some(ActionSpace {
         def_index,
@@ -811,6 +822,64 @@ mod tests {
         let mut comp = TensorComputation::new();
         comp.add_definition(def.base, def.ext_indices.clone(), def.terms.clone());
         comp
+    }
+
+    fn comp_with_shared_left_candidate() -> TensorComputation {
+        let mut comp = TensorComputation::new();
+        comp.add_range(8);
+        let a = comp.add_tensor(vec![]);
+        let b = comp.add_tensor(vec![]);
+        let c = comp.add_tensor(vec![]);
+        let out = comp.add_tensor(vec![]);
+
+        comp.add_definition(
+            out,
+            vec![idx(0), idx(1)],
+            vec![
+                term_with_sum(
+                    rat(1),
+                    vec![idx(2)],
+                    vec![factor(a.0, &[0, 2]), factor(b.0, &[2, 1])],
+                ),
+                term_with_sum(
+                    rat(1),
+                    vec![idx(3)],
+                    vec![factor(a.0, &[0, 3]), factor(c.0, &[3, 1])],
+                ),
+            ],
+        );
+
+        comp
+    }
+
+    #[test]
+    fn action_space_for_definition_deduplicates_full_factorization_templates() {
+        let comp = comp_with_shared_left_candidate();
+
+        let space = action_space_for_definition(&comp, 0).unwrap().unwrap();
+
+        assert_eq!(space.candidate_templates.len(), 1);
+        assert_eq!(
+            space.candidate_graphs.len(),
+            space.candidate_templates.len()
+        );
+        assert_eq!(
+            space.candidate_bicliques.len(),
+            space.candidate_templates.len()
+        );
+
+        let def = &comp.definitions()[space.def_index];
+        let (left_tid, right_tid) = fresh_rewrite_tensor_ids(&comp);
+        for candidate_index in 0..space.candidate_templates.len() {
+            let rebuilt = build_factorization(
+                def,
+                &space.candidate_graphs[candidate_index],
+                &space.candidate_bicliques[candidate_index],
+                left_tid,
+                right_tid,
+            );
+            assert_eq!(rebuilt, space.candidate_templates[candidate_index]);
+        }
     }
 
     fn action_space_for_factorization(comp: &TensorComputation) -> ActionSpace {
