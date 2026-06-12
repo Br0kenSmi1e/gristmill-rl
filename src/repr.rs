@@ -144,7 +144,7 @@ pub struct Term {
     pub factors: Vec<Factor>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TensorDef {
     pub base: TensorId,
     pub ext_indices: Vec<Index>,
