@@ -18,7 +18,7 @@ from tests.policy_fixtures import (
 
 def _params():
     return init_policy_params(
-        PolicyConfig(d_model=16, max_candidates=8, max_side_terms=4),
+        PolicyConfig(d_model=16),
         jax.random.PRNGKey(0),
     )
 
@@ -27,8 +27,6 @@ def _gradient_params():
     return init_policy_params(
         PolicyConfig(
             d_model=16,
-            max_candidates=8,
-            max_side_terms=4,
             stop_bias_init=0.0,
         ),
         jax.random.PRNGKey(0),
@@ -46,7 +44,7 @@ def _action_space():
 def _sampled_action(params):
     state_tokens, state_mask = _state()
     action_tokens, action_mask = _action_space()
-    choice, _ = sample_action(
+    choice = sample_action(
         params,
         state_tokens,
         state_mask,

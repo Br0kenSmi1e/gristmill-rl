@@ -18,7 +18,7 @@ from tests.policy_fixtures import actionable_state, actionable_state_snapshot
 
 def _params():
     return init_policy_params(
-        PolicyConfig(d_model=16, max_candidates=8, max_side_terms=4),
+        PolicyConfig(d_model=16),
         jax.random.PRNGKey(0),
     )
 
@@ -94,14 +94,14 @@ def _trimmed_decision(choice):
     }
 
 
-def test_action_sample_returns_padded_choice_tree_and_finite_logp():
+def test_action_sample_returns_padded_choice_tree_and_finite_replay_logp():
     (
         params,
         state_tokens,
         state_mask,
         action_tokens,
         action_mask,
-        (choice, logp),
+        choice,
     ) = _sample()
 
     assert set(choice) == {
@@ -111,7 +111,7 @@ def test_action_sample_returns_padded_choice_tree_and_finite_logp():
         "right_mask",
         "right_valid_mask",
     }
-    width = params["action"]["left_position_bias"].shape[0]
+    width = choice["left_mask"].shape[0]
     assert choice["candidate_index"].shape == ()
     assert choice["left_mask"].shape == (width,)
     assert choice["left_valid_mask"].shape == (width,)
@@ -119,9 +119,6 @@ def test_action_sample_returns_padded_choice_tree_and_finite_logp():
     assert choice["right_valid_mask"].shape == (width,)
     assert bool(jnp.any(choice["left_mask"] & choice["left_valid_mask"]))
     assert bool(jnp.any(choice["right_mask"] & choice["right_valid_mask"]))
-    assert logp.shape == ()
-    assert bool(jnp.isfinite(logp))
-
     replay = score_action(
         params,
         state_tokens,
@@ -131,20 +128,30 @@ def test_action_sample_returns_padded_choice_tree_and_finite_logp():
         action_mask,
         choice,
     )
+    assert replay.shape == ()
     assert bool(jnp.isfinite(replay))
 
 
-def test_action_score_replays_sampled_logp():
+def test_action_score_deterministically_replays_choice_logp():
     (
         params,
         state_tokens,
         state_mask,
         action_tokens,
         action_mask,
-        (choice, sampled_logp),
+        choice,
     ) = _sample()
 
-    replayed_logp = score_action(
+    left_replay_logp = score_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        choice,
+    )
+    right_replay_logp = score_action(
         params,
         state_tokens,
         state_mask,
@@ -154,7 +161,7 @@ def test_action_score_replays_sampled_logp():
         choice,
     )
 
-    assert float(replayed_logp) == pytest.approx(float(sampled_logp))
+    assert float(left_replay_logp) == pytest.approx(float(right_replay_logp))
 
 
 def test_action_final_bit_constraint_prevents_empty_side_masks():
@@ -166,18 +173,14 @@ def test_action_final_bit_constraint_prevents_empty_side_masks():
             "left_w": jnp.zeros_like(params["action"]["left_w"]),
             "right_w": jnp.zeros_like(params["action"]["right_w"]),
             "left_context_w": jnp.zeros_like(params["action"]["left_context_w"]),
-            "left_position_bias": jnp.full_like(
-                params["action"]["left_position_bias"], -100.0
-            ),
-            "right_position_bias": jnp.full_like(
-                params["action"]["right_position_bias"], -100.0
-            ),
+            "left_bias": jnp.asarray(-100.0, dtype=jnp.float32),
+            "right_bias": jnp.asarray(-100.0, dtype=jnp.float32),
         },
     }
     state_tokens, state_mask = _state()
     action_tokens, action_mask = _action_space_tokens()
 
-    choice, _ = sample_action(
+    choice = sample_action(
         params,
         state_tokens,
         state_mask,
@@ -198,7 +201,7 @@ def test_action_score_rejects_concrete_empty_side_mask():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     empty_left = {
         **choice,
@@ -224,7 +227,7 @@ def test_action_score_rejects_concrete_illegal_candidate_index():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     bad_candidate = {
         **choice,
@@ -250,7 +253,7 @@ def test_action_score_traced_invalid_candidate_index_returns_negative_infinity()
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     candidate_indices = jnp.asarray([-1, 2, 99], dtype=jnp.int32)
 
@@ -279,7 +282,7 @@ def test_action_rejects_concrete_stop_selected_def_index():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
 
     with pytest.raises(ValueError, match="selected_def_index"):
@@ -312,7 +315,7 @@ def test_action_rejects_concrete_missing_selected_def_index():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
 
     with pytest.raises(ValueError, match="selected_def_index"):
@@ -345,7 +348,7 @@ def test_action_rejects_concrete_action_space_def_mismatch():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     mismatched_action_tokens = _with_action_space_start_def_index(action_tokens, 1)
 
@@ -379,7 +382,7 @@ def test_action_score_traced_invalid_selected_def_index_returns_negative_infinit
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     selected_defs = jnp.asarray([-1, 1, 99], dtype=jnp.int32)
 
@@ -408,7 +411,7 @@ def test_action_score_traced_valid_mask_mismatch_returns_negative_infinity():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     bad_left_valid = ~choice["left_valid_mask"]
     bad_right_valid = ~choice["right_valid_mask"]
@@ -449,7 +452,7 @@ def test_action_score_traced_empty_side_mask_returns_negative_infinity():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     empty_left = jnp.zeros_like(choice["left_mask"], dtype=jnp.bool_)
 
@@ -475,7 +478,7 @@ def test_action_score_traced_padded_slot_selection_returns_negative_infinity():
         state_mask,
         action_tokens,
         action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     padded_left = jnp.zeros_like(choice["left_mask"], dtype=jnp.bool_).at[-1].set(True)
 
@@ -501,7 +504,7 @@ def test_action_sample_validates_through_scalar_and_row_boundaries():
         _state_mask,
         _action_tokens,
         _action_mask,
-        (choice, _),
+        choice,
     ) = _sample()
     scalar_space = _action_space()
     validate_decision(scalar_space, _trimmed_decision(choice))
