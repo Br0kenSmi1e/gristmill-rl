@@ -62,6 +62,7 @@ def _collect_streamed_rollout_gradients(
 ) -> _StreamedRolloutResult:
     validate_policy_state(policy)
     validate_rollout_config(config)
+    _validate_streamed_gradient_param_dtypes(policy.params)
     initial_states = list(initial_states)
     if len(initial_states) != config.batch_size:
         raise TrainingError(
@@ -297,6 +298,20 @@ def _collect_streamed_rollout_gradients(
         target_logp_sum=target_logp_sum,
         action_logp_sum=action_logp_sum,
     )
+
+
+def _validate_streamed_gradient_param_dtypes(params) -> None:
+    for leaf in jax.tree_util.tree_leaves(params):
+        try:
+            dtype = jnp.asarray(leaf).dtype
+        except (TypeError, ValueError) as exc:
+            raise TrainingError(
+                "policy params must contain only floating arrays for streamed gradients"
+            ) from exc
+        if not jnp.issubdtype(dtype, jnp.floating):
+            raise TrainingError(
+                "policy params must contain only floating arrays for streamed gradients"
+            )
 
 
 def _zero_trajectory_grad(params, batch_size: int):

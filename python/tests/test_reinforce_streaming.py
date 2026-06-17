@@ -3,6 +3,7 @@ import json
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from gristmill_symbolics import RewriteState, TensorComputation, validate_decision
 from gristmill_symbolics.policy import (
@@ -25,6 +26,7 @@ from gristmill_symbolics.reinforce.types import (
     DECISION_TARGET,
     PolicyState,
     RolloutConfig,
+    TrainingError,
 )
 from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
@@ -160,6 +162,23 @@ def _scalar_rollout_oracle(policy, state, config, *, update_index, root_key):
         exact_empty_def_mask = None
 
     return trajectory_logp, trajectory_grad
+
+
+def test_streamed_rollout_rejects_non_floating_param_leaves():
+    policy = _policy()
+    policy = PolicyState(
+        config=policy.config,
+        params={**policy.params, "unused_integer_leaf": jnp.asarray(1, dtype=jnp.int32)},
+    )
+
+    with pytest.raises(TrainingError, match="floating|streamed gradients"):
+        _collect_streamed_rollout_gradients(
+            policy,
+            [_state_from_json(actionable_json())],
+            RolloutConfig(batch_size=1, max_steps=1, seed=5),
+            update_index=0,
+            root_key=jax.random.PRNGKey(5),
+        )
 
 
 def test_streamed_rollout_accumulates_one_step_sampled_score_gradients():
