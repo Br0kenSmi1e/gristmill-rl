@@ -9,32 +9,22 @@ import numpy as np
 from gristmill_symbolics import RewriteStateRow
 from gristmill_symbolics.policy import (
     action_choice_to_python,
-    pad_token_tree,
     sample_action,
     sample_target,
+    score_action,
+    score_target,
     stack_token_trees,
     tokenize_action_space_snapshot,
     tokenize_state_snapshot,
 )
-from gristmill_symbolics.policy.constants import (
-    ACTION_TOKEN_FIELDS,
-    SENTINEL,
-    STATE_TOKEN_FIELDS,
-    TOKEN_KIND,
-)
 from gristmill_symbolics.policy.types import ActionChoiceTree, TokenTree
 
 from .types import (
-    CASE_ALREADY_FINISHED,
-    CASE_EMPTY_ACTION_SPACE,
-    CASE_STOP,
-    CASE_VALID_ACTION,
     DECISION_ACTION,
     DECISION_TARGET,
     FinalColumnMetrics,
     PolicyState,
     RolloutConfig,
-    RolloutTable,
     TrainingError,
     validate_policy_state,
     validate_rollout_config,
@@ -42,20 +32,18 @@ from .types import (
 
 
 @dataclass(frozen=True)
-class _SampleRecord:
-    state_tokens: TokenTree
-    state_token_mask: jax.Array
-    target_def_mask: jax.Array
-    target_choice: jax.Array
-    target_score_mask: jax.Array
-    selected_def_index: jax.Array
-    action_space_tokens: TokenTree
-    action_space_token_mask: jax.Array
-    action_choice: ActionChoiceTree
-    action_score_mask: jax.Array
-    step_case: jax.Array
-    sampled_target_logp: jax.Array
-    sampled_action_logp: jax.Array
+class _StreamedRolloutResult:
+    final: FinalColumnMetrics
+    trajectory_logp: jax.Array
+    trajectory_grad_logp: object
+    valid_action_count: int
+    stop_count: int
+    empty_action_space_count: int
+    finished_count: int
+    target_score_count: int
+    action_score_count: int
+    target_logp_sum: float
+    action_logp_sum: float
 
 
 def make_rng_grid(root_key, update_index: int, max_steps: int, batch_size: int):
@@ -64,14 +52,14 @@ def make_rng_grid(root_key, update_index: int, max_steps: int, batch_size: int):
     return flat_keys.reshape((max_steps, batch_size, 2, *flat_keys.shape[1:]))
 
 
-def collect_rollout_batch(
+def _collect_streamed_rollout_gradients(
     policy: PolicyState,
     initial_states,
     config: RolloutConfig,
     *,
     update_index,
     root_key,
-) -> tuple[RolloutTable, FinalColumnMetrics]:
+) -> _StreamedRolloutResult:
     validate_policy_state(policy)
     validate_rollout_config(config)
     initial_states = list(initial_states)
@@ -95,469 +83,251 @@ def collect_rollout_batch(
     active = [True] * config.batch_size
     stopped = [False] * config.batch_size
     exact_empty_def_masks: list[jax.Array | None] = [None] * config.batch_size
-    records_by_step: list[list[_SampleRecord]] = []
-    action_width = int(policy.config.max_side_terms)
+    trajectory_logp = jnp.zeros((config.batch_size,), dtype=jnp.float32)
+    trajectory_grad_logp = _zero_trajectory_grad(policy.params, config.batch_size)
+
+    valid_action_count = 0
+    stop_count = 0
+    empty_action_space_count = 0
+    finished_count = 0
+    target_score_count = 0
+    action_score_count = 0
+    target_logp_sum = 0.0
+    action_logp_sum = 0.0
 
     for step in range(config.max_steps):
-        step_records = [
-            _already_finished_record(action_width) for _ in range(config.batch_size)
-        ]
         active_indices = [sample for sample, is_active in enumerate(active) if is_active]
+        finished_count += config.batch_size - len(active_indices)
+        if not active_indices:
+            continue
 
-        if active_indices:
-            snapshots = row.snapshots()
-            definition_masks = row.definition_masks()
-            state_items: list[tuple[TokenTree, jax.Array]] = []
-            target_def_masks: list[jax.Array] = []
-            target_keys: list[jax.Array] = []
-            state_by_sample: dict[int, tuple[TokenTree, jax.Array]] = {}
-            def_mask_by_sample: dict[int, jax.Array] = {}
-            replay_exact_empty_samples: set[int] = set()
+        snapshots = row.snapshots()
+        definition_masks = row.definition_masks()
+        state_items: list[tuple[TokenTree, jax.Array]] = []
+        target_def_masks: list[jax.Array] = []
+        target_keys: list[jax.Array] = []
+        replay_exact_empty_samples: set[int] = set()
 
-            for sample in active_indices:
-                state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
-                row_def_mask = jnp.asarray(
-                    definition_masks[sample], dtype=jnp.bool_
-                )
-                target_def_mask = row_def_mask
-                if (
-                    exact_empty_def_masks[sample] is not None
-                    and not _has_target_definition(row_def_mask)
-                ):
-                    target_def_mask = exact_empty_def_masks[sample]
-                    replay_exact_empty_samples.add(sample)
-                state_by_sample[sample] = (state_tokens, state_token_mask)
-                def_mask_by_sample[sample] = target_def_mask
-                state_items.append((state_tokens, state_token_mask))
-                target_def_masks.append(target_def_mask)
-                target_keys.append(rng_grid[step, sample, DECISION_TARGET])
+        for sample in active_indices:
+            state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
+            row_def_mask = jnp.asarray(definition_masks[sample], dtype=jnp.bool_)
+            target_def_mask = row_def_mask
+            if (
+                exact_empty_def_masks[sample] is not None
+                and not _has_target_definition(row_def_mask)
+            ):
+                target_def_mask = exact_empty_def_masks[sample]
+                replay_exact_empty_samples.add(sample)
+            state_items.append((state_tokens, state_token_mask))
+            target_def_masks.append(target_def_mask)
+            target_keys.append(rng_grid[step, sample, DECISION_TARGET])
 
-            target_choices, target_logps = _sample_targets_for_active(
-                policy,
-                state_items,
-                target_def_masks,
-                target_keys,
-            )
-            target_choice_list = [-1] * config.batch_size
-            target_logp_by_sample: dict[int, jax.Array] = {}
-            query_active = active.copy()
+        state_tokens_batch, state_mask_batch = stack_token_trees(state_items)
+        target_def_mask_batch = _stack_bool_masks(target_def_masks)
+        target_choices = jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
+            policy.params,
+            state_tokens_batch,
+            state_mask_batch,
+            target_def_mask_batch,
+            jnp.stack(target_keys, axis=0),
+        )
+        target_logps, target_grads = jax.vmap(
+            jax.value_and_grad(score_target, argnums=0),
+            in_axes=(None, 0, 0, 0, 0),
+        )(
+            policy.params,
+            state_tokens_batch,
+            state_mask_batch,
+            target_def_mask_batch,
+            target_choices,
+        )
+        trajectory_logp = trajectory_logp.at[jnp.asarray(active_indices)].add(
+            target_logps
+        )
+        trajectory_grad_logp = _scatter_add_grad(
+            trajectory_grad_logp, active_indices, target_grads
+        )
+        target_score_count += len(active_indices)
+        target_logp_sum += float(np.asarray(jnp.sum(target_logps)))
 
-            for position, sample in enumerate(active_indices):
-                target_choice = int(np.asarray(target_choices[position]))
-                target_choice_list[sample] = target_choice
-                target_logp_by_sample[sample] = target_logps[position]
-                if target_choice == -1:
-                    state_tokens, state_token_mask = state_by_sample[sample]
-                    step_records[sample] = _record_without_action(
-                        state_tokens=state_tokens,
-                        state_token_mask=state_token_mask,
-                        target_def_mask=def_mask_by_sample[sample],
-                        target_choice=target_choice,
-                        target_score_mask=True,
-                        selected_def_index=0,
-                        step_case=CASE_STOP,
-                        sampled_target_logp=target_logps[position],
-                        action_width=action_width,
-                    )
-                    active[sample] = False
-                    query_active[sample] = False
-                    stopped[sample] = True
-                    exact_empty_def_masks[sample] = None
-                    continue
+        target_choice_list = [-1] * config.batch_size
+        query_active = active.copy()
+        active_position_by_sample = {
+            sample: position for position, sample in enumerate(active_indices)
+        }
 
-                if sample in replay_exact_empty_samples:
-                    state_tokens, state_token_mask = state_by_sample[sample]
-                    step_records[sample] = _record_without_action(
-                        state_tokens=state_tokens,
-                        state_token_mask=state_token_mask,
-                        target_def_mask=def_mask_by_sample[sample],
-                        target_choice=target_choice,
-                        target_score_mask=True,
-                        selected_def_index=target_choice,
-                        step_case=CASE_EMPTY_ACTION_SPACE,
-                        sampled_target_logp=target_logps[position],
-                        action_width=action_width,
-                    )
-                    query_active[sample] = False
-
-            spaces = None
-            space_kinds = None
-            space_snapshots = None
-            if any(query_active):
-                spaces = row.query_action_spaces_for_row(target_choice_list, query_active)
-                space_kinds = spaces.entry_kinds()
-                space_snapshots = spaces.snapshots()
-
-            non_empty_samples: list[int] = []
-            non_empty_state_items: list[tuple[TokenTree, jax.Array]] = []
-            selected_def_indices: list[int] = []
-            action_items: list[tuple[TokenTree, jax.Array]] = []
-            action_keys: list[jax.Array] = []
-
-            for sample in active_indices:
-                if not query_active[sample]:
-                    continue
-                if spaces is None or space_kinds is None or space_snapshots is None:
-                    raise TrainingError("active target query was not performed")
-                target_choice = target_choice_list[sample]
-                target_logp = target_logp_by_sample[sample]
-                state_tokens, state_token_mask = state_by_sample[sample]
-                target_def_mask = def_mask_by_sample[sample]
-
-                if space_kinds[sample] == "exact_empty":
-                    step_records[sample] = _record_without_action(
-                        state_tokens=state_tokens,
-                        state_token_mask=state_token_mask,
-                        target_def_mask=target_def_mask,
-                        target_choice=target_choice,
-                        target_score_mask=True,
-                        selected_def_index=target_choice,
-                        step_case=CASE_EMPTY_ACTION_SPACE,
-                        sampled_target_logp=target_logp,
-                        action_width=action_width,
-                    )
-                    exact_empty_def_masks[sample] = _one_hot_def_mask(
-                        target_choice, int(target_def_mask.shape[0])
-                    )
-                    continue
-
-                if space_kinds[sample] != "non_empty":
-                    raise TrainingError(
-                        f"sample {sample} target {target_choice} produced "
-                        f"unexpected action-space kind {space_kinds[sample]!r}"
-                    )
-
-                action_space_snapshot = space_snapshots[sample]
-                if action_space_snapshot is None:
-                    raise TrainingError(
-                        f"sample {sample} has non_empty action-space kind "
-                        "but no snapshot"
-                    )
-                action_tokens, action_token_mask = tokenize_action_space_snapshot(
-                    action_space_snapshot
-                )
-                non_empty_samples.append(sample)
-                non_empty_state_items.append((state_tokens, state_token_mask))
-                selected_def_indices.append(target_choice)
-                action_items.append((action_tokens, action_token_mask))
-                action_keys.append(rng_grid[step, sample, DECISION_ACTION])
+        for position, sample in enumerate(active_indices):
+            target_choice = int(np.asarray(target_choices[position]))
+            target_choice_list[sample] = target_choice
+            if target_choice == -1:
+                active[sample] = False
+                query_active[sample] = False
+                stopped[sample] = True
                 exact_empty_def_masks[sample] = None
+                stop_count += 1
+                continue
+            if sample in replay_exact_empty_samples:
+                query_active[sample] = False
+                empty_action_space_count += 1
+
+        spaces = None
+        space_kinds = None
+        space_snapshots = None
+        if any(query_active):
+            spaces = row.query_action_spaces_for_row(target_choice_list, query_active)
+            space_kinds = spaces.entry_kinds()
+            space_snapshots = spaces.snapshots()
+
+        non_empty_samples: list[int] = []
+        non_empty_active_positions: list[int] = []
+        selected_def_indices: list[int] = []
+        action_items: list[tuple[TokenTree, jax.Array]] = []
+        action_keys: list[jax.Array] = []
+
+        for sample in active_indices:
+            if not query_active[sample]:
+                continue
+            if spaces is None or space_kinds is None or space_snapshots is None:
+                raise TrainingError("active target query was not performed")
+            target_choice = target_choice_list[sample]
+            target_def_mask = target_def_masks[active_position_by_sample[sample]]
+
+            if space_kinds[sample] == "exact_empty":
+                exact_empty_def_masks[sample] = _one_hot_def_mask(
+                    target_choice, int(target_def_mask.shape[0])
+                )
+                empty_action_space_count += 1
+                continue
+
+            if space_kinds[sample] != "non_empty":
+                raise TrainingError(
+                    f"sample {sample} target {target_choice} produced "
+                    f"unexpected action-space kind {space_kinds[sample]!r}"
+                )
+
+            action_space_snapshot = space_snapshots[sample]
+            if action_space_snapshot is None:
+                raise TrainingError(
+                    f"sample {sample} has non_empty action-space kind but no snapshot"
+                )
+            action_tokens, action_token_mask = tokenize_action_space_snapshot(
+                action_space_snapshot
+            )
+            non_empty_samples.append(sample)
+            non_empty_active_positions.append(active_position_by_sample[sample])
+            selected_def_indices.append(target_choice)
+            action_items.append((action_tokens, action_token_mask))
+            action_keys.append(rng_grid[step, sample, DECISION_ACTION])
+            exact_empty_def_masks[sample] = None
+
+        if non_empty_samples:
+            action_state_tokens = _take_tree_rows(
+                state_tokens_batch, non_empty_active_positions
+            )
+            action_state_mask = state_mask_batch[jnp.asarray(non_empty_active_positions)]
+            action_tokens_batch, action_mask_batch = stack_token_trees(action_items)
+            selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
+            action_choices = jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
+                policy.params,
+                action_state_tokens,
+                action_state_mask,
+                selected,
+                action_tokens_batch,
+                action_mask_batch,
+                jnp.stack(action_keys, axis=0),
+            )
+            action_logps, action_grads = jax.vmap(
+                jax.value_and_grad(score_action, argnums=0),
+                in_axes=(None, 0, 0, 0, 0, 0, 0),
+            )(
+                policy.params,
+                action_state_tokens,
+                action_state_mask,
+                selected,
+                action_tokens_batch,
+                action_mask_batch,
+                action_choices,
+            )
+            trajectory_logp = trajectory_logp.at[jnp.asarray(non_empty_samples)].add(
+                action_logps
+            )
+            trajectory_grad_logp = _scatter_add_grad(
+                trajectory_grad_logp, non_empty_samples, action_grads
+            )
+            action_score_count += len(non_empty_samples)
+            action_logp_sum += float(np.asarray(jnp.sum(action_logps)))
 
             action_choices_for_row: list[dict[str, object] | None] = [
                 None
             ] * config.batch_size
             action_score_mask = [False] * config.batch_size
-
-            if non_empty_samples:
-                sampled_action_choices, sampled_action_logps = (
-                    _sample_actions_for_non_empty(
-                        policy,
-                        non_empty_state_items,
-                        selected_def_indices,
-                        action_items,
-                        action_keys,
-                    )
+            for position, sample in enumerate(non_empty_samples):
+                action_choices_for_row[sample] = action_choice_to_python(
+                    _slice_tree(action_choices, position)
                 )
+                action_score_mask[sample] = True
 
-                for position, sample in enumerate(non_empty_samples):
-                    action_choice = _ensure_width(
-                        _slice_action_choice(sampled_action_choices, position),
-                        action_width,
+            validated = row.validate_actions_for_row(
+                spaces, action_choices_for_row, action_score_mask
+            )
+            applied = row.apply_validated_actions_for_row(validated)
+            for sample in non_empty_samples:
+                if not bool(applied[sample]):
+                    raise TrainingError(
+                        f"validated action for sample {sample} was not applied"
                     )
-                    action_logp = sampled_action_logps[position]
-                    state_tokens, state_token_mask = state_by_sample[sample]
-                    action_tokens, action_token_mask = action_items[position]
-                    target_choice = selected_def_indices[position]
-                    target_def_mask = def_mask_by_sample[sample]
-                    target_logp = target_logp_by_sample[sample]
+            valid_action_count += len(non_empty_samples)
 
-                    step_records[sample] = _SampleRecord(
-                        state_tokens=state_tokens,
-                        state_token_mask=state_token_mask,
-                        target_def_mask=target_def_mask,
-                        target_choice=jnp.asarray(target_choice, dtype=jnp.int32),
-                        target_score_mask=jnp.asarray(True, dtype=jnp.bool_),
-                        selected_def_index=jnp.asarray(target_choice, dtype=jnp.int32),
-                        action_space_tokens=action_tokens,
-                        action_space_token_mask=action_token_mask,
-                        action_choice=action_choice,
-                        action_score_mask=jnp.asarray(True, dtype=jnp.bool_),
-                        step_case=jnp.asarray(CASE_VALID_ACTION, dtype=jnp.int32),
-                        sampled_target_logp=target_logp,
-                        sampled_action_logp=action_logp,
-                    )
-                    action_choices_for_row[sample] = action_choice_to_python(action_choice)
-                    action_score_mask[sample] = True
-
-                validated = row.validate_actions_for_row(
-                    spaces, action_choices_for_row, action_score_mask
-                )
-                applied = row.apply_validated_actions_for_row(validated)
-                for sample in non_empty_samples:
-                    if not bool(applied[sample]):
-                        raise TrainingError(
-                            f"validated action for sample {sample} was not applied"
-                        )
-
-        records_by_step.append(step_records)
-
-    table = _assemble_rollout(records_by_step, action_width)
     final = FinalColumnMetrics(
         initial_log_flops=initial_log_flops,
         final_log_flops=np.asarray(row.log_total_flops(), dtype=np.float64),
         stopped=np.asarray(stopped, dtype=bool),
         max_steps=np.asarray(active, dtype=bool),
     )
-    return table, final
-
-
-def _sample_targets_for_active(
-    policy: PolicyState,
-    state_items: list[tuple[TokenTree, jax.Array]],
-    target_def_masks: list[jax.Array],
-    keys: list[jax.Array],
-) -> tuple[jax.Array, jax.Array]:
-    if not state_items:
-        return (
-            jnp.zeros((0,), dtype=jnp.int32),
-            jnp.zeros((0,), dtype=jnp.float32),
-        )
-
-    state_tokens, state_token_mask = stack_token_trees(state_items)
-    def_length = _max_mask_length(target_def_masks)
-    target_def_mask = jnp.stack(
-        [_pad_bool_mask(mask, def_length) for mask in target_def_masks], axis=0
-    )
-    return jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
-        policy.params,
-        state_tokens,
-        state_token_mask,
-        target_def_mask,
-        jnp.stack(keys, axis=0),
+    return _StreamedRolloutResult(
+        final=final,
+        trajectory_logp=trajectory_logp,
+        trajectory_grad_logp=trajectory_grad_logp,
+        valid_action_count=valid_action_count,
+        stop_count=stop_count,
+        empty_action_space_count=empty_action_space_count,
+        finished_count=finished_count,
+        target_score_count=target_score_count,
+        action_score_count=action_score_count,
+        target_logp_sum=target_logp_sum,
+        action_logp_sum=action_logp_sum,
     )
 
 
-def _sample_actions_for_non_empty(
-    policy: PolicyState,
-    state_items: list[tuple[TokenTree, jax.Array]],
-    selected_def_indices: list[int],
-    action_items: list[tuple[TokenTree, jax.Array]],
-    keys: list[jax.Array],
-) -> tuple[ActionChoiceTree, jax.Array]:
-    if not action_items:
-        return _empty_batched_action_choice(0, int(policy.config.max_side_terms)), jnp.zeros(
-            (0,), dtype=jnp.float32
-        )
+def _zero_trajectory_grad(params, batch_size: int):
+    def zero_leaf(leaf):
+        leaf = jnp.asarray(leaf)
+        return jnp.zeros((batch_size, *leaf.shape), dtype=leaf.dtype)
 
-    state_tokens, state_token_mask = stack_token_trees(state_items)
-    action_tokens, action_token_mask = stack_token_trees(action_items)
-    selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
-    return jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
-        policy.params,
-        state_tokens,
-        state_token_mask,
-        selected,
-        action_tokens,
-        action_token_mask,
-        jnp.stack(keys, axis=0),
+    return jax.tree_util.tree_map(zero_leaf, params)
+
+
+def _scatter_add_grad(accum, sample_indices: list[int], step_grad):
+    indices = jnp.asarray(sample_indices, dtype=jnp.int32)
+    return jax.tree_util.tree_map(
+        lambda accum_leaf, grad_leaf: accum_leaf.at[indices].add(grad_leaf),
+        accum,
+        step_grad,
     )
 
 
-def _assemble_rollout(
-    records_by_step: list[list[_SampleRecord]],
-    width: int,
-) -> RolloutTable:
-    flat_records = [record for step_records in records_by_step for record in step_records]
-    state_length = max(int(record.state_token_mask.shape[0]) for record in flat_records)
-    action_length = max(
-        int(record.action_space_token_mask.shape[0]) for record in flat_records
-    )
-    def_length = max(int(record.target_def_mask.shape[0]) for record in flat_records)
-
-    state_tokens_by_step: list[TokenTree] = []
-    state_mask_by_step: list[jax.Array] = []
-    action_tokens_by_step: list[TokenTree] = []
-    action_mask_by_step: list[jax.Array] = []
-    target_def_mask_by_step: list[jax.Array] = []
-    action_choice_by_step: list[ActionChoiceTree] = []
-
-    for step_records in records_by_step:
-        state_tokens, state_mask = stack_token_trees(
-            [
-                _pad_state_tree(record.state_tokens, record.state_token_mask, state_length)
-                for record in step_records
-            ],
-            pad_to=state_length,
-        )
-        action_tokens, action_mask = stack_token_trees(
-            [
-                _pad_action_tree(
-                    record.action_space_tokens,
-                    record.action_space_token_mask,
-                    action_length,
-                )
-                for record in step_records
-            ],
-            pad_to=action_length,
-        )
-        state_tokens_by_step.append(state_tokens)
-        state_mask_by_step.append(state_mask)
-        action_tokens_by_step.append(action_tokens)
-        action_mask_by_step.append(action_mask)
-        target_def_mask_by_step.append(
-            jnp.stack(
-                [
-                    _pad_bool_mask(record.target_def_mask, def_length)
-                    for record in step_records
-                ],
-                axis=0,
-            )
-        )
-        action_choice_by_step.append(_stack_action_choices(step_records, width))
-
-    return RolloutTable(
-        state_tokens=_stack_trees(state_tokens_by_step),
-        state_token_mask=jnp.stack(state_mask_by_step, axis=0),
-        target_def_mask=jnp.stack(target_def_mask_by_step, axis=0),
-        target_choice=_stack_record_scalar(records_by_step, "target_choice", jnp.int32),
-        target_score_mask=_stack_record_scalar(
-            records_by_step, "target_score_mask", jnp.bool_
-        ),
-        selected_def_index=_stack_record_scalar(
-            records_by_step, "selected_def_index", jnp.int32
-        ),
-        action_space_tokens=_stack_trees(action_tokens_by_step),
-        action_space_token_mask=jnp.stack(action_mask_by_step, axis=0),
-        action_choice=_stack_trees(action_choice_by_step),
-        action_score_mask=_stack_record_scalar(
-            records_by_step, "action_score_mask", jnp.bool_
-        ),
-        step_case=_stack_record_scalar(records_by_step, "step_case", jnp.int32),
-        sampled_target_logp=_stack_record_scalar(
-            records_by_step, "sampled_target_logp", jnp.float32
-        ),
-        sampled_action_logp=_stack_record_scalar(
-            records_by_step, "sampled_action_logp", jnp.float32
-        ),
-    )
-
-
-def _record_without_action(
-    *,
-    state_tokens: TokenTree,
-    state_token_mask: jax.Array,
-    target_def_mask: jax.Array,
-    target_choice: int,
-    target_score_mask: bool,
-    selected_def_index: int,
-    step_case: int,
-    sampled_target_logp: jax.Array,
-    action_width: int,
-) -> _SampleRecord:
-    action_tokens, action_token_mask = _dummy_action_tree()
-    return _SampleRecord(
-        state_tokens=state_tokens,
-        state_token_mask=state_token_mask,
-        target_def_mask=target_def_mask,
-        target_choice=jnp.asarray(target_choice, dtype=jnp.int32),
-        target_score_mask=jnp.asarray(target_score_mask, dtype=jnp.bool_),
-        selected_def_index=jnp.asarray(selected_def_index, dtype=jnp.int32),
-        action_space_tokens=action_tokens,
-        action_space_token_mask=action_token_mask,
-        action_choice=_empty_action_choice(action_width),
-        action_score_mask=jnp.asarray(False, dtype=jnp.bool_),
-        step_case=jnp.asarray(step_case, dtype=jnp.int32),
-        sampled_target_logp=sampled_target_logp,
-        sampled_action_logp=jnp.asarray(0.0, dtype=jnp.float32),
-    )
-
-
-def _already_finished_record(action_width: int) -> _SampleRecord:
-    state_tokens, state_token_mask = _dummy_state_tree()
-    action_tokens, action_token_mask = _dummy_action_tree()
-    return _SampleRecord(
-        state_tokens=state_tokens,
-        state_token_mask=state_token_mask,
-        target_def_mask=jnp.zeros((1,), dtype=jnp.bool_),
-        target_choice=jnp.asarray(-1, dtype=jnp.int32),
-        target_score_mask=jnp.asarray(False, dtype=jnp.bool_),
-        selected_def_index=jnp.asarray(0, dtype=jnp.int32),
-        action_space_tokens=action_tokens,
-        action_space_token_mask=action_token_mask,
-        action_choice=_empty_action_choice(action_width),
-        action_score_mask=jnp.asarray(False, dtype=jnp.bool_),
-        step_case=jnp.asarray(CASE_ALREADY_FINISHED, dtype=jnp.int32),
-        sampled_target_logp=jnp.asarray(0.0, dtype=jnp.float32),
-        sampled_action_logp=jnp.asarray(0.0, dtype=jnp.float32),
-    )
-
-
-def _dummy_state_tree() -> tuple[TokenTree, jax.Array]:
-    return _dummy_token_tree(STATE_TOKEN_FIELDS)
-
-
-def _dummy_action_tree() -> tuple[TokenTree, jax.Array]:
-    return _dummy_token_tree(ACTION_TOKEN_FIELDS)
-
-
-def _dummy_token_tree(fields: tuple[str, ...]) -> tuple[TokenTree, jax.Array]:
-    tokens = {
-        field: jnp.asarray(
-            [int(TOKEN_KIND.PAD) if field == "token_kind" else SENTINEL],
-            dtype=jnp.int32,
-        )
-        for field in fields
-    }
-    return tokens, jnp.zeros((1,), dtype=jnp.bool_)
-
-
-def _pad_state_tree(
-    tokens: TokenTree, mask: jax.Array, length: int
-) -> tuple[TokenTree, jax.Array]:
-    return pad_token_tree(tokens, mask, length)
-
-
-def _pad_action_tree(
-    tokens: TokenTree, mask: jax.Array, length: int
-) -> tuple[TokenTree, jax.Array]:
-    return pad_token_tree(tokens, mask, length)
-
-
-def _empty_action_choice(width: int) -> ActionChoiceTree:
-    return {
-        "candidate_index": jnp.asarray(0, dtype=jnp.int32),
-        "left_mask": jnp.zeros((width,), dtype=jnp.bool_),
-        "left_valid_mask": jnp.zeros((width,), dtype=jnp.bool_),
-        "right_mask": jnp.zeros((width,), dtype=jnp.bool_),
-        "right_valid_mask": jnp.zeros((width,), dtype=jnp.bool_),
-    }
-
-
-def _empty_batched_action_choice(batch_size: int, width: int) -> ActionChoiceTree:
-    return {
-        "candidate_index": jnp.zeros((batch_size,), dtype=jnp.int32),
-        "left_mask": jnp.zeros((batch_size, width), dtype=jnp.bool_),
-        "left_valid_mask": jnp.zeros((batch_size, width), dtype=jnp.bool_),
-        "right_mask": jnp.zeros((batch_size, width), dtype=jnp.bool_),
-        "right_valid_mask": jnp.zeros((batch_size, width), dtype=jnp.bool_),
-    }
+def _take_tree_rows(tree, indices: list[int]):
+    index_array = jnp.asarray(indices, dtype=jnp.int32)
+    return jax.tree_util.tree_map(lambda value: value[index_array], tree)
 
 
 def _slice_tree(tree, index: int):
     return jax.tree_util.tree_map(lambda value: value[index], tree)
 
 
-def _slice_action_choice(choice: ActionChoiceTree, index: int) -> ActionChoiceTree:
-    return _slice_tree(choice, index)
-
-
-def _ensure_width(choice: ActionChoiceTree, width: int) -> ActionChoiceTree:
-    for key in ("left_mask", "left_valid_mask", "right_mask", "right_valid_mask"):
-        if int(choice[key].shape[0]) != width:
-            raise TrainingError(
-                f"{key} width {choice[key].shape[0]} differs from policy width {width}"
-            )
-    return choice
+def _stack_bool_masks(masks: list[jax.Array]) -> jax.Array:
+    length = _max_mask_length(masks)
+    return jnp.stack([_pad_bool_mask(mask, length) for mask in masks], axis=0)
 
 
 def _pad_bool_mask(mask: jax.Array, length: int) -> jax.Array:
@@ -583,30 +353,3 @@ def _one_hot_def_mask(target_choice: int, length: int) -> jax.Array:
 
 def _max_mask_length(masks: list[jax.Array]) -> int:
     return max(1, *(int(mask.shape[0]) for mask in masks))
-
-
-def _stack_action_choices(records: list[_SampleRecord], width: int) -> ActionChoiceTree:
-    choices = [_ensure_width(record.action_choice, width) for record in records]
-    return {
-        key: jnp.stack([choice[key] for choice in choices], axis=0)
-        for key in choices[0]
-    }
-
-
-def _stack_trees(trees: list[dict[str, jax.Array]]) -> dict[str, jax.Array]:
-    return {
-        key: jnp.stack([tree[key] for tree in trees], axis=0)
-        for key in trees[0]
-    }
-
-
-def _stack_record_scalar(
-    records_by_step: list[list[_SampleRecord]], field: str, dtype
-) -> jax.Array:
-    return jnp.asarray(
-        [
-            [getattr(record, field) for record in step_records]
-            for step_records in records_by_step
-        ],
-        dtype=dtype,
-    )
