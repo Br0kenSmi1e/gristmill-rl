@@ -1,3 +1,5 @@
+import copy
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -36,6 +38,28 @@ def _action_space():
 
 def _action_space_tokens():
     return tokenize_action_space_snapshot(_action_space().snapshot())
+
+
+def _wide_action_space_snapshot(*, candidates=10, side_terms=6):
+    snapshot = copy.deepcopy(_action_space().snapshot())
+    template = snapshot["candidate_templates"][0]
+    widened = []
+    for _ in range(candidates):
+        candidate = copy.deepcopy(template)
+        for side_name in ("left_definition", "right_definition"):
+            terms = candidate[side_name]["terms"]
+            candidate[side_name]["terms"] = [
+                copy.deepcopy(terms[index % len(terms)]) for index in range(side_terms)
+            ]
+        widened.append(candidate)
+    snapshot["candidate_templates"] = widened
+    return snapshot
+
+
+def _wide_action_space_tokens(*, candidates=10, side_terms=6):
+    return tokenize_action_space_snapshot(
+        _wide_action_space_snapshot(candidates=candidates, side_terms=side_terms)
+    )
 
 
 def _sample():
@@ -162,6 +186,75 @@ def test_action_score_deterministically_replays_choice_logp():
     )
 
     assert float(left_replay_logp) == pytest.approx(float(right_replay_logp))
+
+
+def test_action_sample_scores_candidate_and_side_counts_above_removed_caps():
+    params = _params()
+    state_tokens, state_mask = _state()
+    action_tokens, action_mask = _wide_action_space_tokens(candidates=10, side_terms=6)
+
+    choice = sample_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        jax.random.PRNGKey(7),
+    )
+    logp = score_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        choice,
+    )
+
+    assert int(choice["candidate_index"]) < 10
+    assert choice["left_mask"].shape == choice["left_valid_mask"].shape
+    assert choice["right_mask"].shape == choice["right_valid_mask"].shape
+    assert int(jnp.sum(choice["left_valid_mask"])) == 6
+    assert int(jnp.sum(choice["right_valid_mask"])) == 6
+    assert bool(jnp.isfinite(logp))
+
+
+def test_action_score_forces_wide_candidate_with_compact_local_side_capacity():
+    params = _params()
+    state_tokens, state_mask = _state()
+    action_tokens, action_mask = _wide_action_space_tokens(candidates=10, side_terms=6)
+    sampled = sample_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        jax.random.PRNGKey(8),
+    )
+    choice = {
+        **sampled,
+        "candidate_index": jnp.asarray(9, dtype=jnp.int32),
+        "left_mask": sampled["left_mask"][:6],
+        "left_valid_mask": sampled["left_valid_mask"][:6],
+        "right_mask": sampled["right_mask"][:6],
+        "right_valid_mask": sampled["right_valid_mask"][:6],
+    }
+
+    logp = score_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        choice,
+    )
+
+    assert int(jnp.sum(choice["left_valid_mask"])) == 6
+    assert int(jnp.sum(choice["right_valid_mask"])) == 6
+    assert bool(jnp.isfinite(logp))
 
 
 def test_action_final_bit_constraint_prevents_empty_side_masks():

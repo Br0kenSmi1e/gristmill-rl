@@ -1,3 +1,5 @@
+import copy
+
 import jax
 import jax.numpy as jnp
 
@@ -31,6 +33,22 @@ def _state_tree():
 
 def _action_tree():
     return tokenize_action_space_snapshot(actionable_action_space_snapshot())
+
+
+def _wide_action_space_snapshot(*, candidates=10, side_terms=6):
+    snapshot = copy.deepcopy(actionable_action_space_snapshot())
+    template = snapshot["candidate_templates"][0]
+    widened = []
+    for _ in range(candidates):
+        candidate = copy.deepcopy(template)
+        for side_name in ("left_definition", "right_definition"):
+            terms = candidate[side_name]["terms"]
+            candidate[side_name]["terms"] = [
+                copy.deepcopy(terms[index % len(terms)]) for index in range(side_terms)
+            ]
+        widened.append(candidate)
+    snapshot["candidate_templates"] = widened
+    return snapshot
 
 
 def _two_row_state_batch():
@@ -207,6 +225,31 @@ def test_vmap_sample_action_matches_scalar_rows_with_same_keys():
     for index, scalar_choice in enumerate(scalar_choices):
         _assert_choice_equal(_slice_tree(vmapped_choices, index), scalar_choice)
     assert jnp.allclose(vmapped_replayed_logp, scalar_replayed_logp)
+
+
+def test_vmap_sample_action_uses_local_padding_width_not_model_config():
+    params = _params()
+    state_tokens, state_mask = _two_row_state_batch()
+    small_action = _action_tree()
+    wide_action = tokenize_action_space_snapshot(
+        _wide_action_space_snapshot(candidates=10, side_terms=6)
+    )
+    action_tokens, action_mask = stack_token_trees([small_action, wide_action])
+    selected_defs = jnp.asarray([0, 0], dtype=jnp.int32)
+    keys = jax.random.split(jax.random.PRNGKey(31), 2)
+
+    choices = jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
+        params, state_tokens, state_mask, selected_defs, action_tokens, action_mask, keys
+    )
+    logp = jax.vmap(score_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
+        params, state_tokens, state_mask, selected_defs, action_tokens, action_mask, choices
+    )
+
+    assert choices["left_mask"].shape == choices["left_valid_mask"].shape
+    assert choices["right_mask"].shape == choices["right_valid_mask"].shape
+    assert int(jnp.sum(choices["left_valid_mask"][1])) == 6
+    assert int(jnp.sum(choices["right_valid_mask"][1])) == 6
+    assert bool(jnp.all(jnp.isfinite(logp)))
 
 
 def test_width_one_vmap_sample_action_matches_scalar_with_same_key():

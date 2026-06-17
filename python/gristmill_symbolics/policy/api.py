@@ -242,8 +242,10 @@ def _side_terms(
     action_space_token_mask,
     candidate_index,
     side,
+    width=None,
 ):
-    width = _action_width(action_space_tokens)
+    if width is None:
+        width = _action_width(action_space_tokens)
     term_indices = jnp.arange(width, dtype=jnp.int32)
     side_term_tokens = (
         action_space_token_mask
@@ -269,7 +271,8 @@ def _side_terms(
             term_starts & (action_space_tokens["term_index"] == term_index)
         )
     )(term_indices)
-    return term_embeddings, valid
+    overflow = jnp.any(side_term_tokens & (action_space_tokens["term_index"] >= width))
+    return term_embeddings, valid, overflow
 
 
 def _left_logits(params, context, candidate_embedding, left_embeddings):
@@ -370,6 +373,7 @@ def _concrete_side_valid_mask(
     action_space_token_mask,
     candidate_index,
     side,
+    width,
 ):
     token_candidates = _concrete_array(action_space_tokens["candidate_index"])
     token_sides = _concrete_array(action_space_tokens["side"])
@@ -384,7 +388,6 @@ def _concrete_side_valid_mask(
         or token_mask is None
     ):
         return None
-    width = _action_width(action_space_tokens)
     return np.asarray(
         [
             bool(
@@ -400,6 +403,33 @@ def _concrete_side_valid_mask(
         ],
         dtype=bool,
     )
+
+
+def _concrete_side_terms_fit_width(
+    action_space_tokens,
+    action_space_token_mask,
+    candidate_index,
+    side,
+    width,
+):
+    token_candidates = _concrete_array(action_space_tokens["candidate_index"])
+    token_sides = _concrete_array(action_space_tokens["side"])
+    token_terms = _concrete_array(action_space_tokens["term_index"])
+    token_mask = _concrete_array(action_space_token_mask)
+    if (
+        token_candidates is None
+        or token_sides is None
+        or token_terms is None
+        or token_mask is None
+    ):
+        return None
+    side_terms = (
+        token_mask
+        & (token_candidates == candidate_index)
+        & (token_sides == int(side))
+        & (token_terms >= 0)
+    )
+    return not bool(np.any(side_terms & (token_terms >= width)))
 
 
 def _concrete_state_def_indices(state_tokens, state_token_mask):
@@ -480,8 +510,16 @@ def _validate_side_choice(
             raise ValueError(f"empty {side_name}_mask")
     if candidate_index is None:
         return
+    width = int(provided_valid.shape[0]) if provided_valid is not None else None
+    if width is None:
+        return
+    terms_fit = _concrete_side_terms_fit_width(
+        action_space_tokens, action_space_token_mask, candidate_index, side, width
+    )
+    if terms_fit is not None and not terms_fit:
+        raise ValueError(f"{side_name}_valid_mask does not cover action space")
     computed_valid = _concrete_side_valid_mask(
-        action_space_tokens, action_space_token_mask, candidate_index, side
+        action_space_tokens, action_space_token_mask, candidate_index, side, width
     )
     if computed_valid is None:
         return
@@ -506,11 +544,17 @@ def _validate_action_choice(
     candidate = jnp.asarray(action_choice["candidate_index"], dtype=jnp.int32)
     if candidate.shape != ():
         raise ValueError(f"candidate_index must be scalar, got shape {candidate.shape}")
-    width = _action_width(action_space_tokens)
+    side_shape = None
     for name in ("left_mask", "left_valid_mask", "right_mask", "right_valid_mask"):
         values = jnp.asarray(action_choice[name], dtype=jnp.bool_)
-        if values.shape != (width,):
-            raise ValueError(f"{name} must have shape ({width},), got {values.shape}")
+        if values.ndim != 1:
+            raise ValueError(f"{name} must be 1D, got shape {values.shape}")
+        if side_shape is None:
+            side_shape = values.shape
+        elif values.shape != side_shape:
+            raise ValueError(
+                f"{name} must have shape {side_shape}, got {values.shape}"
+            )
 
     candidate_index = _concrete_int(action_choice["candidate_index"])
     candidate_count = _action_width(action_space_tokens)
@@ -581,13 +625,14 @@ def score_action(
     safe_candidate = jnp.clip(candidate, 0, candidate_valid_mask.shape[0] - 1)
     candidate_is_valid = candidate_in_range & candidate_valid_mask[safe_candidate]
 
-    left_embeddings, left_valid = _side_terms(
+    left_embeddings, left_valid, left_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
         action_space_token_mask,
         safe_candidate,
         SIDE.LEFT,
+        width=jnp.asarray(action_choice["left_mask"]).shape[0],
     )
     candidate_embedding = candidate_embeddings[safe_candidate]
     left_logits = _left_logits(params, context, candidate_embedding, left_embeddings)
@@ -597,13 +642,14 @@ def score_action(
     left_logp, left_is_valid = _score_side(left_logits, left_valid, left_mask)
     left_summary = masked_mean(left_embeddings, left_valid & left_mask)
 
-    right_embeddings, right_valid = _side_terms(
+    right_embeddings, right_valid, right_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
         action_space_token_mask,
         safe_candidate,
         SIDE.RIGHT,
+        width=jnp.asarray(action_choice["right_mask"]).shape[0],
     )
     right_logits = _right_logits(
         params, context, candidate_embedding, right_embeddings, left_summary
@@ -623,6 +669,8 @@ def score_action(
         & candidate_is_valid
         & left_is_valid
         & right_is_valid
+        & (~left_overflow)
+        & (~right_overflow)
         & left_valid_matches
         & right_valid_matches
     )
@@ -666,7 +714,7 @@ def sample_action(
     ).astype(jnp.int32)
     candidate_embedding = candidate_embeddings[candidate]
 
-    left_embeddings, left_valid = _side_terms(
+    left_embeddings, left_valid, _left_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
@@ -678,7 +726,7 @@ def sample_action(
     left_mask, _ = _sample_side(left_logits, left_valid, left_rng)
     left_summary = masked_mean(left_embeddings, left_valid & left_mask)
 
-    right_embeddings, right_valid = _side_terms(
+    right_embeddings, right_valid, _right_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
