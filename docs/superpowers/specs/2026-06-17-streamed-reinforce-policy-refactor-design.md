@@ -100,29 +100,42 @@ right_position_bias
 
 The replacement action heads must be shape-independent. Candidate and term identities are already represented through token fields, embeddings, and pooled encoded representations. If scalar biases are useful, they must be shared parameters such as `candidate_bias`, `left_bias`, and `right_bias`, not per-global-slot vectors.
 
-### Action-Space Batching Contract
+### Policy Batching Contract
 
 The policy stack should separate scalar policy semantics from batching:
 
 ```text
-list of scalar action-space inputs
+list of scalar policy inputs
     -> local padding/stacking adapter
-    -> vmap(scalar sample_action or score_action)
+    -> vmap(scalar sample_* or score_*)
 ```
 
 The scalar policy functions operate on one already-padded row of input arrays. They do not own global padding and do not read model-config caps.
 
-The batching adapter chooses local shapes for the current active group. For example:
+The target batching adapter chooses local shapes for the current active target group:
 
 ```text
 state_tokens:        [active, local_state_token_len]
+state_token_mask:    [active, local_state_token_len]
+target_def_mask:     [active, local_def_count]
+```
+
+The action batching adapter uses the same pattern, with action-space-specific local shapes:
+
+```text
+state_tokens:        [active, local_state_token_len]
+state_token_mask:    [active, local_state_token_len]
+selected_def_index:  [active]
 action_tokens:       [active, local_action_token_len]
+action_token_mask:   [active, local_action_token_len]
 candidate slots:     local to current action-space batch
 left term slots:     local to current action-space batch
 right term slots:    local to current action-space batch
 ```
 
-The tokenizer continues to preserve all candidates and all side terms. Missing local batch entries are masked false. Padding is ephemeral for the current `vmap` call; it is not persisted as a rollout table and is not encoded in `PolicyConfig`.
+Within one rollout step, the action path must reuse the current-state token rows already prepared for target sampling/scoring. After target choices are sampled, the valid non-empty action subset gathers the corresponding state-token rows from the active target batch rather than retokenizing the same snapshots. The next rollout step retokenizes from the row environment after validated actions have been applied.
+
+The tokenizer continues to preserve all definitions, candidates, and side terms. Missing local batch entries are masked false. Padding is ephemeral for the current `vmap` call; it is not persisted as a rollout table and is not encoded in `PolicyConfig`.
 
 ### Action Choice Shape
 
@@ -147,7 +160,7 @@ The side mask widths are local batch capacities, not global model caps. `candida
 - `PolicyConfig` no longer has `max_candidates` or `max_side_terms`.
 - Policy params no longer include `candidate_slot_bias`, `left_position_bias`, or `right_position_bias`.
 - Policy action tests cover action spaces with candidate and side-term counts exceeding the old caps.
-- Policy batching tests use local padding followed by `vmap`.
+- Policy batching tests cover target and action local padding followed by `vmap`.
 - Policy tests pass after update.
 - Reinforce/training tests may be temporarily broken after this milestone because the trainer still depends on old policy and table assumptions.
 
@@ -193,6 +206,8 @@ target_logp, target_grad_logp = batched_target_logp_and_grad(
     target_choice,
 )
 ```
+
+The `state_tokens` and `state_token_mask` used here represent the current row snapshots before any action is applied for this step. They must be reused by the action path for samples whose target choice produces a non-empty action space.
 
 For valid action decisions:
 
