@@ -7,7 +7,6 @@ import jax
 import numpy as np
 
 from gristmill_symbolics.policy import PolicyConfig
-from gristmill_symbolics.policy.types import ActionChoiceTree, TokenTree
 
 CASE_ALREADY_FINISHED = 0
 CASE_STOP = 1
@@ -77,38 +76,6 @@ class FinalColumnMetrics:
     final_log_flops: np.ndarray
     stopped: np.ndarray
     max_steps: np.ndarray
-
-
-@dataclass(frozen=True)
-class RolloutTable:
-    state_tokens: TokenTree
-    state_token_mask: jax.Array
-    target_def_mask: jax.Array
-    target_choice: jax.Array
-    target_score_mask: jax.Array
-    selected_def_index: jax.Array
-    action_space_tokens: TokenTree
-    action_space_token_mask: jax.Array
-    action_choice: ActionChoiceTree
-    action_score_mask: jax.Array
-    step_case: jax.Array
-    sampled_target_logp: jax.Array
-    sampled_action_logp: jax.Array
-
-
-@dataclass(frozen=True)
-class ScoreOutputs:
-    target_logp: jax.Array
-    action_logp: jax.Array
-
-
-@dataclass(frozen=True)
-class LossDiagnostics:
-    column_logp_sum: jax.Array
-    target_score_count: int
-    action_score_count: int
-    target_logp_mean: float
-    action_logp_mean: float
 
 
 @dataclass(frozen=True)

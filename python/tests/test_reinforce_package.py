@@ -7,13 +7,10 @@ from gristmill_symbolics.reinforce import (
     CheckpointData,
     FinalColumnMetrics,
     LossConfig,
-    LossDiagnostics,
     OptimizerConfig,
     PolicyState,
     RewardConfig,
     RolloutConfig,
-    RolloutTable,
-    ScoreOutputs,
     TrainState,
     TrainingError,
     UpdateMetrics,
@@ -32,7 +29,7 @@ from gristmill_symbolics.reinforce.types import (
 )
 
 
-def test_reinforce_package_exports_phase3_contracts():
+def test_reinforce_package_exports_streamed_training_contracts():
     config = PolicyConfig(d_model=8)
     state = PolicyState(config=config, params={})
 
@@ -46,11 +43,18 @@ def test_reinforce_package_exports_phase3_contracts():
     assert issubclass(TrainingError, RuntimeError)
     assert reinforce.CheckpointData is CheckpointData
     assert reinforce.FinalColumnMetrics is FinalColumnMetrics
-    assert reinforce.LossDiagnostics is LossDiagnostics
-    assert reinforce.RolloutTable is RolloutTable
-    assert reinforce.ScoreOutputs is ScoreOutputs
     assert reinforce.TrainState is TrainState
     assert reinforce.UpdateMetrics is UpdateMetrics
+
+    for removed in (
+        "RolloutTable",
+        "ScoreOutputs",
+        "LossDiagnostics",
+        "collect_rollout_batch",
+        "score_rollout",
+        "reinforce_loss",
+    ):
+        assert not hasattr(reinforce, removed)
 
 
 def test_reinforce_case_and_rng_constants_are_stable():
