@@ -8,11 +8,6 @@ import numpy as np
 
 from gristmill_symbolics.policy import PolicyConfig
 
-CASE_ALREADY_FINISHED = 0
-CASE_STOP = 1
-CASE_EMPTY_ACTION_SPACE = 2
-CASE_VALID_ACTION = 3
-
 DECISION_TARGET = 0
 DECISION_ACTION = 1
 

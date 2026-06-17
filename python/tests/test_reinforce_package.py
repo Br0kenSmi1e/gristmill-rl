@@ -16,10 +16,6 @@ from gristmill_symbolics.reinforce import (
     UpdateMetrics,
 )
 from gristmill_symbolics.reinforce.types import (
-    CASE_ALREADY_FINISHED,
-    CASE_EMPTY_ACTION_SPACE,
-    CASE_STOP,
-    CASE_VALID_ACTION,
     CHECKPOINT_SCHEMA_VERSION,
     DECISION_ACTION,
     DECISION_TARGET,
@@ -69,11 +65,7 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert set(reinforce.__all__) == expected_exports
 
 
-def test_reinforce_case_and_rng_constants_are_stable():
-    assert CASE_ALREADY_FINISHED == 0
-    assert CASE_STOP == 1
-    assert CASE_EMPTY_ACTION_SPACE == 2
-    assert CASE_VALID_ACTION == 3
+def test_reinforce_rng_and_schema_constants_are_stable():
     assert DECISION_TARGET == 0
     assert DECISION_ACTION == 1
     assert CHECKPOINT_SCHEMA_VERSION == 1

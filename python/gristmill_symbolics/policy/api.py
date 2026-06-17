@@ -544,16 +544,21 @@ def _validate_action_choice(
     candidate = jnp.asarray(action_choice["candidate_index"], dtype=jnp.int32)
     if candidate.shape != ():
         raise ValueError(f"candidate_index must be scalar, got shape {candidate.shape}")
-    side_shape = None
-    for name in ("left_mask", "left_valid_mask", "right_mask", "right_valid_mask"):
-        values = jnp.asarray(action_choice[name], dtype=jnp.bool_)
-        if values.ndim != 1:
-            raise ValueError(f"{name} must be 1D, got shape {values.shape}")
-        if side_shape is None:
-            side_shape = values.shape
-        elif values.shape != side_shape:
+    for side_name in ("left", "right"):
+        mask = jnp.asarray(action_choice[f"{side_name}_mask"], dtype=jnp.bool_)
+        valid_mask = jnp.asarray(
+            action_choice[f"{side_name}_valid_mask"], dtype=jnp.bool_
+        )
+        if mask.ndim != 1:
+            raise ValueError(f"{side_name}_mask must be 1D, got shape {mask.shape}")
+        if valid_mask.ndim != 1:
             raise ValueError(
-                f"{name} must have shape {side_shape}, got {values.shape}"
+                f"{side_name}_valid_mask must be 1D, got shape {valid_mask.shape}"
+            )
+        if mask.shape != valid_mask.shape:
+            raise ValueError(
+                f"{side_name}_mask and {side_name}_valid_mask shapes differ: "
+                f"{mask.shape} != {valid_mask.shape}"
             )
 
     candidate_index = _concrete_int(action_choice["candidate_index"])

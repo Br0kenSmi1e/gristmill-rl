@@ -257,6 +257,41 @@ def test_action_score_forces_wide_candidate_with_compact_local_side_capacity():
     assert bool(jnp.isfinite(logp))
 
 
+def test_action_score_accepts_different_left_and_right_local_capacity():
+    params = _params()
+    state_tokens, state_mask = _state()
+    snapshot = copy.deepcopy(_action_space().snapshot())
+    candidate = snapshot["candidate_templates"][0]
+    candidate["left_definition"]["terms"] = candidate["left_definition"]["terms"][:1]
+    right_terms = candidate["right_definition"]["terms"]
+    candidate["right_definition"]["terms"] = [
+        copy.deepcopy(right_terms[index % len(right_terms)]) for index in range(2)
+    ]
+    snapshot["candidate_templates"] = [candidate]
+    action_tokens, action_mask = tokenize_action_space_snapshot(snapshot)
+    choice = {
+        "candidate_index": jnp.asarray(0, dtype=jnp.int32),
+        "left_mask": jnp.asarray([True], dtype=jnp.bool_),
+        "left_valid_mask": jnp.asarray([True], dtype=jnp.bool_),
+        "right_mask": jnp.asarray([True, False], dtype=jnp.bool_),
+        "right_valid_mask": jnp.asarray([True, True], dtype=jnp.bool_),
+    }
+
+    logp = score_action(
+        params,
+        state_tokens,
+        state_mask,
+        jnp.asarray(0, dtype=jnp.int32),
+        action_tokens,
+        action_mask,
+        choice,
+    )
+
+    assert choice["left_mask"].shape == (1,)
+    assert choice["right_mask"].shape == (2,)
+    assert bool(jnp.isfinite(logp))
+
+
 def test_action_final_bit_constraint_prevents_empty_side_masks():
     params = _params()
     params = {

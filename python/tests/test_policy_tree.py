@@ -158,8 +158,8 @@ def test_stack_token_trees_rejects_mismatched_field_sets():
 def test_action_choice_tree_round_trips_to_python_padded_choice():
     choice = make_action_choice(
         candidate_index=2,
-        left_mask=[True, False],
-        left_valid_mask=[True, True],
+        left_mask=[True],
+        left_valid_mask=[True],
         right_mask=[False, True],
         right_valid_mask=[True, True],
     )
@@ -167,22 +167,24 @@ def test_action_choice_tree_round_trips_to_python_padded_choice():
     assert choice["candidate_index"].shape == ()
     assert action_choice_to_python(choice) == {
         "candidate_index": 2,
-        "left_mask": [True, False],
-        "left_valid_mask": [True, True],
+        "left_mask": [True],
+        "left_valid_mask": [True],
         "right_mask": [False, True],
         "right_valid_mask": [True, True],
     }
 
 
-def test_action_choice_rejects_different_left_and_right_widths():
-    with pytest.raises(ValueError, match="left and right mask shapes differ"):
-        make_action_choice(
-            candidate_index=2,
-            left_mask=[True],
-            left_valid_mask=[True],
-            right_mask=[True, False],
-            right_valid_mask=[True, True],
-        )
+def test_action_choice_accepts_different_left_and_right_widths():
+    choice = make_action_choice(
+        candidate_index=2,
+        left_mask=[True],
+        left_valid_mask=[True],
+        right_mask=[True, False],
+        right_valid_mask=[True, True],
+    )
+
+    assert choice["left_mask"].shape == (1,)
+    assert choice["right_mask"].shape == (2,)
 
 
 def test_action_choice_rejects_left_mask_valid_shape_mismatch():
