@@ -38,8 +38,6 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
         d_model=8,
         num_attention_layers=2,
         id_vocab_size=64,
-        max_candidates=8,
-        max_side_terms=4,
         init_scale=0.03,
         stop_bias_init=-7.0,
     )
@@ -62,6 +60,7 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
             final_log_flops_best=7.25,
             reward_mean=1.5,
             reward_std=0.25,
+            reward_stderr=0.17677669529663687,
             advantage_mean=0.0,
             advantage_std=1.0,
             valid_action_count=4,
@@ -71,7 +70,10 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
             max_steps_count=1,
             target_score_count=6,
             action_score_count=4,
-            loss=-0.125,
+            loss=-1.5,
+            objective_loss_mean=-1.5,
+            objective_loss_stderr=0.17677669529663687,
+            surrogate_loss=-0.125,
             target_logp_mean=-0.75,
             action_logp_mean=-1.25,
             params_changed=True,
@@ -113,7 +115,7 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
 
 def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4),
+        PolicyConfig(d_model=8),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=13,
     )
@@ -147,7 +149,7 @@ def test_checkpoint_rejects_unknown_schema_version(tmp_path):
 
 def test_checkpoint_rejects_unknown_tokenizer_schema_version(tmp_path):
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4),
+        PolicyConfig(d_model=8),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=13,
     )

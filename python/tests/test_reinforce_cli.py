@@ -35,6 +35,11 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
     assert line["update_index"] == 0
     assert line["batch_size"] == 2
     assert "reward_std" in line
+    assert "reward_stderr" in line
+    assert "objective_loss_mean" in line
+    assert "objective_loss_stderr" in line
+    assert "surrogate_loss" in line
+    assert line["loss"] == pytest.approx(line["objective_loss_mean"])
     assert "target_score_count" in line
     assert "action_score_count" in line
     assert "stop_count" in line
@@ -90,6 +95,11 @@ def test_train_cli_can_continue_from_checkpoint(tmp_path, capsys):
     assert line["update_index"] == 1
     assert line["batch_size"] == 2
     assert line["max_steps"] == 1
+    assert "reward_stderr" in line
+    assert "objective_loss_mean" in line
+    assert "objective_loss_stderr" in line
+    assert "surrogate_loss" in line
+    assert line["loss"] == pytest.approx(line["objective_loss_mean"])
     assert checkpoint.train_state.update_index == 2
     assert checkpoint.rollout_config.batch_size == 2
     assert checkpoint.rollout_config.max_steps == 1
