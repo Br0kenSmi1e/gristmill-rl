@@ -1,25 +1,14 @@
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from gristmill_symbolics.policy import PolicyConfig, init_policy_params
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
     FinalColumnMetrics,
-    LossConfig,
-    PolicyState,
     RewardConfig,
-    RolloutConfig,
-    collect_rollout_batch,
     compute_advantages,
     compute_rewards,
-    reinforce_loss,
-    score_rollout,
 )
-from gristmill_symbolics.reinforce.objective import _reinforce_loss_value
-from gristmill_symbolics.reinforce.types import ScoreOutputs, TrainingError
-from tests.policy_fixtures import actionable_state
+from gristmill_symbolics.reinforce.types import TrainingError
 
 
 def _policy():
