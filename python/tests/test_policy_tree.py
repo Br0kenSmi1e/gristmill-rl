@@ -234,8 +234,8 @@ def test_policy_config_defaults_match_phase_2_small_model():
 
     assert config.d_model == 32
     assert config.num_attention_layers == 1
-    assert config.max_candidates == 32
-    assert config.max_side_terms == 32
+    for attr in ("max_" + "candidates", "max_" + "side_terms"):
+        assert not hasattr(config, attr)
     assert config.stop_bias_init == -20.0
     assert config.id_vocab_size == 128
     assert config.init_scale == 0.02

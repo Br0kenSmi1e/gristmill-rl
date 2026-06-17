@@ -16,8 +16,6 @@ class PolicyConfig:
     d_model: int = 32
     num_attention_layers: int = 1
     id_vocab_size: int = 128
-    max_candidates: int = 32
-    max_side_terms: int = 32
     init_scale: float = 0.02
     stop_bias_init: float = -20.0
 

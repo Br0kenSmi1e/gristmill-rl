@@ -8,24 +8,28 @@ from tests.policy_fixtures import actionable_state_snapshot
 
 
 def test_init_policy_params_shapes_and_stop_bias():
-    config = PolicyConfig(d_model=16, max_candidates=8, max_side_terms=6, id_vocab_size=32)
+    config = PolicyConfig(d_model=16, id_vocab_size=32)
     params = init_policy_params(config, jax.random.PRNGKey(0))
 
     assert params["field_embeddings"]["token_kind"].shape[1] == 16
-    assert params["action"]["candidate_slot_bias"].shape == (8,)
-    assert params["action"]["left_position_bias"].shape == (6,)
+    assert set(params["action"]) == {
+        "candidate_w",
+        "candidate_bias",
+        "left_w",
+        "left_bias",
+        "right_w",
+        "right_bias",
+        "left_context_w",
+    }
+    assert params["action"]["candidate_bias"].shape == ()
+    assert params["action"]["left_bias"].shape == ()
+    assert params["action"]["right_bias"].shape == ()
     assert params["target"]["stop_bias"].shape == ()
     assert float(params["target"]["stop_bias"]) == -20.0
 
 
 def test_init_policy_params_supports_configured_attention_layer_count():
-    config = PolicyConfig(
-        d_model=8,
-        num_attention_layers=8,
-        max_candidates=4,
-        max_side_terms=4,
-        id_vocab_size=16,
-    )
+    config = PolicyConfig(d_model=8, num_attention_layers=8, id_vocab_size=16)
     params = init_policy_params(config, jax.random.PRNGKey(3))
 
     assert len(params["attention"]) == 8
