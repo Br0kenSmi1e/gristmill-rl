@@ -88,6 +88,7 @@ class UpdateMetrics:
     final_log_flops_best: float
     reward_mean: float
     reward_std: float
+    reward_stderr: float
     advantage_mean: float
     advantage_std: float
     valid_action_count: int
@@ -98,6 +99,9 @@ class UpdateMetrics:
     target_score_count: int
     action_score_count: int
     loss: float
+    objective_loss_mean: float
+    objective_loss_stderr: float
+    surrogate_loss: float
     target_logp_mean: float
     action_logp_mean: float
     params_changed: bool
