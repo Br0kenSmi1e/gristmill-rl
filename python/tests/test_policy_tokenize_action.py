@@ -28,7 +28,7 @@ def test_action_space_tokenization_marks_candidates_sides_and_terms():
     assert 0 in tokens["candidate_index"].tolist()
     assert SIDE.LEFT in tokens["side"].tolist()
     assert SIDE.RIGHT in tokens["side"].tolist()
-    assert SIDE.REWRITTEN in tokens["side"].tolist()
+    assert SIDE.REWRITTEN not in tokens["side"].tolist()
 
 
 def test_action_space_structural_counts_match_snapshot():
@@ -37,6 +37,12 @@ def test_action_space_structural_counts_match_snapshot():
     first = snapshot["candidate_templates"][0]
 
     assert candidate_count(tokens, mask) == len(snapshot["candidate_templates"])
+    candidate_starts = [
+        kind
+        for kind, valid in zip(tokens["token_kind"].tolist(), mask.tolist())
+        if valid and kind == TOKEN_KIND.CANDIDATE_START
+    ]
+    assert len(candidate_starts) == len(snapshot["candidate_templates"])
     assert side_term_counts(tokens, mask, candidate_index=0, side=SIDE.LEFT) == len(first["left_definition"]["terms"])
     assert side_term_counts(tokens, mask, candidate_index=0, side=SIDE.RIGHT) == len(first["right_definition"]["terms"])
 
