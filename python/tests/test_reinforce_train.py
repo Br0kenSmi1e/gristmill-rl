@@ -63,7 +63,7 @@ def test_make_optimizer_rejects_invalid_adam_hyperparameters(config, field_name)
 
 def test_init_train_state_creates_policy_params_and_opt_state():
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4),
+        PolicyConfig(d_model=8),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=11,
     )
@@ -76,12 +76,12 @@ def test_init_train_state_creates_policy_params_and_opt_state():
 
 def test_train_update_collects_fresh_rollout_and_changes_params_for_nonzero_advantage():
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4, stop_bias_init=-20.0),
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=12,
     )
 
-    new_state, metrics, table = train_update(
+    new_state, metrics = train_update(
         state,
         _mixed_initial_states(),
         RolloutConfig(batch_size=2, max_steps=1, seed=12),
@@ -92,20 +92,23 @@ def test_train_update_collects_fresh_rollout_and_changes_params_for_nonzero_adva
     assert metrics.batch_size == 2
     assert metrics.max_steps == 1
     assert np.isfinite(metrics.loss)
+    assert metrics.loss == pytest.approx(metrics.objective_loss_mean)
+    assert metrics.objective_loss_mean == pytest.approx(-metrics.reward_mean)
+    assert metrics.objective_loss_stderr == pytest.approx(metrics.reward_stderr)
+    assert np.isfinite(metrics.surrogate_loss)
     assert metrics.target_score_count >= 1
     assert metrics.valid_action_count >= 1
     assert metrics.params_changed is True
-    assert table.target_score_mask.shape == (1, 2)
 
 
 def test_train_update_reports_tiny_exact_parameter_change():
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4, stop_bias_init=-20.0),
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
         OptimizerConfig(learning_rate=1.0e-8),
         seed=12,
     )
 
-    _new_state, metrics, _table = train_update(
+    _new_state, metrics = train_update(
         state,
         _mixed_initial_states(),
         RolloutConfig(batch_size=2, max_steps=1, seed=12),
@@ -116,7 +119,7 @@ def test_train_update_reports_tiny_exact_parameter_change():
 
 def test_train_update_rejects_non_finite_updated_params(monkeypatch):
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4, stop_bias_init=-20.0),
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=12,
     )
@@ -145,17 +148,19 @@ def test_train_update_rejects_non_finite_updated_params(monkeypatch):
 
 def test_multi_sample_update_reports_finite_loss_and_core_metrics():
     state = init_train_state(
-        PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4, stop_bias_init=-20.0),
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
         OptimizerConfig(learning_rate=1.0e-2),
         seed=17,
     )
 
-    new_state, metrics, _table = train_update(
+    new_state, metrics = train_update(
         state,
         [
             actionable_state(),
             actionable_state(),
-            RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json())),
+            RewriteState.from_computation(
+                TensorComputation.from_json_string(exact_empty_json())
+            ),
         ],
         RolloutConfig(batch_size=3, max_steps=2, seed=17),
     )
@@ -163,6 +168,10 @@ def test_multi_sample_update_reports_finite_loss_and_core_metrics():
     assert new_state.update_index == 1
     core_float_metrics = [
         metrics.loss,
+        metrics.reward_stderr,
+        metrics.objective_loss_mean,
+        metrics.objective_loss_stderr,
+        metrics.surrogate_loss,
         metrics.reward_mean,
         metrics.reward_std,
         metrics.advantage_mean,
@@ -174,6 +183,31 @@ def test_multi_sample_update_reports_finite_loss_and_core_metrics():
         metrics.action_logp_mean,
     ]
     assert np.all(np.isfinite(core_float_metrics))
+    assert metrics.loss == pytest.approx(metrics.objective_loss_mean)
+    assert metrics.objective_loss_mean == pytest.approx(-metrics.reward_mean)
+    assert metrics.objective_loss_stderr == pytest.approx(metrics.reward_stderr)
     assert metrics.valid_action_count >= 1
     assert metrics.empty_action_space_count >= 1
     assert metrics.target_score_count >= metrics.action_score_count
+
+
+def test_train_update_reports_reward_stderr_from_batch_reward_std():
+    state = init_train_state(
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
+        OptimizerConfig(learning_rate=1.0e-2),
+        seed=23,
+    )
+
+    _new_state, metrics = train_update(
+        state,
+        [
+            actionable_state(),
+            actionable_state(),
+            RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json())),
+        ],
+        RolloutConfig(batch_size=3, max_steps=2, seed=23),
+    )
+
+    assert metrics.reward_stderr == pytest.approx(
+        metrics.reward_std / np.sqrt(metrics.batch_size)
+    )

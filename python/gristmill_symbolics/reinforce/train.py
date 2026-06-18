@@ -57,7 +57,7 @@ def main(argv=None) -> int:
         baseline_config = BaselineConfig()
         loss_config = LossConfig()
         train_state = init_train_state(
-            PolicyConfig(d_model=8, max_candidates=8, max_side_terms=4),
+            PolicyConfig(d_model=8),
             OptimizerConfig(learning_rate=args.learning_rate),
             seed=args.seed,
         )
@@ -77,7 +77,7 @@ def main(argv=None) -> int:
         initial_states = [
             RewriteState.from_computation(comp) for _ in range(rollout_config.batch_size)
         ]
-        train_state, metrics, _table = train_update(
+        train_state, metrics = train_update(
             train_state,
             initial_states,
             rollout_config,

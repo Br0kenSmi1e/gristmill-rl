@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Sequence
 
 import jax
@@ -11,14 +10,8 @@ import optax
 from gristmill_symbolics import RewriteState
 from gristmill_symbolics.policy import PolicyConfig, init_policy_params
 
-from .objective import (
-    _reinforce_loss_value,
-    compute_advantages,
-    compute_rewards,
-    reinforce_loss,
-    score_rollout,
-)
-from .rollout import collect_rollout_batch
+from .objective import compute_advantages, compute_rewards
+from .rollout import _collect_streamed_rollout_gradients
 from .types import (
     BaselineConfig,
     LossConfig,
@@ -92,15 +85,25 @@ def _validate_finite_params(params) -> None:
                 )
 
 
-def _metric_counts(table):
-    return {
-        "valid_action_count": int(np.asarray(jnp.sum(table.step_case == 3))),
-        "stop_count": int(np.asarray(jnp.sum(table.step_case == 1))),
-        "empty_action_space_count": int(np.asarray(jnp.sum(table.step_case == 2))),
-        "finished_count": int(np.asarray(jnp.sum(table.step_case == 0))),
-        "target_score_count": int(np.asarray(jnp.sum(table.target_score_mask))),
-        "action_score_count": int(np.asarray(jnp.sum(table.action_score_mask))),
-    }
+def _reinforce_grad_loss(trajectory_grad_logp, advantage):
+    stopped_advantage = jax.lax.stop_gradient(
+        jnp.asarray(advantage, dtype=jnp.float32)
+    )
+
+    def reduce_leaf(grad_leaf):
+        scale = stopped_advantage.reshape(
+            (stopped_advantage.shape[0],) + (1,) * (grad_leaf.ndim - 1)
+        )
+        return -jnp.mean(scale * grad_leaf, axis=0)
+
+    return jax.tree_util.tree_map(reduce_leaf, trajectory_grad_logp)
+
+
+def _surrogate_loss(trajectory_logp, advantage):
+    stopped_advantage = jax.lax.stop_gradient(
+        jnp.asarray(advantage, dtype=jnp.float32)
+    )
+    return -jnp.mean(stopped_advantage * trajectory_logp)
 
 
 def train_update(
@@ -114,60 +117,69 @@ def train_update(
     # Stateful training owns rollout RNG through TrainState.root_key and
     # update_index; RolloutConfig.seed is retained for standalone rollout and
     # serialization compatibility.
-    table, final = collect_rollout_batch(
+    streamed = _collect_streamed_rollout_gradients(
         state.policy,
         initial_states,
         rollout_config,
         update_index=state.update_index,
         root_key=state.root_key,
     )
-    reward = compute_rewards(final, reward_config)
+    reward = compute_rewards(streamed.final, reward_config)
     advantage = compute_advantages(reward, baseline_config)
+    if (
+        loss_config.require_scored_terms
+        and streamed.target_score_count + streamed.action_score_count == 0
+    ):
+        raise TrainingError("no scored policy terms in rollout batch")
 
-    def objective(params):
-        scored_policy = replace(state.policy, params=params)
-        scores = score_rollout(scored_policy, table, check_finite=False)
-        loss, _column_logp_sum = _reinforce_loss_value(table, scores, advantage)
-        return loss
-
-    loss, grads = jax.value_and_grad(objective)(state.policy.params)
-    if not bool(np.isfinite(np.asarray(loss))):
+    grads = _reinforce_grad_loss(streamed.trajectory_grad_logp, advantage)
+    surrogate_loss = _surrogate_loss(streamed.trajectory_logp, advantage)
+    if not bool(np.isfinite(np.asarray(surrogate_loss))):
         raise TrainingError("loss is non-finite")
-    concrete_scores = score_rollout(state.policy, table, check_finite=True)
-    _concrete_loss, diagnostics = reinforce_loss(
-        table,
-        concrete_scores,
-        advantage,
-        loss_config,
-    )
+
     optimizer = make_optimizer(state.optimizer_config)
     updates, opt_state = optimizer.update(grads, state.opt_state, state.policy.params)
     new_params = optax.apply_updates(state.policy.params, updates)
     _validate_finite_params(new_params)
     params_changed = _params_changed(state.policy.params, new_params)
 
-    counts = _metric_counts(table)
+    reward_mean = float(np.mean(reward))
+    reward_std = float(np.std(reward))
+    reward_stderr = reward_std / float(np.sqrt(rollout_config.batch_size))
+    objective_loss_mean = -reward_mean
     metrics = UpdateMetrics(
         update_index=state.update_index,
         batch_size=rollout_config.batch_size,
         max_steps=rollout_config.max_steps,
-        initial_log_flops_mean=float(np.mean(final.initial_log_flops)),
-        final_log_flops_mean=float(np.mean(final.final_log_flops)),
-        final_log_flops_best=float(np.min(final.final_log_flops)),
-        reward_mean=float(np.mean(reward)),
-        reward_std=float(np.std(reward)),
+        initial_log_flops_mean=float(np.mean(streamed.final.initial_log_flops)),
+        final_log_flops_mean=float(np.mean(streamed.final.final_log_flops)),
+        final_log_flops_best=float(np.min(streamed.final.final_log_flops)),
+        reward_mean=reward_mean,
+        reward_std=reward_std,
+        reward_stderr=reward_stderr,
         advantage_mean=float(np.mean(advantage)),
         advantage_std=float(np.std(advantage)),
-        valid_action_count=counts["valid_action_count"],
-        stop_count=counts["stop_count"],
-        empty_action_space_count=counts["empty_action_space_count"],
-        finished_count=counts["finished_count"],
-        max_steps_count=int(np.sum(final.max_steps)),
-        target_score_count=diagnostics.target_score_count,
-        action_score_count=diagnostics.action_score_count,
-        loss=float(np.asarray(loss)),
-        target_logp_mean=diagnostics.target_logp_mean,
-        action_logp_mean=diagnostics.action_logp_mean,
+        valid_action_count=streamed.valid_action_count,
+        stop_count=streamed.stop_count,
+        empty_action_space_count=streamed.empty_action_space_count,
+        finished_count=streamed.finished_count,
+        max_steps_count=int(np.sum(streamed.final.max_steps)),
+        target_score_count=streamed.target_score_count,
+        action_score_count=streamed.action_score_count,
+        loss=objective_loss_mean,
+        objective_loss_mean=objective_loss_mean,
+        objective_loss_stderr=reward_stderr,
+        surrogate_loss=float(np.asarray(surrogate_loss)),
+        target_logp_mean=(
+            streamed.target_logp_sum / streamed.target_score_count
+            if streamed.target_score_count
+            else 0.0
+        ),
+        action_logp_mean=(
+            streamed.action_logp_sum / streamed.action_score_count
+            if streamed.action_score_count
+            else 0.0
+        ),
         params_changed=params_changed,
     )
     new_state = TrainState(
@@ -177,4 +189,4 @@ def train_update(
         root_key=state.root_key,
         update_index=state.update_index + 1,
     )
-    return new_state, metrics, table
+    return new_state, metrics

@@ -121,17 +121,11 @@ def init_policy_params(config: PolicyConfig, rng) -> dict[str, object]:
         },
         "action": {
             "candidate_w": _normal(next(keys), (d,), config.init_scale),
-            "candidate_slot_bias": jnp.zeros(
-                (config.max_candidates,), dtype=jnp.float32
-            ),
+            "candidate_bias": jnp.asarray(0.0, dtype=jnp.float32),
             "left_w": _normal(next(keys), (d,), config.init_scale),
+            "left_bias": jnp.asarray(0.0, dtype=jnp.float32),
             "right_w": _normal(next(keys), (d,), config.init_scale),
-            "left_position_bias": jnp.zeros(
-                (config.max_side_terms,), dtype=jnp.float32
-            ),
-            "right_position_bias": jnp.zeros(
-                (config.max_side_terms,), dtype=jnp.float32
-            ),
+            "right_bias": jnp.asarray(0.0, dtype=jnp.float32),
             "left_context_w": _normal(next(keys), (d,), config.init_scale),
         },
     }

@@ -7,12 +7,6 @@ import jax
 import numpy as np
 
 from gristmill_symbolics.policy import PolicyConfig
-from gristmill_symbolics.policy.types import ActionChoiceTree, TokenTree
-
-CASE_ALREADY_FINISHED = 0
-CASE_STOP = 1
-CASE_EMPTY_ACTION_SPACE = 2
-CASE_VALID_ACTION = 3
 
 DECISION_TARGET = 0
 DECISION_ACTION = 1
@@ -80,38 +74,6 @@ class FinalColumnMetrics:
 
 
 @dataclass(frozen=True)
-class RolloutTable:
-    state_tokens: TokenTree
-    state_token_mask: jax.Array
-    target_def_mask: jax.Array
-    target_choice: jax.Array
-    target_score_mask: jax.Array
-    selected_def_index: jax.Array
-    action_space_tokens: TokenTree
-    action_space_token_mask: jax.Array
-    action_choice: ActionChoiceTree
-    action_score_mask: jax.Array
-    step_case: jax.Array
-    sampled_target_logp: jax.Array
-    sampled_action_logp: jax.Array
-
-
-@dataclass(frozen=True)
-class ScoreOutputs:
-    target_logp: jax.Array
-    action_logp: jax.Array
-
-
-@dataclass(frozen=True)
-class LossDiagnostics:
-    column_logp_sum: jax.Array
-    target_score_count: int
-    action_score_count: int
-    target_logp_mean: float
-    action_logp_mean: float
-
-
-@dataclass(frozen=True)
 class UpdateMetrics:
     update_index: int
     batch_size: int
@@ -121,6 +83,7 @@ class UpdateMetrics:
     final_log_flops_best: float
     reward_mean: float
     reward_std: float
+    reward_stderr: float
     advantage_mean: float
     advantage_std: float
     valid_action_count: int
@@ -131,6 +94,9 @@ class UpdateMetrics:
     target_score_count: int
     action_score_count: int
     loss: float
+    objective_loss_mean: float
+    objective_loss_stderr: float
+    surrogate_loss: float
     target_logp_mean: float
     action_logp_mean: float
     params_changed: bool

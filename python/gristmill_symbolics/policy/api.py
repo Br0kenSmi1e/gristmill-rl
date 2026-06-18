@@ -92,20 +92,15 @@ def sample_target(params, state_tokens, state_token_mask, def_mask, rng):
     legal = jnp.concatenate([jnp.asarray([True]), def_mask.astype(jnp.bool_)], axis=0)
     masked_logits = _mask_illegal_logits(logits, legal)
     sampled_index = jax.random.categorical(rng, masked_logits)
-    target_choice = jnp.where(sampled_index == 0, -1, sampled_index - 1).astype(
-        jnp.int32
-    )
-    return target_choice, score_target(
-        params, state_tokens, state_token_mask, def_mask, target_choice
-    )
+    return jnp.where(sampled_index == 0, -1, sampled_index - 1).astype(jnp.int32)
 
 
-def _action_width(params):
-    return params["action"]["left_position_bias"].shape[0]
+def _action_width(action_space_tokens):
+    return action_space_tokens["token_kind"].shape[0]
 
 
-def _candidate_indices(params):
-    return jnp.arange(params["action"]["candidate_slot_bias"].shape[0], dtype=jnp.int32)
+def _candidate_indices(action_space_tokens):
+    return jnp.arange(_action_width(action_space_tokens), dtype=jnp.int32)
 
 
 def _state_definition_start_mask(state_tokens, state_token_mask):
@@ -217,7 +212,7 @@ def _candidate_logits(
         action_space_tokens,
         action_space_token_mask,
     )
-    indices = _candidate_indices(params)
+    indices = _candidate_indices(action_space_tokens)
     candidate_embeddings = pool_by_index(
         action_encoded,
         action_space_tokens["candidate_index"],
@@ -225,11 +220,11 @@ def _candidate_logits(
         indices,
     )
     logits = jax.vmap(
-        lambda embedding, bias: jnp.dot(
+        lambda embedding: jnp.dot(
             embedding + context, params["action"]["candidate_w"]
         )
-        + bias
-    )(candidate_embeddings, params["action"]["candidate_slot_bias"])
+        + params["action"]["candidate_bias"]
+    )(candidate_embeddings)
     return (
         logits,
         _candidate_valid_mask(action_space_tokens, action_space_token_mask, indices),
@@ -247,8 +242,10 @@ def _side_terms(
     action_space_token_mask,
     candidate_index,
     side,
+    width=None,
 ):
-    width = _action_width(params)
+    if width is None:
+        width = _action_width(action_space_tokens)
     term_indices = jnp.arange(width, dtype=jnp.int32)
     side_term_tokens = (
         action_space_token_mask
@@ -274,27 +271,28 @@ def _side_terms(
             term_starts & (action_space_tokens["term_index"] == term_index)
         )
     )(term_indices)
-    return term_embeddings, valid
+    overflow = jnp.any(side_term_tokens & (action_space_tokens["term_index"] >= width))
+    return term_embeddings, valid, overflow
 
 
 def _left_logits(params, context, candidate_embedding, left_embeddings):
     return jax.vmap(
-        lambda embedding, bias: jnp.dot(
+        lambda embedding: jnp.dot(
             embedding + candidate_embedding + context, params["action"]["left_w"]
         )
-        + bias
-    )(left_embeddings, params["action"]["left_position_bias"])
+        + params["action"]["left_bias"]
+    )(left_embeddings)
 
 
 def _right_logits(params, context, candidate_embedding, right_embeddings, left_summary):
     context_bias = jnp.dot(left_summary, params["action"]["left_context_w"])
     return jax.vmap(
-        lambda embedding, bias: jnp.dot(
+        lambda embedding: jnp.dot(
             embedding + candidate_embedding + context, params["action"]["right_w"]
         )
-        + bias
+        + params["action"]["right_bias"]
         + context_bias
-    )(right_embeddings, params["action"]["right_position_bias"])
+    )(right_embeddings)
 
 
 def _last_valid_positions(valid_mask):
@@ -371,11 +369,11 @@ def _concrete_candidate_valid_mask(action_space_tokens, action_space_token_mask,
 
 
 def _concrete_side_valid_mask(
-    params,
     action_space_tokens,
     action_space_token_mask,
     candidate_index,
     side,
+    width,
 ):
     token_candidates = _concrete_array(action_space_tokens["candidate_index"])
     token_sides = _concrete_array(action_space_tokens["side"])
@@ -390,7 +388,6 @@ def _concrete_side_valid_mask(
         or token_mask is None
     ):
         return None
-    width = _action_width(params)
     return np.asarray(
         [
             bool(
@@ -406,6 +403,33 @@ def _concrete_side_valid_mask(
         ],
         dtype=bool,
     )
+
+
+def _concrete_side_terms_fit_width(
+    action_space_tokens,
+    action_space_token_mask,
+    candidate_index,
+    side,
+    width,
+):
+    token_candidates = _concrete_array(action_space_tokens["candidate_index"])
+    token_sides = _concrete_array(action_space_tokens["side"])
+    token_terms = _concrete_array(action_space_tokens["term_index"])
+    token_mask = _concrete_array(action_space_token_mask)
+    if (
+        token_candidates is None
+        or token_sides is None
+        or token_terms is None
+        or token_mask is None
+    ):
+        return None
+    side_terms = (
+        token_mask
+        & (token_candidates == candidate_index)
+        & (token_sides == int(side))
+        & (token_terms >= 0)
+    )
+    return not bool(np.any(side_terms & (token_terms >= width)))
 
 
 def _concrete_state_def_indices(state_tokens, state_token_mask):
@@ -486,8 +510,16 @@ def _validate_side_choice(
             raise ValueError(f"empty {side_name}_mask")
     if candidate_index is None:
         return
+    width = int(provided_valid.shape[0]) if provided_valid is not None else None
+    if width is None:
+        return
+    terms_fit = _concrete_side_terms_fit_width(
+        action_space_tokens, action_space_token_mask, candidate_index, side, width
+    )
+    if terms_fit is not None and not terms_fit:
+        raise ValueError(f"{side_name}_valid_mask does not cover action space")
     computed_valid = _concrete_side_valid_mask(
-        params, action_space_tokens, action_space_token_mask, candidate_index, side
+        action_space_tokens, action_space_token_mask, candidate_index, side, width
     )
     if computed_valid is None:
         return
@@ -512,14 +544,25 @@ def _validate_action_choice(
     candidate = jnp.asarray(action_choice["candidate_index"], dtype=jnp.int32)
     if candidate.shape != ():
         raise ValueError(f"candidate_index must be scalar, got shape {candidate.shape}")
-    width = _action_width(params)
-    for name in ("left_mask", "left_valid_mask", "right_mask", "right_valid_mask"):
-        values = jnp.asarray(action_choice[name], dtype=jnp.bool_)
-        if values.shape != (width,):
-            raise ValueError(f"{name} must have shape ({width},), got {values.shape}")
+    for side_name in ("left", "right"):
+        mask = jnp.asarray(action_choice[f"{side_name}_mask"], dtype=jnp.bool_)
+        valid_mask = jnp.asarray(
+            action_choice[f"{side_name}_valid_mask"], dtype=jnp.bool_
+        )
+        if mask.ndim != 1:
+            raise ValueError(f"{side_name}_mask must be 1D, got shape {mask.shape}")
+        if valid_mask.ndim != 1:
+            raise ValueError(
+                f"{side_name}_valid_mask must be 1D, got shape {valid_mask.shape}"
+            )
+        if mask.shape != valid_mask.shape:
+            raise ValueError(
+                f"{side_name}_mask and {side_name}_valid_mask shapes differ: "
+                f"{mask.shape} != {valid_mask.shape}"
+            )
 
     candidate_index = _concrete_int(action_choice["candidate_index"])
-    candidate_count = params["action"]["candidate_slot_bias"].shape[0]
+    candidate_count = _action_width(action_space_tokens)
     if candidate_index is not None:
         if candidate_index < 0 or candidate_index >= candidate_count:
             raise ValueError(f"candidate_index {candidate_index} is illegal")
@@ -587,13 +630,14 @@ def score_action(
     safe_candidate = jnp.clip(candidate, 0, candidate_valid_mask.shape[0] - 1)
     candidate_is_valid = candidate_in_range & candidate_valid_mask[safe_candidate]
 
-    left_embeddings, left_valid = _side_terms(
+    left_embeddings, left_valid, left_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
         action_space_token_mask,
         safe_candidate,
         SIDE.LEFT,
+        width=jnp.asarray(action_choice["left_mask"]).shape[0],
     )
     candidate_embedding = candidate_embeddings[safe_candidate]
     left_logits = _left_logits(params, context, candidate_embedding, left_embeddings)
@@ -603,13 +647,14 @@ def score_action(
     left_logp, left_is_valid = _score_side(left_logits, left_valid, left_mask)
     left_summary = masked_mean(left_embeddings, left_valid & left_mask)
 
-    right_embeddings, right_valid = _side_terms(
+    right_embeddings, right_valid, right_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
         action_space_token_mask,
         safe_candidate,
         SIDE.RIGHT,
+        width=jnp.asarray(action_choice["right_mask"]).shape[0],
     )
     right_logits = _right_logits(
         params, context, candidate_embedding, right_embeddings, left_summary
@@ -629,6 +674,8 @@ def score_action(
         & candidate_is_valid
         & left_is_valid
         & right_is_valid
+        & (~left_overflow)
+        & (~right_overflow)
         & left_valid_matches
         & right_valid_matches
     )
@@ -672,7 +719,7 @@ def sample_action(
     ).astype(jnp.int32)
     candidate_embedding = candidate_embeddings[candidate]
 
-    left_embeddings, left_valid = _side_terms(
+    left_embeddings, left_valid, _left_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
@@ -684,7 +731,7 @@ def sample_action(
     left_mask, _ = _sample_side(left_logits, left_valid, left_rng)
     left_summary = masked_mean(left_embeddings, left_valid & left_mask)
 
-    right_embeddings, right_valid = _side_terms(
+    right_embeddings, right_valid, _right_overflow = _side_terms(
         params,
         action_encoded,
         action_space_tokens,
@@ -697,19 +744,10 @@ def sample_action(
     )
     right_mask, _ = _sample_side(right_logits, right_valid, right_rng)
 
-    choice = {
+    return {
         "candidate_index": candidate,
         "left_mask": left_mask,
         "left_valid_mask": left_valid,
         "right_mask": right_mask,
         "right_valid_mask": right_valid,
     }
-    return choice, score_action(
-        params,
-        state_tokens,
-        state_token_mask,
-        selected_def_index,
-        action_space_tokens,
-        action_space_token_mask,
-        choice,
-    )

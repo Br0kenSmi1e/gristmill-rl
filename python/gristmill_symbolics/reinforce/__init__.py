@@ -1,30 +1,60 @@
 """On-policy REINFORCE trainer over the row rewrite environment."""
 
 from .checkpoint import load_checkpoint, save_checkpoint
-from .objective import compute_advantages, compute_rewards, reinforce_loss, score_rollout
-from .rollout import collect_rollout_batch, make_rng_grid
-from .train_state import init_train_state, make_optimizer, train_update
 from .types import (
     BaselineConfig,
     CheckpointData,
     FinalColumnMetrics,
     LossConfig,
-    LossDiagnostics,
     OptimizerConfig,
     PolicyState,
     RewardConfig,
     RolloutConfig,
-    RolloutTable,
-    ScoreOutputs,
     TrainState,
     TrainingError,
     UpdateMetrics,
 )
 
+
+def compute_advantages(*args, **kwargs):
+    from .objective import compute_advantages as _compute_advantages
+
+    return _compute_advantages(*args, **kwargs)
+
+
+def compute_rewards(*args, **kwargs):
+    from .objective import compute_rewards as _compute_rewards
+
+    return _compute_rewards(*args, **kwargs)
+
+
+def init_train_state(*args, **kwargs):
+    from .train_state import init_train_state as _init_train_state
+
+    return _init_train_state(*args, **kwargs)
+
+
+def make_rng_grid(*args, **kwargs):
+    from .rollout import make_rng_grid as _make_rng_grid
+
+    return _make_rng_grid(*args, **kwargs)
+
+
+def make_optimizer(*args, **kwargs):
+    from .train_state import make_optimizer as _make_optimizer
+
+    return _make_optimizer(*args, **kwargs)
+
+
+def train_update(*args, **kwargs):
+    from .train_state import train_update as _train_update
+
+    return _train_update(*args, **kwargs)
+
+
 __all__ = (
     "BaselineConfig",
     "CheckpointData",
-    "collect_rollout_batch",
     "compute_advantages",
     "compute_rewards",
     "init_train_state",
@@ -33,15 +63,10 @@ __all__ = (
     "make_optimizer",
     "FinalColumnMetrics",
     "LossConfig",
-    "LossDiagnostics",
     "OptimizerConfig",
     "PolicyState",
     "RewardConfig",
     "RolloutConfig",
-    "RolloutTable",
-    "ScoreOutputs",
-    "reinforce_loss",
-    "score_rollout",
     "save_checkpoint",
     "train_update",
     "TrainState",

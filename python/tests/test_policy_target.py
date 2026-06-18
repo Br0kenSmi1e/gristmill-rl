@@ -61,15 +61,13 @@ def test_target_all_masked_definitions_keep_stop_legal_when_stop_logit_is_tiny()
     state_tokens, state_mask = _state()
     def_mask = jnp.asarray([False])
 
-    logp = score_target(
-        params, state_tokens, state_mask, def_mask, jnp.asarray(-1, dtype=jnp.int32)
-    )
-    choice, _ = sample_target(
+    choice = sample_target(
         params, state_tokens, state_mask, def_mask, jax.random.PRNGKey(1)
     )
+    logp = score_target(params, state_tokens, state_mask, def_mask, choice)
 
-    assert float(logp) == pytest.approx(0.0)
     assert int(choice) == -1
+    assert float(logp) == pytest.approx(0.0)
 
 
 def test_target_sampling_never_returns_masked_definition():
@@ -77,9 +75,10 @@ def test_target_sampling_never_returns_masked_definition():
     state_tokens, state_mask = _state()
     def_mask = jnp.asarray([False])
 
-    choice, logp = sample_target(
+    choice = sample_target(
         params, state_tokens, state_mask, def_mask, jax.random.PRNGKey(1)
     )
+    logp = score_target(params, state_tokens, state_mask, def_mask, choice)
 
     assert int(choice) == -1
     assert float(logp) == pytest.approx(0.0)
@@ -129,6 +128,8 @@ def test_target_sampling_is_deterministic_for_same_rng():
     right = sample_target(
         params, state_tokens, state_mask, def_mask, jax.random.PRNGKey(123)
     )
+    left_logp = score_target(params, state_tokens, state_mask, def_mask, left)
+    right_logp = score_target(params, state_tokens, state_mask, def_mask, right)
 
-    assert int(left[0]) == int(right[0])
-    assert float(left[1]) == pytest.approx(float(right[1]))
+    assert int(left) == int(right)
+    assert float(left_logp) == pytest.approx(float(right_logp))

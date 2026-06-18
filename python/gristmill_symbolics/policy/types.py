@@ -16,8 +16,6 @@ class PolicyConfig:
     d_model: int = 32
     num_attention_layers: int = 1
     id_vocab_size: int = 128
-    max_candidates: int = 32
-    max_side_terms: int = 32
     init_scale: float = 0.02
     stop_bias_init: float = -20.0
 
@@ -52,10 +50,6 @@ def make_action_choice(
     if right.shape != right_valid.shape:
         raise ValueError(
             f"right_mask and right_valid_mask shapes differ: {right.shape} != {right_valid.shape}"
-        )
-    if left.shape != right.shape:
-        raise ValueError(
-            f"left and right mask shapes differ: {left.shape} != {right.shape}"
         )
     return {
         "candidate_index": candidate,
