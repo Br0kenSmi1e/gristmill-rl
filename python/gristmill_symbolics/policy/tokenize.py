@@ -197,7 +197,6 @@ def tokenize_action_space_snapshot(snapshot: dict[str, Any]) -> tuple[TokenTree,
         for side_name, side_value in (
             ("left_definition", SIDE.LEFT),
             ("right_definition", SIDE.RIGHT),
-            ("rewritten_definition", SIDE.REWRITTEN),
         ):
             _append(
                 rows,
