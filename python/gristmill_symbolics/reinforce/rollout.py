@@ -406,26 +406,27 @@ def _collect_streamed_rollout_gradients(
             action_score_count += len(non_empty_samples)
             action_logp_sum += float(np.asarray(jnp.sum(action_logps)))
 
-            action_choices_for_row: list[dict[str, object] | None] = [
-                None
-            ] * config.batch_size
-            action_score_mask = [False] * config.batch_size
-            for sample in non_empty_samples:
-                action_choices_for_row[sample] = action_choice_to_python(
-                    _slice_tree(action_choices, action_position_by_sample[sample])
-                )
-                action_score_mask[sample] = True
-
-            validated = row.validate_actions_for_row(
-                spaces, action_choices_for_row, action_score_mask
-            )
-            applied = row.apply_validated_actions_for_row(validated)
-            for sample in non_empty_samples:
-                if not bool(applied[sample]):
-                    raise TrainingError(
-                        f"validated action for sample {sample} was not applied"
+            if non_empty_samples:
+                action_choices_for_row: list[dict[str, object] | None] = [
+                    None
+                ] * config.batch_size
+                action_score_mask = [False] * config.batch_size
+                for sample in non_empty_samples:
+                    action_choices_for_row[sample] = action_choice_to_python(
+                        _slice_tree(action_choices, action_position_by_sample[sample])
                     )
-            valid_action_count += len(non_empty_samples)
+                    action_score_mask[sample] = True
+
+                validated = row.validate_actions_for_row(
+                    spaces, action_choices_for_row, action_score_mask
+                )
+                applied = row.apply_validated_actions_for_row(validated)
+                for sample in non_empty_samples:
+                    if not bool(applied[sample]):
+                        raise TrainingError(
+                            f"validated action for sample {sample} was not applied"
+                        )
+                valid_action_count += len(non_empty_samples)
 
     final = FinalColumnMetrics(
         initial_log_flops=initial_log_flops,

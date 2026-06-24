@@ -384,6 +384,35 @@ def test_static_rollout_rejects_too_small_action_token_pad():
         )
 
 
+def test_static_rollout_skips_dummy_only_action_application(monkeypatch):
+    def sample_stop(
+        _params,
+        _state_tokens,
+        _state_token_mask,
+        _def_mask,
+        _rng,
+    ):
+        return jnp.asarray(-1, dtype=jnp.int32)
+
+    monkeypatch.setattr(rollout_module, "sample_target", sample_stop)
+    policy = _policy()
+
+    result = _collect_streamed_rollout_gradients(
+        policy,
+        [_state_from_json(actionable_json())],
+        _static_config(max_steps=2),
+        update_index=0,
+        root_key=jax.random.PRNGKey(5),
+    )
+
+    assert result.valid_action_count == 0
+    assert result.action_score_count == 0
+    assert result.action_logp_sum == pytest.approx(0.0)
+    assert bool(jnp.all(jnp.isfinite(result.trajectory_logp)))
+    for leaf in _floating_leaves(result.trajectory_grad_logp):
+        assert bool(jnp.all(jnp.isfinite(leaf)))
+
+
 def test_static_rollout_preserves_physical_target_rows_after_lower_row_stops(
     monkeypatch,
 ):
