@@ -389,7 +389,7 @@ def _collect_streamed_rollout_gradients(
             if static_policy_batch:
                 action_active_mask = jnp.asarray(
                     [
-                        sample in set(non_empty_samples)
+                        sample in non_empty_sample_set
                         for sample in action_policy_samples
                     ],
                     dtype=jnp.bool_,
