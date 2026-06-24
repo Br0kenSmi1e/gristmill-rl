@@ -53,6 +53,10 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert state.config is config
     assert state.params == {}
     assert RolloutConfig(batch_size=2, max_steps=3).seed == 0
+    assert RolloutConfig(batch_size=2, max_steps=3).state_token_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).action_token_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).definition_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).static_policy_batch is False
     assert RewardConfig().kind == "log_flops_improvement"
     assert BaselineConfig().standardize is False
     assert LossConfig().require_scored_terms is True
@@ -86,6 +90,48 @@ def test_rollout_config_validation_requires_integer_values():
         validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1.5))
     with pytest.raises(TrainingError, match="seed"):
         validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1, seed=False))
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field_name"),
+    [
+        ({"state_token_pad_to": 0}, "state_token_pad_to"),
+        ({"state_token_pad_to": True}, "state_token_pad_to"),
+        ({"action_token_pad_to": 0}, "action_token_pad_to"),
+        ({"action_token_pad_to": False}, "action_token_pad_to"),
+        ({"definition_pad_to": 0}, "definition_pad_to"),
+        ({"definition_pad_to": 1.5}, "definition_pad_to"),
+        ({"static_policy_batch": 1}, "static_policy_batch"),
+    ],
+)
+def test_rollout_config_validation_rejects_invalid_static_shape_fields(
+    kwargs, field_name
+):
+    config = RolloutConfig(batch_size=1, max_steps=1, **kwargs)
+
+    with pytest.raises(TrainingError, match=field_name):
+        validate_rollout_config(config)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    [
+        "state_token_pad_to",
+        "action_token_pad_to",
+        "definition_pad_to",
+    ],
+)
+def test_rollout_config_validation_requires_all_static_pads(missing_field):
+    kwargs = {
+        "state_token_pad_to": 64,
+        "action_token_pad_to": 64,
+        "definition_pad_to": 4,
+        "static_policy_batch": True,
+    }
+    kwargs[missing_field] = None
+
+    with pytest.raises(TrainingError, match=missing_field):
+        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1, **kwargs))
 
 
 def test_policy_state_validation_requires_config_and_params_dict():
