@@ -104,6 +104,63 @@ RUN=/tmp/ccsd-profile/batch2-steps64
 
 and change `--batch-size 1` to `--batch-size 2`.
 
+## Static-Shape Rollout Profile
+
+First run the dynamic profile above and use the timer summary to choose pads.
+The reported `max_state_token_len` and `max_action_token_len` are lower bounds;
+choose rounded-up values so static mode does not fail partway through the run.
+Definition count is reported by the `definition_count_max` field in
+`stack_state_tokens` events.
+
+Example static rerun for the same workload:
+
+```bash
+RUN=/tmp/ccsd-profile/batch1-steps64-static
+mkdir -p "$RUN"
+
+nvidia-smi \
+  --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.free,power.draw \
+  --format=csv \
+  -lms 500 > "$RUN/nvidia-smi.csv" &
+SMI_PID=$!
+
+XLA_PYTHON_CLIENT_PREALLOCATE=false \
+JAX_LOG_COMPILES=1 \
+GRISTMILL_PROFILE_ROLLOUT=1 \
+GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
+/usr/bin/time -v uv run --no-sync python -m cProfile -o "$RUN/profile.prof" \
+  -m gristmill_symbolics.reinforce.train \
+  --input "$INPUT" \
+  --updates 1 \
+  --batch-size 1 \
+  --max-steps 64 \
+  --seed 42 \
+  --static-policy-batch \
+  --state-token-pad-to 512 \
+  --action-token-pad-to 1024 \
+  --definition-pad-to 64 \
+  > "$RUN/stdout.jsonl" \
+  2> "$RUN/stderr.log"
+
+kill "$SMI_PID"
+```
+
+If a pad is too small, the run fails fast with `TrainingError`; increase the
+specific `--state-token-pad-to`, `--action-token-pad-to`, or
+`--definition-pad-to` value named in the error and rerun. Keep the dynamic and
+static runs otherwise identical so `stdout.jsonl`, `stderr.log`, cProfile, and
+GPU telemetry are directly comparable.
+
+For batch-size comparisons, repeat the static rerun with:
+
+```bash
+RUN=/tmp/ccsd-profile/batch2-steps64-static
+```
+
+and change `--batch-size 1` to `--batch-size 2`. Keep the same pads unless the
+static run reports that a larger batch observes a larger token or definition
+dimension.
+
 ## Memory Boundary And HLO Profile
 
 Try `batch_size=4` first, then `8`. For an OOM run, keep full stderr and HLO.
