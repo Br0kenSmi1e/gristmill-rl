@@ -106,6 +106,20 @@ def _tree_row(tree, index):
     return jax.tree_util.tree_map(lambda value: value[index], tree)
 
 
+def _static_config(**overrides):
+    kwargs = {
+        "batch_size": 1,
+        "max_steps": 1,
+        "seed": 5,
+        "state_token_pad_to": 512,
+        "action_token_pad_to": 512,
+        "definition_pad_to": 8,
+        "static_policy_batch": True,
+    }
+    kwargs.update(overrides)
+    return RolloutConfig(**kwargs)
+
+
 def test_stack_bool_masks_can_pad_to_static_width():
     stacked = _stack_bool_masks(
         [
@@ -289,6 +303,38 @@ def test_streamed_rollout_rejects_non_floating_param_leaves():
             policy,
             [_state_from_json(actionable_json())],
             RolloutConfig(batch_size=1, max_steps=1, seed=5),
+            update_index=0,
+            root_key=jax.random.PRNGKey(5),
+        )
+
+
+def test_static_rollout_rejects_too_small_state_token_pad():
+    policy = _policy()
+
+    with pytest.raises(
+        TrainingError,
+        match="state token length .* exceeds state_token_pad_to 1",
+    ):
+        _collect_streamed_rollout_gradients(
+            policy,
+            [_state_from_json(actionable_json())],
+            _static_config(state_token_pad_to=1),
+            update_index=0,
+            root_key=jax.random.PRNGKey(5),
+        )
+
+
+def test_static_rollout_rejects_too_small_definition_pad():
+    policy = _policy()
+
+    with pytest.raises(
+        TrainingError,
+        match="definition mask length 2 exceeds definition_pad_to 1",
+    ):
+        _collect_streamed_rollout_gradients(
+            policy,
+            [_state_from_json(_two_actionable_json())],
+            _static_config(definition_pad_to=1),
             update_index=0,
             root_key=jax.random.PRNGKey(5),
         )

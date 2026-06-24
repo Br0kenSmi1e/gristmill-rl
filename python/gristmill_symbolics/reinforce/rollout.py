@@ -143,11 +143,17 @@ def _collect_streamed_rollout_gradients(
     action_score_count = 0
     target_logp_sum = 0.0
     action_logp_sum = 0.0
+    static_policy_batch = config.static_policy_batch
+    static_state_pad_to = config.state_token_pad_to if static_policy_batch else None
+    static_definition_pad_to = (
+        config.definition_pad_to if static_policy_batch else None
+    )
+    static_action_pad_to = config.action_token_pad_to if static_policy_batch else None
 
     for step in range(config.max_steps):
         active_indices = [sample for sample, is_active in enumerate(active) if is_active]
         finished_count += config.batch_size - len(active_indices)
-        if not active_indices:
+        if not active_indices and not static_policy_batch:
             continue
 
         snapshots = row.snapshots()
@@ -156,8 +162,16 @@ def _collect_streamed_rollout_gradients(
         target_def_masks: list[jax.Array] = []
         target_keys: list[jax.Array] = []
         replay_exact_empty_samples: set[int] = set()
+        target_policy_samples = (
+            list(range(config.batch_size)) if static_policy_batch else active_indices
+        )
 
-        for sample in active_indices:
+        for sample in target_policy_samples:
+            if not active[sample]:
+                state_items.append(_dummy_state_policy_item())
+                target_def_masks.append(_dummy_definition_mask())
+                target_keys.append(rng_grid[step, sample, DECISION_TARGET])
+                continue
             state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
             row_def_mask = jnp.asarray(definition_masks[sample], dtype=jnp.bool_)
             target_def_mask = row_def_mask
@@ -171,8 +185,16 @@ def _collect_streamed_rollout_gradients(
             target_def_masks.append(target_def_mask)
             target_keys.append(rng_grid[step, sample, DECISION_TARGET])
 
-        state_tokens_batch, state_mask_batch = stack_token_trees(state_items)
-        target_def_mask_batch = _stack_bool_masks(target_def_masks)
+        state_tokens_batch, state_mask_batch = _stack_token_trees_for_policy(
+            state_items,
+            pad_to=static_state_pad_to,
+            dimension="state token",
+            config_field="state_token_pad_to",
+        )
+        target_def_mask_batch = _stack_bool_masks(
+            target_def_masks,
+            pad_to=static_definition_pad_to,
+        )
         target_choices = jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
             policy.params,
             state_tokens_batch,
@@ -190,11 +212,17 @@ def _collect_streamed_rollout_gradients(
             target_def_mask_batch,
             target_choices,
         )
-        trajectory_logp = trajectory_logp.at[jnp.asarray(active_indices)].add(
+        if static_policy_batch:
+            target_active_mask = jnp.asarray(active, dtype=jnp.bool_)
+            target_choices = jnp.where(target_active_mask, target_choices, -1)
+            target_logps = jnp.where(target_active_mask, target_logps, 0.0)
+            target_grads = _mask_tree_rows(target_grads, target_active_mask)
+        target_scatter_samples = target_policy_samples
+        trajectory_logp = trajectory_logp.at[jnp.asarray(target_scatter_samples)].add(
             target_logps
         )
         trajectory_grad_logp = _scatter_add_grad(
-            trajectory_grad_logp, active_indices, target_grads
+            trajectory_grad_logp, target_scatter_samples, target_grads
         )
         target_score_count += len(active_indices)
         target_logp_sum += float(np.asarray(jnp.sum(target_logps)))
@@ -202,7 +230,7 @@ def _collect_streamed_rollout_gradients(
         target_choice_list = [-1] * config.batch_size
         query_active = active.copy()
         active_position_by_sample = {
-            sample: position for position, sample in enumerate(active_indices)
+            sample: position for position, sample in enumerate(target_policy_samples)
         }
 
         for position, sample in enumerate(active_indices):
