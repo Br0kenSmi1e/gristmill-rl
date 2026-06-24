@@ -52,6 +52,54 @@ def make_rng_grid(root_key, update_index: int, max_steps: int, batch_size: int):
     return flat_keys.reshape((max_steps, batch_size, 2, *flat_keys.shape[1:]))
 
 
+_DUMMY_STATE_SNAPSHOT = {
+    "ranges": [],
+    "tensors": [{"id": 0, "symmetry": []}],
+    "definitions": [
+        {
+            "base": 0,
+            "ext_indices": [],
+            "terms": [],
+        }
+    ],
+}
+
+_DUMMY_TERM = {
+    "coeff": {"numer": 1, "denom": 1},
+    "sum_indices": [],
+    "factors": [{"tensor": 0, "indices": []}],
+}
+
+_DUMMY_DEFINITION = {
+    "base": 0,
+    "ext_indices": [],
+    "terms": [_DUMMY_TERM],
+}
+
+_DUMMY_ACTION_SPACE_SNAPSHOT = {
+    "def_index": 0,
+    "candidate_templates": [
+        {
+            "left_definition": _DUMMY_DEFINITION,
+            "right_definition": _DUMMY_DEFINITION,
+            "rewritten_definition": _DUMMY_DEFINITION,
+        }
+    ],
+}
+
+
+def _dummy_state_policy_item() -> tuple[TokenTree, jax.Array]:
+    return tokenize_state_snapshot(_DUMMY_STATE_SNAPSHOT)
+
+
+def _dummy_definition_mask() -> jax.Array:
+    return jnp.zeros((1,), dtype=jnp.bool_)
+
+
+def _dummy_action_policy_item() -> tuple[TokenTree, jax.Array]:
+    return tokenize_action_space_snapshot(_DUMMY_ACTION_SPACE_SNAPSHOT)
+
+
 def _collect_streamed_rollout_gradients(
     policy: PolicyState,
     initial_states,
@@ -331,6 +379,19 @@ def _scatter_add_grad(accum, sample_indices: list[int], step_grad):
     )
 
 
+def _mask_tree_rows(tree, row_mask: jax.Array):
+    row_mask = jnp.asarray(row_mask, dtype=jnp.bool_)
+
+    def mask_leaf(leaf):
+        leaf = jnp.asarray(leaf)
+        scale = row_mask.astype(leaf.dtype).reshape(
+            (row_mask.shape[0],) + (1,) * (leaf.ndim - 1)
+        )
+        return leaf * scale
+
+    return jax.tree_util.tree_map(mask_leaf, tree)
+
+
 def _take_tree_rows(tree, indices: list[int]):
     index_array = jnp.asarray(indices, dtype=jnp.int32)
     return jax.tree_util.tree_map(lambda value: value[index_array], tree)
@@ -340,8 +401,58 @@ def _slice_tree(tree, index: int):
     return jax.tree_util.tree_map(lambda value: value[index], tree)
 
 
-def _stack_bool_masks(masks: list[jax.Array]) -> jax.Array:
-    length = _max_mask_length(masks)
+def _raise_static_pad_too_small(
+    *, dimension: str, config_field: str, observed: int, configured: int
+) -> None:
+    raise TrainingError(
+        f"{dimension} length {observed} exceeds {config_field} {configured}"
+    )
+
+
+def _validate_static_pad_limit(
+    *,
+    dimension: str,
+    config_field: str,
+    observed: int,
+    configured: int | None,
+) -> None:
+    if configured is not None and observed > configured:
+        _raise_static_pad_too_small(
+            dimension=dimension,
+            config_field=config_field,
+            observed=observed,
+            configured=configured,
+        )
+
+
+def _stack_token_trees_for_policy(
+    items: list[tuple[TokenTree, jax.Array]],
+    *,
+    pad_to: int | None,
+    dimension: str,
+    config_field: str,
+):
+    if pad_to is not None:
+        for _tokens, mask in items:
+            _validate_static_pad_limit(
+                dimension=dimension,
+                config_field=config_field,
+                observed=int(mask.shape[0]),
+                configured=pad_to,
+            )
+    return stack_token_trees(items, pad_to=pad_to)
+
+
+def _stack_bool_masks(masks: list[jax.Array], pad_to: int | None = None) -> jax.Array:
+    length = int(pad_to) if pad_to is not None else _max_mask_length(masks)
+    if pad_to is not None:
+        for mask in masks:
+            _validate_static_pad_limit(
+                dimension="definition mask",
+                config_field="definition_pad_to",
+                observed=int(mask.shape[0]),
+                configured=length,
+            )
     return jnp.stack([_pad_bool_mask(mask, length) for mask in masks], axis=0)
 
 

@@ -19,6 +19,10 @@ from gristmill_symbolics.policy import (
 )
 from gristmill_symbolics.reinforce.rollout import (
     _collect_streamed_rollout_gradients,
+    _dummy_action_policy_item,
+    _dummy_state_policy_item,
+    _mask_tree_rows,
+    _stack_bool_masks,
     make_rng_grid,
 )
 from gristmill_symbolics.reinforce.train_state import (
@@ -100,6 +104,80 @@ def _tree_add(left, right):
 
 def _tree_row(tree, index):
     return jax.tree_util.tree_map(lambda value: value[index], tree)
+
+
+def test_stack_bool_masks_can_pad_to_static_width():
+    stacked = _stack_bool_masks(
+        [
+            jnp.asarray([True], dtype=jnp.bool_),
+            jnp.asarray([False, True], dtype=jnp.bool_),
+        ],
+        pad_to=3,
+    )
+
+    assert stacked.shape == (2, 3)
+    assert stacked.tolist() == [[True, False, False], [False, True, False]]
+
+
+def test_stack_bool_masks_rejects_static_width_that_is_too_small():
+    with pytest.raises(
+        TrainingError,
+        match="definition mask length 2 exceeds definition_pad_to 1",
+    ):
+        _stack_bool_masks(
+            [jnp.asarray([True, False], dtype=jnp.bool_)],
+            pad_to=1,
+        )
+
+
+def test_mask_tree_rows_zeroes_inactive_rows_without_changing_active_rows():
+    grads = {
+        "leaf": jnp.asarray(
+            [
+                [1.0, 2.0],
+                [3.0, 5.0],
+                [7.0, 11.0],
+            ],
+            dtype=jnp.float32,
+        )
+    }
+
+    masked = _mask_tree_rows(
+        grads,
+        jnp.asarray([True, False, True], dtype=jnp.bool_),
+    )
+
+    assert masked["leaf"].tolist() == [[1.0, 2.0], [0.0, 0.0], [7.0, 11.0]]
+
+
+def test_dummy_action_policy_inputs_score_finite_values():
+    policy = _policy()
+    state_tokens, state_mask = _dummy_state_policy_item()
+    action_tokens, action_mask = _dummy_action_policy_item()
+    selected = jnp.asarray(0, dtype=jnp.int32)
+    action_choice = sample_action(
+        policy.params,
+        state_tokens,
+        state_mask,
+        selected,
+        action_tokens,
+        action_mask,
+        jax.random.PRNGKey(99),
+    )
+
+    logp, grad = jax.value_and_grad(score_action, argnums=0)(
+        policy.params,
+        state_tokens,
+        state_mask,
+        selected,
+        action_tokens,
+        action_mask,
+        action_choice,
+    )
+
+    assert np.isfinite(float(np.asarray(logp)))
+    for leaf in _floating_leaves(grad):
+        assert bool(jnp.all(jnp.isfinite(leaf)))
 
 
 def test_reinforce_grad_loss_is_negative_mean_advantage_times_trajectory_grad():
