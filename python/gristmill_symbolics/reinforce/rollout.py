@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
+import json
+import os
+import sys
+import time
+from typing import Any, Iterator
 
 import jax
 import jax.numpy as jnp
@@ -31,6 +37,23 @@ from .types import (
 )
 
 
+_PROFILE_ROLLOUT_ENV = "GRISTMILL_PROFILE_ROLLOUT"
+_PROFILE_ROLLOUT_SYNC_ENV = "GRISTMILL_PROFILE_ROLLOUT_SYNC"
+_FALSE_ENV_VALUES = {
+    "",
+    "0",
+    "false",
+    "False",
+    "FALSE",
+    "no",
+    "No",
+    "NO",
+    "off",
+    "Off",
+    "OFF",
+}
+
+
 @dataclass(frozen=True)
 class _StreamedRolloutResult:
     final: FinalColumnMetrics
@@ -44,6 +67,74 @@ class _StreamedRolloutResult:
     action_score_count: int
     target_logp_sum: float
     action_logp_sum: float
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value not in _FALSE_ENV_VALUES
+
+
+def _profile_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, jax.Array):
+        if value.shape == ():
+            return np.asarray(value).item()
+        return f"jax.Array(shape={value.shape}, dtype={value.dtype})"
+    if isinstance(value, tuple | list):
+        return [_profile_json_value(item) for item in value]
+    return str(value)
+
+
+def _block_profile_value(value):
+    for leaf in jax.tree_util.tree_leaves(value):
+        block = getattr(leaf, "block_until_ready", None)
+        if block is not None:
+            block()
+    return value
+
+
+class _RolloutProfiler:
+    def __init__(self) -> None:
+        self.enabled = _env_flag(_PROFILE_ROLLOUT_ENV)
+        self.sync_jax = _env_flag(_PROFILE_ROLLOUT_SYNC_ENV, default=True)
+
+    @contextmanager
+    def phase(
+        self, phase: str, step: int, **fields: Any
+    ) -> Iterator[dict[str, Any]]:
+        profile_fields = dict(fields)
+        if not self.enabled:
+            yield profile_fields
+            return
+
+        started_at = time.perf_counter()
+        try:
+            yield profile_fields
+        finally:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+            payload = {
+                "event": "rollout_phase",
+                "phase": phase,
+                "step": int(step),
+                "elapsed_ms": elapsed_ms,
+            }
+            payload.update(
+                {
+                    key: _profile_json_value(value)
+                    for key, value in profile_fields.items()
+                }
+            )
+            print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+    def block_until_ready(self, value):
+        if self.enabled and self.sync_jax:
+            return _block_profile_value(value)
+        return value
 
 
 def make_rng_grid(root_key, update_index: int, max_steps: int, batch_size: int):
@@ -149,6 +240,7 @@ def _collect_streamed_rollout_gradients(
         config.definition_pad_to if static_policy_batch else None
     )
     static_action_pad_to = config.action_token_pad_to if static_policy_batch else None
+    profiler = _RolloutProfiler()
 
     for step in range(config.max_steps):
         active_indices = [sample for sample, is_active in enumerate(active) if is_active]
@@ -156,8 +248,11 @@ def _collect_streamed_rollout_gradients(
         if not active_indices and not static_policy_batch:
             continue
 
-        snapshots = row.snapshots()
-        definition_masks = row.definition_masks()
+        with profiler.phase(
+            "row_snapshots", step, active_count=len(active_indices)
+        ):
+            snapshots = row.snapshots()
+            definition_masks = row.definition_masks()
         state_items: list[tuple[TokenTree, jax.Array]] = []
         target_def_masks: list[jax.Array] = []
         target_keys: list[jax.Array] = []
@@ -166,52 +261,77 @@ def _collect_streamed_rollout_gradients(
             list(range(config.batch_size)) if static_policy_batch else active_indices
         )
 
-        for sample in target_policy_samples:
-            if not active[sample]:
-                state_items.append(_dummy_state_policy_item())
-                target_def_masks.append(_dummy_definition_mask())
+        with profiler.phase(
+            "tokenize_state", step, active_count=len(active_indices)
+        ) as profile_fields:
+            for sample in target_policy_samples:
+                if not active[sample]:
+                    state_items.append(_dummy_state_policy_item())
+                    target_def_masks.append(_dummy_definition_mask())
+                    target_keys.append(rng_grid[step, sample, DECISION_TARGET])
+                    continue
+                state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
+                row_def_mask = jnp.asarray(definition_masks[sample], dtype=jnp.bool_)
+                target_def_mask = row_def_mask
+                if (
+                    exact_empty_def_masks[sample] is not None
+                    and not _has_target_definition(row_def_mask)
+                ):
+                    target_def_mask = exact_empty_def_masks[sample]
+                    replay_exact_empty_samples.add(sample)
+                state_items.append((state_tokens, state_token_mask))
+                target_def_masks.append(target_def_mask)
                 target_keys.append(rng_grid[step, sample, DECISION_TARGET])
-                continue
-            state_tokens, state_token_mask = tokenize_state_snapshot(snapshots[sample])
-            row_def_mask = jnp.asarray(definition_masks[sample], dtype=jnp.bool_)
-            target_def_mask = row_def_mask
-            if (
-                exact_empty_def_masks[sample] is not None
-                and not _has_target_definition(row_def_mask)
-            ):
-                target_def_mask = exact_empty_def_masks[sample]
-                replay_exact_empty_samples.add(sample)
-            state_items.append((state_tokens, state_token_mask))
-            target_def_masks.append(target_def_mask)
-            target_keys.append(rng_grid[step, sample, DECISION_TARGET])
+            profile_fields["state_token_len_max"] = _max_tree_length(state_items)
 
-        state_tokens_batch, state_mask_batch = _stack_token_trees_for_policy(
-            state_items,
-            pad_to=static_state_pad_to,
-            dimension="state token",
-            config_field="state_token_pad_to",
-        )
-        target_def_mask_batch = _stack_bool_masks(
-            target_def_masks,
-            pad_to=static_definition_pad_to,
-        )
-        target_choices = jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
-            policy.params,
-            state_tokens_batch,
-            state_mask_batch,
-            target_def_mask_batch,
-            jnp.stack(target_keys, axis=0),
-        )
-        target_logps, target_grads = jax.vmap(
-            jax.value_and_grad(score_target, argnums=0),
-            in_axes=(None, 0, 0, 0, 0),
-        )(
-            policy.params,
-            state_tokens_batch,
-            state_mask_batch,
-            target_def_mask_batch,
-            target_choices,
-        )
+        with profiler.phase(
+            "stack_state_tokens", step, active_count=len(active_indices)
+        ) as profile_fields:
+            state_tokens_batch, state_mask_batch = _stack_token_trees_for_policy(
+                state_items,
+                pad_to=static_state_pad_to,
+                dimension="state token",
+                config_field="state_token_pad_to",
+            )
+            target_def_mask_batch = _stack_bool_masks(
+                target_def_masks,
+                pad_to=static_definition_pad_to,
+            )
+            profile_fields["state_token_len_max"] = int(state_mask_batch.shape[1])
+            profile_fields["definition_count_max"] = int(target_def_mask_batch.shape[1])
+
+        with profiler.phase(
+            "sample_target",
+            step,
+            active_count=len(active_indices),
+            state_token_len_max=int(state_mask_batch.shape[1]),
+        ):
+            target_choices = jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
+                policy.params,
+                state_tokens_batch,
+                state_mask_batch,
+                target_def_mask_batch,
+                jnp.stack(target_keys, axis=0),
+            )
+            profiler.block_until_ready(target_choices)
+
+        with profiler.phase(
+            "score_target_grad",
+            step,
+            active_count=len(active_indices),
+            state_token_len_max=int(state_mask_batch.shape[1]),
+        ):
+            target_logps, target_grads = jax.vmap(
+                jax.value_and_grad(score_target, argnums=0),
+                in_axes=(None, 0, 0, 0, 0),
+            )(
+                policy.params,
+                state_tokens_batch,
+                state_mask_batch,
+                target_def_mask_batch,
+                target_choices,
+            )
+            profiler.block_until_ready((target_logps, target_grads))
         if static_policy_batch:
             target_active_mask = jnp.asarray(active, dtype=jnp.bool_)
             target_choices = jnp.where(target_active_mask, target_choices, -1)
@@ -252,9 +372,16 @@ def _collect_streamed_rollout_gradients(
         space_kinds = None
         space_snapshots = None
         if any(query_active):
-            spaces = row.query_action_spaces_for_row(target_choice_list, query_active)
-            space_kinds = spaces.entry_kinds()
-            space_snapshots = spaces.snapshots()
+            with profiler.phase(
+                "row_query_action_spaces",
+                step,
+                active_count=len(active_indices),
+                query_count=sum(query_active),
+                target_choices=target_choice_list,
+            ):
+                spaces = row.query_action_spaces_for_row(target_choice_list, query_active)
+                space_kinds = spaces.entry_kinds()
+                space_snapshots = spaces.snapshots()
 
         non_empty_samples: list[int] = []
         non_empty_active_positions: list[int] = []
@@ -262,41 +389,46 @@ def _collect_streamed_rollout_gradients(
         action_items: list[tuple[TokenTree, jax.Array]] = []
         action_keys: list[jax.Array] = []
 
-        for sample in active_indices:
-            if not query_active[sample]:
-                continue
-            if spaces is None or space_kinds is None or space_snapshots is None:
-                raise TrainingError("active target query was not performed")
-            target_choice = target_choice_list[sample]
-            target_def_mask = target_def_masks[active_position_by_sample[sample]]
+        with profiler.phase(
+            "tokenize_action_space", step, active_count=len(active_indices)
+        ) as profile_fields:
+            for sample in active_indices:
+                if not query_active[sample]:
+                    continue
+                if spaces is None or space_kinds is None or space_snapshots is None:
+                    raise TrainingError("active target query was not performed")
+                target_choice = target_choice_list[sample]
+                target_def_mask = target_def_masks[active_position_by_sample[sample]]
 
-            if space_kinds[sample] == "exact_empty":
-                exact_empty_def_masks[sample] = _one_hot_def_mask(
-                    target_choice, int(target_def_mask.shape[0])
-                )
-                empty_action_space_count += 1
-                continue
+                if space_kinds[sample] == "exact_empty":
+                    exact_empty_def_masks[sample] = _one_hot_def_mask(
+                        target_choice, int(target_def_mask.shape[0])
+                    )
+                    empty_action_space_count += 1
+                    continue
 
-            if space_kinds[sample] != "non_empty":
-                raise TrainingError(
-                    f"sample {sample} target {target_choice} produced "
-                    f"unexpected action-space kind {space_kinds[sample]!r}"
-                )
+                if space_kinds[sample] != "non_empty":
+                    raise TrainingError(
+                        f"sample {sample} target {target_choice} produced "
+                        f"unexpected action-space kind {space_kinds[sample]!r}"
+                    )
 
-            action_space_snapshot = space_snapshots[sample]
-            if action_space_snapshot is None:
-                raise TrainingError(
-                    f"sample {sample} has non_empty action-space kind but no snapshot"
+                action_space_snapshot = space_snapshots[sample]
+                if action_space_snapshot is None:
+                    raise TrainingError(
+                        f"sample {sample} has non_empty action-space kind but no snapshot"
+                    )
+                action_tokens, action_token_mask = tokenize_action_space_snapshot(
+                    action_space_snapshot
                 )
-            action_tokens, action_token_mask = tokenize_action_space_snapshot(
-                action_space_snapshot
-            )
-            non_empty_samples.append(sample)
-            non_empty_active_positions.append(active_position_by_sample[sample])
-            selected_def_indices.append(target_choice)
-            action_items.append((action_tokens, action_token_mask))
-            action_keys.append(rng_grid[step, sample, DECISION_ACTION])
-            exact_empty_def_masks[sample] = None
+                non_empty_samples.append(sample)
+                non_empty_active_positions.append(active_position_by_sample[sample])
+                selected_def_indices.append(target_choice)
+                action_items.append((action_tokens, action_token_mask))
+                action_keys.append(rng_grid[step, sample, DECISION_ACTION])
+                exact_empty_def_masks[sample] = None
+            profile_fields["non_empty_count"] = len(non_empty_samples)
+            profile_fields["action_token_len_max"] = _max_tree_length(action_items)
 
         if non_empty_samples or static_policy_batch:
             if static_policy_batch:
@@ -333,59 +465,94 @@ def _collect_streamed_rollout_gradients(
                         rng_grid[step, sample, DECISION_ACTION]
                     )
 
-                action_state_tokens, action_state_mask = _stack_token_trees_for_policy(
-                    action_state_items,
-                    pad_to=static_state_pad_to,
-                    dimension="state token",
-                    config_field="state_token_pad_to",
-                )
-                action_tokens_batch, action_mask_batch = _stack_token_trees_for_policy(
-                    action_policy_items,
-                    pad_to=static_action_pad_to,
-                    dimension="action token",
-                    config_field="action_token_pad_to",
-                )
-                selected = jnp.asarray(selected_def_policy_indices, dtype=jnp.int32)
-                stacked_action_keys = jnp.stack(action_keys_for_policy, axis=0)
-                action_position_by_sample = {
-                    sample: sample for sample in range(config.batch_size)
-                }
+                with profiler.phase(
+                    "stack_action_tokens",
+                    step,
+                    non_empty_count=len(non_empty_samples),
+                ) as profile_fields:
+                    action_state_tokens, action_state_mask = _stack_token_trees_for_policy(
+                        action_state_items,
+                        pad_to=static_state_pad_to,
+                        dimension="state token",
+                        config_field="state_token_pad_to",
+                    )
+                    action_tokens_batch, action_mask_batch = _stack_token_trees_for_policy(
+                        action_policy_items,
+                        pad_to=static_action_pad_to,
+                        dimension="action token",
+                        config_field="action_token_pad_to",
+                    )
+                    selected = jnp.asarray(selected_def_policy_indices, dtype=jnp.int32)
+                    stacked_action_keys = jnp.stack(action_keys_for_policy, axis=0)
+                    action_position_by_sample = {
+                        sample: sample for sample in range(config.batch_size)
+                    }
+                    profile_fields["state_token_len_max"] = int(action_state_mask.shape[1])
+                    profile_fields["action_token_len_max"] = int(action_mask_batch.shape[1])
             else:
                 action_policy_samples = non_empty_samples
-                action_state_tokens = _take_tree_rows(
-                    state_tokens_batch, non_empty_active_positions
+                with profiler.phase(
+                    "stack_action_tokens",
+                    step,
+                    non_empty_count=len(non_empty_samples),
+                ) as profile_fields:
+                    action_state_tokens = _take_tree_rows(
+                        state_tokens_batch, non_empty_active_positions
+                    )
+                    action_state_mask = state_mask_batch[
+                        jnp.asarray(non_empty_active_positions)
+                    ]
+                    action_tokens_batch, action_mask_batch = stack_token_trees(
+                        action_items
+                    )
+                    selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
+                    stacked_action_keys = jnp.stack(action_keys, axis=0)
+                    action_position_by_sample = {
+                        sample: position
+                        for position, sample in enumerate(non_empty_samples)
+                    }
+                    profile_fields["state_token_len_max"] = int(action_state_mask.shape[1])
+                    profile_fields["action_token_len_max"] = int(action_mask_batch.shape[1])
+            with profiler.phase(
+                "sample_action",
+                step,
+                non_empty_count=len(non_empty_samples),
+                state_token_len_max=int(action_state_mask.shape[1]),
+                action_token_len_max=int(action_mask_batch.shape[1]),
+            ):
+                action_choices = jax.vmap(
+                    sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0)
+                )(
+                    policy.params,
+                    action_state_tokens,
+                    action_state_mask,
+                    selected,
+                    action_tokens_batch,
+                    action_mask_batch,
+                    stacked_action_keys,
                 )
-                action_state_mask = state_mask_batch[
-                    jnp.asarray(non_empty_active_positions)
-                ]
-                action_tokens_batch, action_mask_batch = stack_token_trees(action_items)
-                selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
-                stacked_action_keys = jnp.stack(action_keys, axis=0)
-                action_position_by_sample = {
-                    sample: position
-                    for position, sample in enumerate(non_empty_samples)
-                }
-            action_choices = jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
-                policy.params,
-                action_state_tokens,
-                action_state_mask,
-                selected,
-                action_tokens_batch,
-                action_mask_batch,
-                stacked_action_keys,
-            )
-            action_logps, action_grads = jax.vmap(
-                jax.value_and_grad(score_action, argnums=0),
-                in_axes=(None, 0, 0, 0, 0, 0, 0),
-            )(
-                policy.params,
-                action_state_tokens,
-                action_state_mask,
-                selected,
-                action_tokens_batch,
-                action_mask_batch,
-                action_choices,
-            )
+                profiler.block_until_ready(action_choices)
+
+            with profiler.phase(
+                "score_action_grad",
+                step,
+                non_empty_count=len(non_empty_samples),
+                state_token_len_max=int(action_state_mask.shape[1]),
+                action_token_len_max=int(action_mask_batch.shape[1]),
+            ):
+                action_logps, action_grads = jax.vmap(
+                    jax.value_and_grad(score_action, argnums=0),
+                    in_axes=(None, 0, 0, 0, 0, 0, 0),
+                )(
+                    policy.params,
+                    action_state_tokens,
+                    action_state_mask,
+                    selected,
+                    action_tokens_batch,
+                    action_mask_batch,
+                    action_choices,
+                )
+                profiler.block_until_ready((action_logps, action_grads))
             if static_policy_batch:
                 action_active_mask = jnp.asarray(
                     [
@@ -411,16 +578,28 @@ def _collect_streamed_rollout_gradients(
                     None
                 ] * config.batch_size
                 action_score_mask = [False] * config.batch_size
-                for sample in non_empty_samples:
-                    action_choices_for_row[sample] = action_choice_to_python(
-                        _slice_tree(action_choices, action_position_by_sample[sample])
-                    )
-                    action_score_mask[sample] = True
+                with profiler.phase(
+                    "action_choice_to_python",
+                    step,
+                    non_empty_count=len(non_empty_samples),
+                ):
+                    for sample in non_empty_samples:
+                        action_choices_for_row[sample] = action_choice_to_python(
+                            _slice_tree(
+                                action_choices, action_position_by_sample[sample]
+                            )
+                        )
+                        action_score_mask[sample] = True
 
-                validated = row.validate_actions_for_row(
-                    spaces, action_choices_for_row, action_score_mask
-                )
-                applied = row.apply_validated_actions_for_row(validated)
+                with profiler.phase(
+                    "row_validate_apply_actions",
+                    step,
+                    non_empty_count=len(non_empty_samples),
+                ):
+                    validated = row.validate_actions_for_row(
+                        spaces, action_choices_for_row, action_score_mask
+                    )
+                    applied = row.apply_validated_actions_for_row(validated)
                 for sample in non_empty_samples:
                     if not bool(applied[sample]):
                         raise TrainingError(
@@ -580,3 +759,7 @@ def _one_hot_def_mask(target_choice: int, length: int) -> jax.Array:
 
 def _max_mask_length(masks: list[jax.Array]) -> int:
     return max(1, *(int(mask.shape[0]) for mask in masks))
+
+
+def _max_tree_length(items: list[tuple[TokenTree, jax.Array]]) -> int:
+    return max((int(mask.shape[0]) for _tokens, mask in items), default=0)
