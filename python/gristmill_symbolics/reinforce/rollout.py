@@ -233,8 +233,9 @@ def _collect_streamed_rollout_gradients(
             sample: position for position, sample in enumerate(target_policy_samples)
         }
 
-        for position, sample in enumerate(active_indices):
-            target_choice = int(np.asarray(target_choices[position]))
+        for sample in active_indices:
+            target_position = active_position_by_sample[sample]
+            target_choice = int(np.asarray(target_choices[target_position]))
             target_choice_list[sample] = target_choice
             if target_choice == -1:
                 active[sample] = False

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import gristmill_symbolics.reinforce.rollout as rollout_module
 from gristmill_symbolics import RewriteState, TensorComputation, validate_decision
 from gristmill_symbolics.policy import (
     PolicyConfig,
@@ -92,6 +93,33 @@ def _two_actionable_json():
     data["tensors"].append({"id": 4, "symmetry": []})
     data["definitions"].append({**data["definitions"][0], "base": 4})
     return json.dumps(data)
+
+
+def _no_target_json():
+    return json.dumps(
+        {
+            "ranges": [{"id": 0, "size": 3}],
+            "tensors": [
+                {
+                    "id": 0,
+                    "symmetry": [{"perm": [0], "action": "Identity"}],
+                }
+            ],
+            "definitions": [
+                {
+                    "base": 0,
+                    "ext_indices": [{"id": 0, "range": 0}],
+                    "terms": [
+                        {
+                            "coeff": [1, 1],
+                            "sum_indices": [],
+                            "factors": [{"tensor": 0, "indices": [0]}],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def _definition_mask(state):
@@ -338,6 +366,51 @@ def test_static_rollout_rejects_too_small_definition_pad():
             update_index=0,
             root_key=jax.random.PRNGKey(5),
         )
+
+
+def test_static_rollout_preserves_physical_target_rows_after_lower_row_stops(
+    monkeypatch,
+):
+    def sample_first_target_when_present(
+        _params,
+        _state_tokens,
+        _state_token_mask,
+        def_mask,
+        _rng,
+    ):
+        return jnp.where(jnp.any(def_mask), 0, -1).astype(jnp.int32)
+
+    monkeypatch.setattr(
+        rollout_module,
+        "sample_target",
+        sample_first_target_when_present,
+    )
+    policy = _policy()
+    root = jax.random.PRNGKey(19)
+    states_json = [_no_target_json(), exact_empty_json()]
+
+    dynamic = _collect_streamed_rollout_gradients(
+        policy,
+        [_state_from_json(text) for text in states_json],
+        RolloutConfig(batch_size=2, max_steps=2, seed=19),
+        update_index=0,
+        root_key=root,
+    )
+    static = _collect_streamed_rollout_gradients(
+        policy,
+        [_state_from_json(text) for text in states_json],
+        _static_config(batch_size=2, max_steps=2, seed=19),
+        update_index=0,
+        root_key=root,
+    )
+
+    assert dynamic.final.stopped.tolist() == [True, False]
+    assert dynamic.final.max_steps.tolist() == [False, True]
+    assert static.final.stopped.tolist() == dynamic.final.stopped.tolist()
+    assert static.final.max_steps.tolist() == dynamic.final.max_steps.tolist()
+    assert static.stop_count == dynamic.stop_count == 1
+    assert static.target_score_count == dynamic.target_score_count == 3
+    assert static.empty_action_space_count == dynamic.empty_action_space_count == 2
 
 
 def test_streamed_rollout_accumulates_one_step_sampled_score_gradients():
