@@ -25,6 +25,8 @@ CUDA JAX install.
 
 ## Completed Small-Batch Runtime Profile
 
+Full dynamic batch-1 profile:
+
 ```bash
 RUN=/tmp/ccsd-profile/batch1-steps64
 mkdir -p "$RUN"
@@ -52,50 +54,6 @@ GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
 kill "$SMI_PID"
 ```
 
-Summarize the Python profile:
-
-```bash
-uv run --no-sync python - <<'PY'
-import pstats
-p = pstats.Stats('/tmp/ccsd-profile/batch1-steps64/profile.prof')
-p.strip_dirs().sort_stats('cumtime').print_stats(60)
-PY
-```
-
-Summarize rollout phase timers:
-
-```bash
-uv run --no-sync python - <<'PY'
-import collections
-import json
-
-path = '/tmp/ccsd-profile/batch1-steps64/stderr.log'
-totals = collections.defaultdict(float)
-counts = collections.Counter()
-max_action_l = 0
-max_state_l = 0
-
-with open(path) as f:
-    for line in f:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get('event') != 'rollout_phase':
-            continue
-        phase = event['phase']
-        totals[phase] += event['elapsed_ms']
-        counts[phase] += 1
-        max_action_l = max(max_action_l, int(event.get('action_token_len_max') or 0))
-        max_state_l = max(max_state_l, int(event.get('state_token_len_max') or 0))
-
-for phase, elapsed_ms in sorted(totals.items(), key=lambda item: item[1], reverse=True):
-    print(f'{phase:28s} {elapsed_ms:12.3f} ms  count={counts[phase]}')
-print(f'max_state_token_len={max_state_l}')
-print(f'max_action_token_len={max_action_l}')
-PY
-```
-
 Repeat the same profile with:
 
 ```bash
@@ -103,6 +61,180 @@ RUN=/tmp/ccsd-profile/batch2-steps64
 ```
 
 and change `--batch-size 1` to `--batch-size 2`.
+
+## Summarize Any Profile Run
+
+Set `RUN` to a completed dynamic or static run directory and run:
+
+```bash
+RUN=/tmp/ccsd-profile/batch1-steps64
+uv run --no-sync python - "$RUN" <<'PY'
+import collections
+import csv
+import json
+import os
+import pstats
+import re
+import sys
+
+run = sys.argv[1]
+stderr_path = os.path.join(run, "stderr.log")
+stdout_path = os.path.join(run, "stdout.jsonl")
+profile_path = os.path.join(run, "profile.prof")
+gpu_path = os.path.join(run, "nvidia-smi.csv")
+
+print(f"RUN={run}")
+
+print("\n== final training metrics ==")
+try:
+    with open(stdout_path) as f:
+        lines = [line.rstrip() for line in f if line.strip()]
+    print(lines[-1] if lines else "(no stdout metrics)")
+except FileNotFoundError:
+    print("(missing stdout.jsonl)")
+
+print("\n== /usr/bin/time summary ==")
+time_keys = (
+    "Command being timed",
+    "User time",
+    "System time",
+    "Percent of CPU",
+    "Elapsed",
+    "Maximum resident set size",
+    "Major",
+    "Minor",
+    "Voluntary context switches",
+    "Involuntary context switches",
+    "Swaps",
+    "Exit status",
+)
+try:
+    with open(stderr_path) as f:
+        for line in f:
+            stripped = line.rstrip()
+            if any(key in stripped for key in time_keys):
+                print(stripped)
+except FileNotFoundError:
+    print("(missing stderr.log)")
+
+print("\n== cProfile top cumulative entries ==")
+if os.path.exists(profile_path):
+    pstats.Stats(profile_path).strip_dirs().sort_stats("cumtime").print_stats(60)
+else:
+    print("(missing profile.prof)")
+
+print("\n== rollout phase totals ==")
+totals = collections.defaultdict(float)
+counts = collections.Counter()
+max_action_l = 0
+max_state_l = 0
+max_definition_count = 0
+events = 0
+
+try:
+    with open(stderr_path) as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") != "rollout_phase":
+                continue
+            events += 1
+            phase = event["phase"]
+            totals[phase] += float(event["elapsed_ms"])
+            counts[phase] += 1
+            max_action_l = max(
+                max_action_l, int(event.get("action_token_len_max") or 0)
+            )
+            max_state_l = max(
+                max_state_l, int(event.get("state_token_len_max") or 0)
+            )
+            max_definition_count = max(
+                max_definition_count, int(event.get("definition_count_max") or 0)
+            )
+except FileNotFoundError:
+    pass
+
+if events:
+    for phase, elapsed_ms in sorted(
+        totals.items(), key=lambda item: item[1], reverse=True
+    ):
+        print(f"{phase:28s} {elapsed_ms:12.3f} ms  count={counts[phase]}")
+    print(f"max_state_token_len={max_state_l}")
+    print(f"max_action_token_len={max_action_l}")
+    print(f"max_definition_count={max_definition_count}")
+else:
+    print("(no rollout_phase JSON events)")
+
+print("\n== JAX compile log summary ==")
+compile_count = 0
+finished_count = 0
+compile_lines = []
+try:
+    with open(stderr_path) as f:
+        for line in f:
+            if "Compiling" in line:
+                compile_count += 1
+                if len(compile_lines) < 80:
+                    compile_lines.append(line.rstrip())
+            if "Finished XLA compilation" in line:
+                finished_count += 1
+except FileNotFoundError:
+    pass
+print(f"Compiling lines={compile_count}")
+print(f"Finished XLA compilation lines={finished_count}")
+if compile_lines:
+    print("-- first compile lines --")
+    print("\n".join(compile_lines))
+
+print("\n== nvidia-smi telemetry ==")
+def number(value):
+    match = re.search(r"[-+]?\d+(?:\.\d+)?", value or "")
+    return float(match.group(0)) if match else None
+
+def summarize_numeric(name, values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return
+    print(
+        f"{name}: min={min(values):.1f} avg={sum(values) / len(values):.1f} "
+        f"max={max(values):.1f} samples={len(values)}"
+    )
+
+try:
+    with open(gpu_path, newline="") as f:
+        rows = [
+            {key.strip(): value.strip() for key, value in row.items()}
+            for row in csv.DictReader(f)
+        ]
+except FileNotFoundError:
+    rows = []
+
+if rows:
+    gpu_util = []
+    mem_util = []
+    mem_used = []
+    power = []
+    for row in rows:
+        for key, value in row.items():
+            lowered = key.lower()
+            if lowered.startswith("utilization.gpu"):
+                gpu_util.append(number(value))
+            elif lowered.startswith("utilization.memory"):
+                mem_util.append(number(value))
+            elif lowered.startswith("memory.used"):
+                mem_used.append(number(value))
+            elif lowered.startswith("power.draw"):
+                power.append(number(value))
+    summarize_numeric("gpu_util_percent", gpu_util)
+    summarize_numeric("memory_util_percent", mem_util)
+    summarize_numeric("memory_used_mib", mem_used)
+    summarize_numeric("power_draw_w", power)
+else:
+    print("(missing nvidia-smi.csv)")
+PY
+```
 
 ## Static-Shape Rollout Profile
 
@@ -112,7 +244,7 @@ choose rounded-up values so static mode does not fail partway through the run.
 Definition count is reported by the `definition_count_max` field in
 `stack_state_tokens` events.
 
-Example static rerun for the same workload:
+Full static batch-1 rerun for the same workload:
 
 ```bash
 RUN=/tmp/ccsd-profile/batch1-steps64-static
@@ -143,6 +275,12 @@ GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
   2> "$RUN/stderr.log"
 
 kill "$SMI_PID"
+```
+
+Then run the `Summarize Any Profile Run` command with:
+
+```bash
+RUN=/tmp/ccsd-profile/batch1-steps64-static
 ```
 
 If a pad is too small, the run fails fast with `TrainingError`; increase the
