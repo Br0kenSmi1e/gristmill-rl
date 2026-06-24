@@ -535,6 +535,32 @@ def test_streamed_rollout_accumulates_multi_step_scalar_oracle():
     _tree_allclose(_tree_row(result.trajectory_grad_logp, 0), expected_grad)
 
 
+def test_static_rollout_matches_scalar_oracle_on_one_sample():
+    policy = _policy()
+    root = jax.random.PRNGKey(17)
+    config = _static_config(max_steps=2, seed=17)
+
+    result = _collect_streamed_rollout_gradients(
+        policy,
+        [_state_from_json(_two_actionable_json())],
+        config,
+        update_index=0,
+        root_key=root,
+    )
+    expected_logp, expected_grad = _scalar_rollout_oracle(
+        policy,
+        _state_from_json(_two_actionable_json()),
+        config,
+        update_index=0,
+        root_key=root,
+    )
+
+    assert jnp.allclose(result.trajectory_logp[0], expected_logp, atol=1.0e-5)
+    _tree_allclose(_tree_row(result.trajectory_grad_logp, 0), expected_grad)
+    assert result.target_score_count >= 1
+    assert result.action_score_count >= 1
+
+
 def test_streamed_rollout_supports_batched_mixed_action_counts():
     policy = _policy()
     result = _collect_streamed_rollout_gradients(
@@ -552,3 +578,72 @@ def test_streamed_rollout_supports_batched_mixed_action_counts():
     assert result.action_score_count >= 0
     for leaf in _floating_leaves(result.trajectory_grad_logp):
         assert leaf.shape[0] == 2
+
+
+def test_static_rollout_matches_dynamic_streamed_mixed_batch():
+    policy = _policy()
+    root = jax.random.PRNGKey(23)
+    initial_states = [
+        _state_from_json(actionable_json()),
+        _state_from_json(exact_empty_json()),
+        _state_from_json(_two_actionable_json()),
+    ]
+    dynamic_config = RolloutConfig(batch_size=3, max_steps=2, seed=23)
+    static_config = _static_config(batch_size=3, max_steps=2, seed=23)
+
+    dynamic = _collect_streamed_rollout_gradients(
+        policy,
+        [
+            _state_from_json(actionable_json()),
+            _state_from_json(exact_empty_json()),
+            _state_from_json(_two_actionable_json()),
+        ],
+        dynamic_config,
+        update_index=0,
+        root_key=root,
+    )
+    static = _collect_streamed_rollout_gradients(
+        policy,
+        initial_states,
+        static_config,
+        update_index=0,
+        root_key=root,
+    )
+
+    assert np.allclose(static.final.initial_log_flops, dynamic.final.initial_log_flops)
+    assert np.allclose(static.final.final_log_flops, dynamic.final.final_log_flops)
+    assert static.final.stopped.tolist() == dynamic.final.stopped.tolist()
+    assert static.final.max_steps.tolist() == dynamic.final.max_steps.tolist()
+    assert jnp.allclose(static.trajectory_logp, dynamic.trajectory_logp, atol=1.0e-5)
+    _tree_allclose(static.trajectory_grad_logp, dynamic.trajectory_grad_logp)
+    assert static.valid_action_count == dynamic.valid_action_count
+    assert static.stop_count == dynamic.stop_count
+    assert static.empty_action_space_count == dynamic.empty_action_space_count
+    assert static.finished_count == dynamic.finished_count
+    assert static.target_score_count == dynamic.target_score_count
+    assert static.action_score_count == dynamic.action_score_count
+    assert static.target_logp_sum == pytest.approx(dynamic.target_logp_sum, abs=1.0e-5)
+    assert static.action_logp_sum == pytest.approx(dynamic.action_logp_sum, abs=1.0e-5)
+
+
+def test_static_rollout_inactive_rows_do_not_increase_metrics_or_apply_counts():
+    policy = _policy(stop_bias_init=100.0)
+
+    result = _collect_streamed_rollout_gradients(
+        policy,
+        [_state_from_json(actionable_json())],
+        _static_config(max_steps=3, seed=31),
+        update_index=0,
+        root_key=jax.random.PRNGKey(31),
+    )
+
+    assert result.stop_count == 1
+    assert result.finished_count == 2
+    assert result.valid_action_count == 0
+    assert result.target_score_count == 1
+    assert result.action_score_count == 0
+    assert result.target_logp_sum == pytest.approx(float(result.trajectory_logp[0]))
+    assert result.action_logp_sum == pytest.approx(0.0)
+    assert np.isfinite(np.asarray(result.trajectory_logp)).all()
+    for leaf in _floating_leaves(result.trajectory_grad_logp):
+        assert bool(jnp.all(jnp.isfinite(leaf)))

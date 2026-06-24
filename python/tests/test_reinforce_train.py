@@ -191,6 +191,36 @@ def test_multi_sample_update_reports_finite_loss_and_core_metrics():
     assert metrics.target_score_count >= metrics.action_score_count
 
 
+def test_train_update_accepts_static_rollout_config_and_preserves_metrics():
+    state = init_train_state(
+        PolicyConfig(d_model=8, stop_bias_init=-20.0),
+        OptimizerConfig(learning_rate=1.0e-2),
+        seed=29,
+    )
+
+    new_state, metrics = train_update(
+        state,
+        _mixed_initial_states(),
+        RolloutConfig(
+            batch_size=2,
+            max_steps=2,
+            seed=29,
+            static_policy_batch=True,
+            state_token_pad_to=512,
+            action_token_pad_to=512,
+            definition_pad_to=8,
+        ),
+    )
+
+    assert new_state.update_index == 1
+    assert metrics.batch_size == 2
+    assert metrics.max_steps == 2
+    assert np.isfinite(metrics.loss)
+    assert np.isfinite(metrics.surrogate_loss)
+    assert metrics.target_score_count >= metrics.action_score_count
+    assert metrics.valid_action_count >= 1
+
+
 def test_train_update_reports_reward_stderr_from_batch_reward_std():
     state = init_train_state(
         PolicyConfig(d_model=8, stop_bias_init=-20.0),
