@@ -298,13 +298,73 @@ def _collect_streamed_rollout_gradients(
             action_keys.append(rng_grid[step, sample, DECISION_ACTION])
             exact_empty_def_masks[sample] = None
 
-        if non_empty_samples:
-            action_state_tokens = _take_tree_rows(
-                state_tokens_batch, non_empty_active_positions
-            )
-            action_state_mask = state_mask_batch[jnp.asarray(non_empty_active_positions)]
-            action_tokens_batch, action_mask_batch = stack_token_trees(action_items)
-            selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
+        if non_empty_samples or static_policy_batch:
+            if static_policy_batch:
+                non_empty_sample_set = set(non_empty_samples)
+                non_empty_position_by_sample = {
+                    sample: position
+                    for position, sample in enumerate(non_empty_samples)
+                }
+                target_position_by_sample = active_position_by_sample
+                action_policy_samples = list(range(config.batch_size))
+                action_state_items: list[tuple[TokenTree, jax.Array]] = []
+                action_policy_items: list[tuple[TokenTree, jax.Array]] = []
+                selected_def_policy_indices: list[int] = []
+                action_keys_for_policy: list[jax.Array] = []
+                for sample in action_policy_samples:
+                    if sample in non_empty_sample_set:
+                        target_position = target_position_by_sample[sample]
+                        action_state_items.append(
+                            (
+                                _slice_tree(state_tokens_batch, target_position),
+                                state_mask_batch[target_position],
+                            )
+                        )
+                        action_position = non_empty_position_by_sample[sample]
+                        action_policy_items.append(action_items[action_position])
+                        selected_def_policy_indices.append(
+                            selected_def_indices[action_position]
+                        )
+                    else:
+                        action_state_items.append(_dummy_state_policy_item())
+                        action_policy_items.append(_dummy_action_policy_item())
+                        selected_def_policy_indices.append(0)
+                    action_keys_for_policy.append(
+                        rng_grid[step, sample, DECISION_ACTION]
+                    )
+
+                action_state_tokens, action_state_mask = _stack_token_trees_for_policy(
+                    action_state_items,
+                    pad_to=static_state_pad_to,
+                    dimension="state token",
+                    config_field="state_token_pad_to",
+                )
+                action_tokens_batch, action_mask_batch = _stack_token_trees_for_policy(
+                    action_policy_items,
+                    pad_to=static_action_pad_to,
+                    dimension="action token",
+                    config_field="action_token_pad_to",
+                )
+                selected = jnp.asarray(selected_def_policy_indices, dtype=jnp.int32)
+                stacked_action_keys = jnp.stack(action_keys_for_policy, axis=0)
+                action_position_by_sample = {
+                    sample: sample for sample in range(config.batch_size)
+                }
+            else:
+                action_policy_samples = non_empty_samples
+                action_state_tokens = _take_tree_rows(
+                    state_tokens_batch, non_empty_active_positions
+                )
+                action_state_mask = state_mask_batch[
+                    jnp.asarray(non_empty_active_positions)
+                ]
+                action_tokens_batch, action_mask_batch = stack_token_trees(action_items)
+                selected = jnp.asarray(selected_def_indices, dtype=jnp.int32)
+                stacked_action_keys = jnp.stack(action_keys, axis=0)
+                action_position_by_sample = {
+                    sample: position
+                    for position, sample in enumerate(non_empty_samples)
+                }
             action_choices = jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
                 policy.params,
                 action_state_tokens,
@@ -312,7 +372,7 @@ def _collect_streamed_rollout_gradients(
                 selected,
                 action_tokens_batch,
                 action_mask_batch,
-                jnp.stack(action_keys, axis=0),
+                stacked_action_keys,
             )
             action_logps, action_grads = jax.vmap(
                 jax.value_and_grad(score_action, argnums=0),
@@ -326,11 +386,22 @@ def _collect_streamed_rollout_gradients(
                 action_mask_batch,
                 action_choices,
             )
-            trajectory_logp = trajectory_logp.at[jnp.asarray(non_empty_samples)].add(
-                action_logps
-            )
+            if static_policy_batch:
+                action_active_mask = jnp.asarray(
+                    [
+                        sample in set(non_empty_samples)
+                        for sample in action_policy_samples
+                    ],
+                    dtype=jnp.bool_,
+                )
+                action_logps = jnp.where(action_active_mask, action_logps, 0.0)
+                action_grads = _mask_tree_rows(action_grads, action_active_mask)
+
+            trajectory_logp = trajectory_logp.at[
+                jnp.asarray(action_policy_samples)
+            ].add(action_logps)
             trajectory_grad_logp = _scatter_add_grad(
-                trajectory_grad_logp, non_empty_samples, action_grads
+                trajectory_grad_logp, action_policy_samples, action_grads
             )
             action_score_count += len(non_empty_samples)
             action_logp_sum += float(np.asarray(jnp.sum(action_logps)))
@@ -339,9 +410,9 @@ def _collect_streamed_rollout_gradients(
                 None
             ] * config.batch_size
             action_score_mask = [False] * config.batch_size
-            for position, sample in enumerate(non_empty_samples):
+            for sample in non_empty_samples:
                 action_choices_for_row[sample] = action_choice_to_python(
-                    _slice_tree(action_choices, position)
+                    _slice_tree(action_choices, action_position_by_sample[sample])
                 )
                 action_score_mask[sample] = True
 

@@ -368,6 +368,22 @@ def test_static_rollout_rejects_too_small_definition_pad():
         )
 
 
+def test_static_rollout_rejects_too_small_action_token_pad():
+    policy = _policy()
+
+    with pytest.raises(
+        TrainingError,
+        match="action token length .* exceeds action_token_pad_to 1",
+    ):
+        _collect_streamed_rollout_gradients(
+            policy,
+            [_state_from_json(actionable_json())],
+            _static_config(action_token_pad_to=1),
+            update_index=0,
+            root_key=jax.random.PRNGKey(5),
+        )
+
+
 def test_static_rollout_preserves_physical_target_rows_after_lower_row_stops(
     monkeypatch,
 ):
