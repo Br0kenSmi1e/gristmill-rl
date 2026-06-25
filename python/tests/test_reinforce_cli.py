@@ -49,6 +49,45 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
     assert load_checkpoint(checkpoint_path).train_state.update_index == 1
 
 
+def test_train_cli_wires_static_rollout_flags_to_checkpoint(tmp_path, capsys):
+    input_path = tmp_path / "actionable.json"
+    checkpoint_path = tmp_path / "checkpoint.pkl"
+    input_path.write_text(actionable_json())
+
+    exit_code = main(
+        [
+            "--input",
+            str(input_path),
+            "--updates",
+            "1",
+            "--batch-size",
+            "1",
+            "--max-steps",
+            "1",
+            "--seed",
+            "22",
+            "--static-policy-batch",
+            "--state-token-pad-to",
+            "256",
+            "--action-token-pad-to",
+            "256",
+            "--definition-pad-to",
+            "4",
+            "--checkpoint-out",
+            str(checkpoint_path),
+        ]
+    )
+
+    line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    checkpoint = load_checkpoint(checkpoint_path)
+    assert exit_code == 0
+    assert line["batch_size"] == 1
+    assert checkpoint.rollout_config.static_policy_batch is True
+    assert checkpoint.rollout_config.state_token_pad_to == 256
+    assert checkpoint.rollout_config.action_token_pad_to == 256
+    assert checkpoint.rollout_config.definition_pad_to == 4
+
+
 def test_train_cli_can_continue_from_checkpoint(tmp_path, capsys):
     input_path = tmp_path / "actionable.json"
     checkpoint_path = tmp_path / "checkpoint.pkl"
@@ -120,5 +159,23 @@ def test_train_cli_rejects_non_positive_updates(tmp_path, updates):
                 updates,
             ]
         )
+
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    [
+        ("--state-token-pad-to", "0"),
+        ("--action-token-pad-to", "-1"),
+        ("--definition-pad-to", "0"),
+    ],
+)
+def test_train_cli_rejects_non_positive_static_pad_flags(tmp_path, flag, value):
+    input_path = tmp_path / "actionable.json"
+    input_path.write_text(actionable_json())
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--input", str(input_path), flag, value])
 
     assert exc_info.value.code == 2

@@ -38,6 +38,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--static-policy-batch", action="store_true")
+    parser.add_argument("--state-token-pad-to", type=_positive_int)
+    parser.add_argument("--action-token-pad-to", type=_positive_int)
+    parser.add_argument("--definition-pad-to", type=_positive_int)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--checkpoint-in")
     parser.add_argument("--checkpoint-out")
@@ -52,6 +56,10 @@ def main(argv=None) -> int:
             batch_size=args.batch_size,
             max_steps=args.max_steps,
             seed=args.seed,
+            state_token_pad_to=args.state_token_pad_to,
+            action_token_pad_to=args.action_token_pad_to,
+            definition_pad_to=args.definition_pad_to,
+            static_policy_batch=args.static_policy_batch,
         )
         reward_config = RewardConfig()
         baseline_config = BaselineConfig()

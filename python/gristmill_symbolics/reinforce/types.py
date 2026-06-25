@@ -30,6 +30,10 @@ class RolloutConfig:
     batch_size: int
     max_steps: int
     seed: int = 0
+    state_token_pad_to: int | None = None
+    action_token_pad_to: int | None = None
+    definition_pad_to: int | None = None
+    static_policy_batch: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +116,15 @@ class CheckpointData:
     recent_metrics: tuple[UpdateMetrics, ...]
 
 
+def _validate_optional_positive_int(name: str, value: int | None) -> None:
+    if value is None:
+        return
+    if type(value) is not int:
+        raise TrainingError(f"{name} must be an int or None")
+    if value <= 0:
+        raise TrainingError(f"{name} must be positive")
+
+
 def validate_rollout_config(config: RolloutConfig) -> None:
     if type(config.batch_size) is not int:
         raise TrainingError("batch_size must be an int")
@@ -123,6 +136,18 @@ def validate_rollout_config(config: RolloutConfig) -> None:
         raise TrainingError("max_steps must be positive")
     if type(config.seed) is not int:
         raise TrainingError("seed must be an int")
+    _validate_optional_positive_int("state_token_pad_to", config.state_token_pad_to)
+    _validate_optional_positive_int("action_token_pad_to", config.action_token_pad_to)
+    _validate_optional_positive_int("definition_pad_to", config.definition_pad_to)
+    if type(config.static_policy_batch) is not bool:
+        raise TrainingError("static_policy_batch must be a bool")
+    if config.static_policy_batch:
+        if config.state_token_pad_to is None:
+            raise TrainingError("static_policy_batch requires state_token_pad_to")
+        if config.action_token_pad_to is None:
+            raise TrainingError("static_policy_batch requires action_token_pad_to")
+        if config.definition_pad_to is None:
+            raise TrainingError("static_policy_batch requires definition_pad_to")
 
 
 def validate_policy_state(policy: PolicyState) -> None:
