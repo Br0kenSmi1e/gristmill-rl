@@ -9,10 +9,10 @@ import numpy as np
 from gristmill_symbolics import RewriteStateRow
 from gristmill_symbolics.policy import (
     action_choice_to_python,
-    sample_action,
-    sample_target,
-    score_action,
-    score_target,
+    batched_sample_action,
+    batched_sample_target,
+    batched_score_action_grad,
+    batched_score_target_grad,
     stack_token_trees,
     tokenize_action_space_snapshot,
     tokenize_state_snapshot,
@@ -195,17 +195,14 @@ def _collect_streamed_rollout_gradients(
             target_def_masks,
             pad_to=static_definition_pad_to,
         )
-        target_choices = jax.vmap(sample_target, in_axes=(None, 0, 0, 0, 0))(
+        target_choices = batched_sample_target(
             policy.params,
             state_tokens_batch,
             state_mask_batch,
             target_def_mask_batch,
             jnp.stack(target_keys, axis=0),
         )
-        target_logps, target_grads = jax.vmap(
-            jax.value_and_grad(score_target, argnums=0),
-            in_axes=(None, 0, 0, 0, 0),
-        )(
+        target_logps, target_grads = batched_score_target_grad(
             policy.params,
             state_tokens_batch,
             state_mask_batch,
@@ -365,7 +362,7 @@ def _collect_streamed_rollout_gradients(
                     sample: position
                     for position, sample in enumerate(non_empty_samples)
                 }
-            action_choices = jax.vmap(sample_action, in_axes=(None, 0, 0, 0, 0, 0, 0))(
+            action_choices = batched_sample_action(
                 policy.params,
                 action_state_tokens,
                 action_state_mask,
@@ -374,10 +371,7 @@ def _collect_streamed_rollout_gradients(
                 action_mask_batch,
                 stacked_action_keys,
             )
-            action_logps, action_grads = jax.vmap(
-                jax.value_and_grad(score_action, argnums=0),
-                in_axes=(None, 0, 0, 0, 0, 0, 0),
-            )(
+            action_logps, action_grads = batched_score_action_grad(
                 policy.params,
                 action_state_tokens,
                 action_state_mask,
