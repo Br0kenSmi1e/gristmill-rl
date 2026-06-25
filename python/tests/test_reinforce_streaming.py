@@ -389,12 +389,12 @@ def test_static_rollout_skips_dummy_only_action_application(monkeypatch):
         _params,
         _state_tokens,
         _state_token_mask,
-        _def_mask,
+        def_mask,
         _rng,
     ):
-        return jnp.asarray(-1, dtype=jnp.int32)
+        return jnp.full((def_mask.shape[0],), -1, dtype=jnp.int32)
 
-    monkeypatch.setattr(rollout_module, "sample_target", sample_stop)
+    monkeypatch.setattr(rollout_module, "batched_sample_target", sample_stop)
     policy = _policy()
 
     result = _collect_streamed_rollout_gradients(
@@ -423,11 +423,11 @@ def test_static_rollout_preserves_physical_target_rows_after_lower_row_stops(
         def_mask,
         _rng,
     ):
-        return jnp.where(jnp.any(def_mask), 0, -1).astype(jnp.int32)
+        return jnp.where(jnp.any(def_mask, axis=1), 0, -1).astype(jnp.int32)
 
     monkeypatch.setattr(
         rollout_module,
-        "sample_target",
+        "batched_sample_target",
         sample_first_target_when_present,
     )
     policy = _policy()
