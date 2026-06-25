@@ -1,14 +1,27 @@
 # CCSD REINFORCE GPU Profiling
 
 Use this on the RTX 4060 Ti machine after checking out the profiling branch.
-The goal is to collect evidence for issue #20 before choosing any optimization.
+The goal is to collect evidence for issue #20 before choosing the next
+optimization.
+
+This branch is for profiling the reusable batched policy jit wrappers:
+
+```text
+profile-ccsd-reinforce-jit-policy-wrappers
+```
+
+For the earlier static-shape-only comparison, use:
+
+```text
+profile-ccsd-reinforce-phase-timers
+```
 
 ## Setup
 
 ```bash
 cd /path/to/gristmill-symbolics
 git fetch origin
-git switch profile-ccsd-reinforce-phase-timers
+git switch profile-ccsd-reinforce-jit-policy-wrappers
 git rev-parse --short HEAD
 
 cd python
@@ -268,9 +281,9 @@ GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
   --max-steps 64 \
   --seed 42 \
   --static-policy-batch \
-  --state-token-pad-to 512 \
-  --action-token-pad-to 1024 \
-  --definition-pad-to 64 \
+  --state-token-pad-to 4096 \
+  --action-token-pad-to 4096 \
+  --definition-pad-to 128 \
   > "$RUN/stdout.jsonl" \
   2> "$RUN/stderr.log"
 
@@ -298,6 +311,75 @@ RUN=/tmp/ccsd-profile/batch2-steps64-static
 and change `--batch-size 1` to `--batch-size 2`. Keep the same pads unless the
 static run reports that a larger batch observes a larger token or definition
 dimension.
+
+## Jit Policy Wrapper Compile Check
+
+Use this branch to check whether the reusable batched policy jit wrappers remove
+the repeated same-shape policy compiles seen before this branch. Keep batch size,
+pads, input, and seed fixed; vary only `--updates`.
+
+```bash
+for U in 1 2 3; do
+  RUN=/tmp/ccsd-profile/batch2-steps64-static-jit-u$U
+  mkdir -p "$RUN"
+
+  nvidia-smi \
+    --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.free,power.draw \
+    --format=csv \
+    -lms 500 > "$RUN/nvidia-smi.csv" &
+  SMI_PID=$!
+
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
+  JAX_LOG_COMPILES=1 \
+  GRISTMILL_PROFILE_ROLLOUT=1 \
+  GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
+  /usr/bin/time -v uv run --no-sync python -m cProfile -o "$RUN/profile.prof" \
+    -m gristmill_symbolics.reinforce.train \
+    --input "$INPUT" \
+    --updates "$U" \
+    --batch-size 2 \
+    --max-steps 64 \
+    --seed 42 \
+    --static-policy-batch \
+    --state-token-pad-to 4096 \
+    --action-token-pad-to 4096 \
+    --definition-pad-to 128 \
+    > "$RUN/stdout.jsonl" \
+    2> "$RUN/stderr.log"
+
+  kill "$SMI_PID"
+  COMPILES=$(grep -c '^Compiling' "$RUN/stderr.log")
+  echo "updates=$U compiles=$COMPILES"
+done
+```
+
+For each run, summarize with the `Summarize Any Profile Run` script above.
+Then group compile signatures:
+
+```bash
+RUN=/tmp/ccsd-profile/batch2-steps64-static-jit-u3
+grep '^Compiling' "$RUN/stderr.log" \
+  | sed -E 's/ Argument mapping:.*//' \
+  | sort | uniq -c | sort -nr | head -80
+```
+
+Compare against the pre-jit-wrapper static profile, where the grouped logs
+showed repeated same-shape action side scans:
+
+```text
+updates=1: 128 repeated jit(scan) compiles per scan signature
+updates=2: 256 repeated jit(scan) compiles per scan signature
+updates=3: 384 repeated jit(scan) compiles per scan signature
+```
+
+Good evidence for the jit-wrapper change:
+
+- `grep -c '^Compiling'` drops materially for `updates=1`, `2`, and `3`.
+- Grouped compile signatures no longer show `128 * updates` repeated
+  `jit(scan)` compiles for the action side.
+- Final JSON metrics are comparable for fixed input, seed, batch size, max
+  steps, and pads.
+- Peak GPU memory does not increase.
 
 ## Memory Boundary And HLO Profile
 
