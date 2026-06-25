@@ -15,6 +15,10 @@ EXPECTED_POLICY_EXPORTS = (
     "score_target",
     "sample_action",
     "score_action",
+    "batched_sample_target",
+    "batched_score_target_grad",
+    "batched_sample_action",
+    "batched_score_action_grad",
 )
 
 
