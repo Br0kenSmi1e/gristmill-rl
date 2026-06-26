@@ -15,7 +15,7 @@ the rollout and policy pipeline:
 
 ```text
 tokenizer / padding / shape contract
-expression proposal wrapper
+trainable proposal policy boundary
 training rollout
 ```
 
@@ -57,20 +57,29 @@ It provides batch objects and metadata to the other subsystems. Those objects
 must make real rows, dummy rows, configured padded lengths, and observed lengths
 explicit.
 
-### Expression Proposal Wrapper
+### Trainable Proposal Policy Boundary
 
-Owns the expression-in/expression-out inference facade.
+Owns the expression-in/expression-out policy plug-in contract.
 
-This subsystem presents the current policy as a proposal model:
+This subsystem defines the stable boundary between REINFORCE training and any
+model family that can propose symbolic rewrites. The current target/action
+policy is one backend behind this boundary:
 
 ```text
 initial expression -> sampled rewrite trace -> validated symbolic apply -> final expression
 ```
 
-It is a bridge toward a later proposal-model design, not a true seq2seq model.
-Internally it may still use the current target/action policy rollout. Externally
-it should expose proposal records that include final expression, cost, rewrite
-trace, log probability, validity, and stop reason.
+The boundary is intentionally broader than the current model. A future real
+seq2seq model, a target/action policy, or another proposal generator may plug
+into training if it can sample proposals, expose replayable proposal traces,
+score those traces with differentiable log probability, and submit proposed
+rewrites to Rust validation/application.
+
+The current implementation remains a bridge toward a later proposal-model
+design, not a true seq2seq model. Internally it may still use the current
+target/action policy rollout. Externally it should expose proposal records that
+include final expression, cost, rewrite trace, log probability, validity, and
+stop reason.
 
 It must not own training loss, streamed gradient accumulation, optimizer state,
 low-level token padding mechanics, or new symbolic rewrite semantics.
@@ -93,9 +102,10 @@ It must not own token serialization details, static padding mechanics, public
 expression proposal API design, model attention internals, or Rust rewrite
 semantics.
 
-It consumes tokenizer/padding batch builders and policy batched sample/score
-APIs. It calls Rust row APIs for action-space generation, validation, and
-rewrite application.
+It consumes tokenizer/padding batch builders and the trainable proposal policy
+boundary. It calls Rust row APIs for action-space generation, validation, and
+rewrite application when the selected proposal backend requires row-level Rust
+execution.
 
 ## Ownership Matrix
 
@@ -107,9 +117,11 @@ rewrite application.
 | Observed length metadata | Tokenizer / Padding |
 | Dummy policy rows | Tokenizer / Padding |
 | Candidate and side-term shape axes | Tokenizer / Padding with policy API contract |
-| Policy target/action probability semantics | Policy API, consumed by wrapper and rollout |
-| Expression-level proposal result schema | Expression Proposal Wrapper |
-| Rewrite trace presentation | Expression Proposal Wrapper |
+| Proposal sampling and replayable scoring contract | Trainable Proposal Policy Boundary |
+| Current target/action probability semantics | Current policy backend |
+| Future seq2seq probability semantics | Future seq2seq backend |
+| Expression-level proposal result schema | Trainable Proposal Policy Boundary |
+| Rewrite trace presentation | Trainable Proposal Policy Boundary |
 | Active/stopped sample lifecycle | Training Rollout |
 | Exact-empty replay | Training Rollout |
 | REINFORCE logp and gradient accumulation | Training Rollout |
@@ -126,11 +138,20 @@ The tokenizer/padding subsystem provides immutable policy batch inputs and shape
 metadata. Callers may read masks and metadata, but must not infer semantic
 rollout state from padding values alone. Real/dummy row status must be explicit.
 
-### Policy API To Rollout And Wrapper
+### Proposal Policy Boundary To Training
 
-Policy sampling and scoring APIs own probability semantics for target and action
-choices. Rollout and wrapper code may decide when to call those APIs, but should
-not duplicate candidate, side-term, or log-probability calculations.
+The training rollout depends on a proposal policy boundary, not on one concrete
+model family. Any backend behind this boundary must provide proposal sampling,
+replayable differentiable scoring, validity and stop/failure reporting, and
+enough trace data for deterministic replay. Training may decide when to sample
+and score proposals, but must not duplicate backend-specific probability
+calculations.
+
+### Current Policy API To Proposal Boundary
+
+The current target/action policy APIs own probability semantics for target and
+action choices. The proposal boundary may wrap those APIs, but should not
+duplicate candidate, side-term, or log-probability calculations.
 
 ### Rollout To Rust
 
@@ -138,10 +159,11 @@ The training rollout may query action spaces and apply validated actions through
 Rust row APIs. It must pass exact symbolic decisions derived from policy choices
 and valid masks. Rust remains the authority for legality and mutation.
 
-### Wrapper To Rust
+### Proposal Boundary To Rust
 
-The proposal wrapper may use scalar or row Rust APIs to apply sampled rewrite
-traces. It must report invalid proposals rather than bypassing Rust validation.
+Proposal backends may use scalar or row Rust APIs to apply sampled rewrite
+traces. They must report invalid proposals rather than bypassing Rust
+validation.
 
 ### Model Internals To Callers
 
@@ -158,20 +180,26 @@ Rust rewrite environment
         |
         | snapshots, action spaces, validation, application
         v
-tokenizer / padding ----> policy API/model internals
+tokenizer / padding ----> proposal policy backends
         |                         |
-        | policy batches           | sampling/scoring
+        | policy batches           | implement
         v                         v
-training rollout          expression proposal wrapper
+training rollout <---- trainable proposal policy boundary
 ```
 
-Tokenizer/padding is shared infrastructure. Training rollout and expression
-proposal wrapper both depend on it, but tokenizer/padding must not depend on
+Tokenizer/padding is shared infrastructure. Training rollout and proposal
+policy backends may both depend on it, but tokenizer/padding must not depend on
 either of them.
 
-The expression proposal wrapper and training rollout may share small trace or
-choice conversion helpers only if those helpers are policy-level data utilities,
-not rollout-control utilities.
+The trainable proposal policy boundary is the stable plug-in surface. Training
+rollout should depend on that surface rather than on current target/action
+internals. The current target/action policy and a future real seq2seq model are
+both backend implementations if they satisfy the same sampling, replayable
+scoring, and Rust-validation contract.
+
+The proposal boundary and training rollout may share small trace or choice
+conversion helpers only if those helpers are policy-level data utilities, not
+rollout-control utilities.
 
 ## Child Specs
 
@@ -184,20 +212,22 @@ representation, and tokenizer/padding performance acceptance criteria.
 It must not define rollout lifecycle behavior or expression proposal result
 semantics.
 
-### Expression Proposal Wrapper Spec
+### Trainable Proposal Policy Boundary Spec
 
 This child spec defines the expression-level proposal API, proposal result data
-model, trace representation, validity and stop-reason vocabulary, and how the
-wrapper uses current target/action policy semantics without becoming a true
-seq2seq model.
+model, trace representation, validity and stop-reason vocabulary, replayable
+scoring contract, and backend requirements. It must describe the current
+target/action policy as one backend and reserve room for a later true seq2seq
+backend.
 
 It must not define training loss behavior or low-level padding mechanics.
 
 ### Training Rollout Refactor Spec
 
 This child spec defines how rollout semantics consume target/action batch
-objects, where scoring and gradient accumulation occur, how exact-empty replay
-and dummy rows are handled, and which metrics must remain unchanged.
+objects or proposal-policy batches, where scoring and gradient accumulation
+occur, how exact-empty replay and dummy rows are handled for the current backend,
+and which metrics must remain unchanged.
 
 It must not define token serialization, expression-level public inference API, or
 model attention backend behavior.
@@ -230,7 +260,10 @@ evidence that motivates it and the measurements that will verify it.
   accidental consequences of action token sequence length.
 - Training metrics keep their current meanings unless a child spec explicitly
   names and justifies a breaking change.
-- The expression proposal wrapper is not a true seq2seq model in this suite.
+- The trainable proposal policy boundary must allow different model backends if
+  they provide sampling, replayable scoring, validity reporting, and Rust-backed
+  symbolic validation/application.
+- The current proposal backend is not a true seq2seq model in this suite.
 - Model backend changes must preserve policy API behavior within expected
   floating-point tolerance.
 - Each implementation checkpoint must pass deterministic correctness checks
@@ -243,7 +276,7 @@ evidence that motivates it and the measurements that will verify it.
 - CLI flag names and checkpoint schema changes.
 - Test case code.
 - Attention backend selection.
-- A true seq2seq proposal model.
+- Implementing a true seq2seq proposal model.
 - Rust rewrite-kernel redesign.
 - Implementation task ordering inside a child spec.
 
