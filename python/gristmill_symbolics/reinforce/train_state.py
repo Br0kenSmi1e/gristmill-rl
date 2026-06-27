@@ -66,6 +66,20 @@ def init_train_state(
     )
 
 
+class _ConfiguredModel:
+    def __init__(self, model, model_config):
+        self._model = model
+        self._model_config = model_config
+
+    def sample_with_logp_grad(self, params, rng, row, _trainer_config):
+        return self._model.sample_with_logp_grad(
+            params,
+            rng,
+            row,
+            self._model_config,
+        )
+
+
 def _params_changed(before, after) -> bool:
     before_leaves = jax.tree_util.tree_leaves(before)
     after_leaves = jax.tree_util.tree_leaves(after)
