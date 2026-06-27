@@ -8,10 +8,10 @@ from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
     CheckpointData,
-    LossConfig,
+    CurrentTransformerModelConfig,
     OptimizerConfig,
+    ReinforceTrainerConfig,
     RewardConfig,
-    RolloutConfig,
     TrainingError,
     UpdateMetrics,
     init_train_state,
@@ -33,7 +33,7 @@ def _assert_pytrees_equal(left, right):
             assert left_leaf == right_leaf
 
 
-def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
+def test_checkpoint_round_trips_protocol_train_state_configs_and_metrics(tmp_path):
     policy_config = PolicyConfig(
         d_model=8,
         num_attention_layers=2,
@@ -47,35 +47,29 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
         b2=0.95,
         eps=1.0e-5,
     )
-    rollout_config = RolloutConfig(batch_size=2, max_steps=3, seed=17)
-    baseline_config = BaselineConfig(standardize=True, epsilon=1.0e-6)
-    loss_config = LossConfig(require_scored_terms=False)
+    model_config = CurrentTransformerModelConfig(
+        policy_config=policy_config,
+        batch_size=2,
+        max_steps=3,
+        state_token_pad_to=256,
+        action_token_pad_to=256,
+        definition_pad_to=8,
+    )
+    trainer_config = ReinforceTrainerConfig(
+        batch_size=2,
+        optimizer_config=optimizer_config,
+        reward_config=RewardConfig(),
+        baseline_config=BaselineConfig(standardize=True, epsilon=1.0e-6),
+    )
     recent_metrics = (
         UpdateMetrics(
             update_index=5,
             batch_size=2,
-            max_steps=3,
-            initial_log_flops_mean=10.0,
-            final_log_flops_mean=8.5,
-            final_log_flops_best=7.25,
             reward_mean=1.5,
             reward_std=0.25,
-            reward_stderr=0.17677669529663687,
-            advantage_mean=0.0,
-            advantage_std=1.0,
-            valid_action_count=4,
-            stop_count=1,
-            empty_action_space_count=0,
-            finished_count=1,
-            max_steps_count=1,
-            target_score_count=6,
-            action_score_count=4,
-            loss=-1.5,
             objective_loss_mean=-1.5,
-            objective_loss_stderr=0.17677669529663687,
             surrogate_loss=-0.125,
-            target_logp_mean=-0.75,
-            action_logp_mean=-1.25,
+            final_flops_best=7.25,
             params_changed=True,
         ),
     )
@@ -90,33 +84,53 @@ def test_checkpoint_round_trips_train_state_configs_and_metrics(tmp_path):
     save_checkpoint(
         path,
         state,
-        rollout_config=rollout_config,
-        reward_config=RewardConfig(),
-        baseline_config=baseline_config,
-        loss_config=loss_config,
+        model_config=model_config,
+        trainer_config=trainer_config,
         recent_metrics=recent_metrics,
     )
     loaded = load_checkpoint(path)
 
     assert isinstance(loaded, CheckpointData)
     assert loaded.train_state.update_index == state.update_index
-    assert loaded.train_state.policy.config == state.policy.config
-    assert loaded.train_state.optimizer_config == state.optimizer_config
-    _assert_pytrees_equal(loaded.train_state.policy.params, state.policy.params)
+    assert not hasattr(loaded.train_state, "policy")
+    assert not hasattr(loaded.train_state, "optimizer_config")
+    _assert_pytrees_equal(loaded.train_state.params, state.params)
     _assert_pytrees_equal(loaded.train_state.opt_state, state.opt_state)
-    assert loaded.rollout_config.batch_size == 2
-    assert loaded.rollout_config == rollout_config
-    assert loaded.reward_config == RewardConfig()
-    assert loaded.baseline_config == baseline_config
-    assert loaded.loss_config == loss_config
+    assert loaded.model_config == model_config
+    assert loaded.trainer_config == trainer_config
     assert loaded.recent_metrics == recent_metrics
     assert isinstance(loaded.recent_metrics[0], UpdateMetrics)
 
+    with path.open("rb") as handle:
+        payload = pickle.load(handle)
+    assert payload["schema_version"] == 2
+    assert "tokenizer_schema_version" not in payload
+    assert "rollout_config" not in payload
+    assert "loss_config" not in payload
+    assert "policy_config" in payload
+    assert "policy_params" in payload
+    assert "optimizer_config" in payload
+    assert "optimizer_state" in payload
+    assert set(payload["model_config"]) == {
+        "batch_size",
+        "max_steps",
+        "state_token_pad_to",
+        "action_token_pad_to",
+        "definition_pad_to",
+    }
+    assert set(payload["trainer_config"]) == {
+        "batch_size",
+        "reward_config",
+        "baseline_config",
+    }
+
 
 def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
+    policy_config = PolicyConfig(d_model=8)
+    optimizer_config = OptimizerConfig(learning_rate=1.0e-2)
     state = init_train_state(
-        PolicyConfig(d_model=8),
-        OptimizerConfig(learning_rate=1.0e-2),
+        policy_config,
+        optimizer_config,
         seed=13,
     )
     path = tmp_path / "checkpoint.pkl"
@@ -124,10 +138,18 @@ def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
     save_checkpoint(
         path,
         state,
-        rollout_config=RolloutConfig(batch_size=2, max_steps=1, seed=13),
-        reward_config=RewardConfig(),
-        baseline_config=BaselineConfig(),
-        loss_config=LossConfig(),
+        model_config=CurrentTransformerModelConfig(
+            policy_config=policy_config,
+            batch_size=2,
+            max_steps=1,
+            state_token_pad_to=128,
+            action_token_pad_to=128,
+            definition_pad_to=4,
+        ),
+        trainer_config=ReinforceTrainerConfig(
+            batch_size=2,
+            optimizer_config=optimizer_config,
+        ),
         recent_metrics=(),
     )
 
@@ -138,37 +160,19 @@ def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
     assert jnp.array_equal(loaded.train_state.root_key, state.root_key)
 
 
+def test_checkpoint_rejects_old_schema_version(tmp_path):
+    path = tmp_path / "bad.pkl"
+    with path.open("wb") as handle:
+        pickle.dump({"schema_version": 1}, handle)
+
+    with pytest.raises(TrainingError, match="checkpoint schema"):
+        load_checkpoint(path)
+
+
 def test_checkpoint_rejects_unknown_schema_version(tmp_path):
     path = tmp_path / "bad.pkl"
     with path.open("wb") as handle:
         pickle.dump({"schema_version": 999}, handle)
 
     with pytest.raises(TrainingError, match="checkpoint schema"):
-        load_checkpoint(path)
-
-
-def test_checkpoint_rejects_unknown_tokenizer_schema_version(tmp_path):
-    state = init_train_state(
-        PolicyConfig(d_model=8),
-        OptimizerConfig(learning_rate=1.0e-2),
-        seed=13,
-    )
-    path = tmp_path / "bad.pkl"
-
-    save_checkpoint(
-        path,
-        state,
-        rollout_config=RolloutConfig(batch_size=2, max_steps=1, seed=13),
-        reward_config=RewardConfig(),
-        baseline_config=BaselineConfig(),
-        loss_config=LossConfig(),
-        recent_metrics=(),
-    )
-    with path.open("rb") as handle:
-        payload = pickle.load(handle)
-    payload["tokenizer_schema_version"] = 999
-    with path.open("wb") as handle:
-        pickle.dump(payload, handle)
-
-    with pytest.raises(TrainingError, match="tokenizer schema"):
         load_checkpoint(path)

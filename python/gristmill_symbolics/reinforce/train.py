@@ -9,13 +9,13 @@ from gristmill_symbolics import RewriteState, TensorComputation
 from gristmill_symbolics.policy import PolicyConfig
 
 from .checkpoint import load_checkpoint, save_checkpoint
-from .train_state import init_train_state, train_update
+from .model import CurrentTransformerModel
+from .trainer import ReinforceTrainer
+from .train_state import advance_train_state, init_train_state
 from .types import (
-    BaselineConfig,
-    LossConfig,
+    CurrentTransformerModelConfig,
     OptimizerConfig,
-    RewardConfig,
-    RolloutConfig,
+    ReinforceTrainerConfig,
 )
 
 
@@ -38,7 +38,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-steps", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--static-policy-batch", action="store_true")
     parser.add_argument("--state-token-pad-to", type=_positive_int)
     parser.add_argument("--action-token-pad-to", type=_positive_int)
     parser.add_argument("--definition-pad-to", type=_positive_int)
@@ -49,49 +48,68 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
 
     if args.checkpoint_in is None:
-        rollout_config = RolloutConfig(
+        missing_pad_flags = [
+            flag
+            for flag, value in [
+                ("--state-token-pad-to", args.state_token_pad_to),
+                ("--action-token-pad-to", args.action_token_pad_to),
+                ("--definition-pad-to", args.definition_pad_to),
+            ]
+            if value is None
+        ]
+        if missing_pad_flags:
+            parser.error(
+                "fresh training requires static pad flags: "
+                + ", ".join(missing_pad_flags)
+            )
+
+        policy_config = PolicyConfig(d_model=8)
+        optimizer_config = OptimizerConfig(learning_rate=args.learning_rate)
+        model_config = CurrentTransformerModelConfig(
+            policy_config=policy_config,
             batch_size=args.batch_size,
             max_steps=args.max_steps,
-            seed=args.seed,
             state_token_pad_to=args.state_token_pad_to,
             action_token_pad_to=args.action_token_pad_to,
             definition_pad_to=args.definition_pad_to,
-            static_policy_batch=args.static_policy_batch,
         )
-        reward_config = RewardConfig()
-        baseline_config = BaselineConfig()
-        loss_config = LossConfig()
+        trainer_config = ReinforceTrainerConfig(
+            batch_size=args.batch_size,
+            optimizer_config=optimizer_config,
+        )
         train_state = init_train_state(
-            PolicyConfig(d_model=8),
-            OptimizerConfig(learning_rate=args.learning_rate),
+            policy_config,
+            optimizer_config,
             seed=args.seed,
         )
         recent_metrics = []
     else:
         checkpoint = load_checkpoint(args.checkpoint_in)
         train_state = checkpoint.train_state
-        rollout_config = checkpoint.rollout_config
-        reward_config = checkpoint.reward_config
-        baseline_config = checkpoint.baseline_config
-        loss_config = checkpoint.loss_config
+        model_config = checkpoint.model_config
+        trainer_config = checkpoint.trainer_config
         recent_metrics = list(checkpoint.recent_metrics)
 
+    model = CurrentTransformerModel()
+    trainer = ReinforceTrainer()
     input_path = Path(args.input)
     for _ in range(args.updates):
         comp = TensorComputation.load_json(input_path)
         initial_states = [
-            RewriteState.from_computation(comp) for _ in range(rollout_config.batch_size)
+            RewriteState.from_computation(comp)
+            for _ in range(trainer_config.batch_size)
         ]
-        train_state, metrics = train_update(
+        train_state, metrics = advance_train_state(
             train_state,
             initial_states,
-            rollout_config,
-            reward_config,
-            baseline_config,
-            loss_config,
+            model=model,
+            trainer=trainer,
+            model_config=model_config,
+            trainer_config=trainer_config,
         )
         recent_metrics.append(metrics)
         print(json.dumps(asdict(metrics), sort_keys=True))
@@ -100,10 +118,8 @@ def main(argv=None) -> int:
         save_checkpoint(
             args.checkpoint_out,
             train_state,
-            rollout_config=rollout_config,
-            reward_config=reward_config,
-            baseline_config=baseline_config,
-            loss_config=loss_config,
+            model_config=model_config,
+            trainer_config=trainer_config,
             recent_metrics=tuple(recent_metrics[-10:]),
         )
 

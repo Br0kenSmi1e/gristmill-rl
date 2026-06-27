@@ -7,6 +7,18 @@ from gristmill_symbolics.reinforce.train import main
 from tests.policy_fixtures import actionable_json
 
 
+COMPACT_METRIC_KEYS = {
+    "update_index",
+    "batch_size",
+    "reward_mean",
+    "reward_std",
+    "objective_loss_mean",
+    "surrogate_loss",
+    "final_flops_best",
+    "params_changed",
+}
+
+
 def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
     input_path = tmp_path / "actionable.json"
     checkpoint_path = tmp_path / "checkpoint.pkl"
@@ -24,6 +36,12 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
             "1",
             "--seed",
             "14",
+            "--state-token-pad-to",
+            "256",
+            "--action-token-pad-to",
+            "256",
+            "--definition-pad-to",
+            "4",
             "--checkpoint-out",
             str(checkpoint_path),
         ]
@@ -32,24 +50,24 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
     captured = capsys.readouterr()
     line = json.loads(captured.out.strip().splitlines()[-1])
     assert exit_code == 0
+    assert set(line) == COMPACT_METRIC_KEYS
     assert line["update_index"] == 0
     assert line["batch_size"] == 2
+    assert "reward_mean" in line
     assert "reward_std" in line
-    assert "reward_stderr" in line
     assert "objective_loss_mean" in line
-    assert "objective_loss_stderr" in line
     assert "surrogate_loss" in line
-    assert line["loss"] == pytest.approx(line["objective_loss_mean"])
-    assert "target_score_count" in line
-    assert "action_score_count" in line
-    assert "stop_count" in line
-    assert "empty_action_space_count" in line
+    assert "final_flops_best" in line
     assert "params_changed" in line
     assert checkpoint_path.exists()
-    assert load_checkpoint(checkpoint_path).train_state.update_index == 1
+    checkpoint = load_checkpoint(checkpoint_path)
+    assert checkpoint.train_state.update_index == 1
+    assert checkpoint.model_config.batch_size == 2
+    assert checkpoint.model_config.max_steps == 1
+    assert checkpoint.trainer_config.batch_size == 2
 
 
-def test_train_cli_wires_static_rollout_flags_to_checkpoint(tmp_path, capsys):
+def test_train_cli_wires_static_pads_to_model_config_checkpoint(tmp_path, capsys):
     input_path = tmp_path / "actionable.json"
     checkpoint_path = tmp_path / "checkpoint.pkl"
     input_path.write_text(actionable_json())
@@ -66,7 +84,6 @@ def test_train_cli_wires_static_rollout_flags_to_checkpoint(tmp_path, capsys):
             "1",
             "--seed",
             "22",
-            "--static-policy-batch",
             "--state-token-pad-to",
             "256",
             "--action-token-pad-to",
@@ -82,10 +99,9 @@ def test_train_cli_wires_static_rollout_flags_to_checkpoint(tmp_path, capsys):
     checkpoint = load_checkpoint(checkpoint_path)
     assert exit_code == 0
     assert line["batch_size"] == 1
-    assert checkpoint.rollout_config.static_policy_batch is True
-    assert checkpoint.rollout_config.state_token_pad_to == 256
-    assert checkpoint.rollout_config.action_token_pad_to == 256
-    assert checkpoint.rollout_config.definition_pad_to == 4
+    assert checkpoint.model_config.state_token_pad_to == 256
+    assert checkpoint.model_config.action_token_pad_to == 256
+    assert checkpoint.model_config.definition_pad_to == 4
 
 
 def test_train_cli_can_continue_from_checkpoint(tmp_path, capsys):
@@ -104,6 +120,12 @@ def test_train_cli_can_continue_from_checkpoint(tmp_path, capsys):
             "1",
             "--seed",
             "15",
+            "--state-token-pad-to",
+            "256",
+            "--action-token-pad-to",
+            "256",
+            "--definition-pad-to",
+            "4",
             "--checkpoint-out",
             str(checkpoint_path),
         ]
@@ -131,18 +153,16 @@ def test_train_cli_can_continue_from_checkpoint(tmp_path, capsys):
     line = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     checkpoint = load_checkpoint(checkpoint_path)
     assert exit_code == 0
+    assert set(line) == COMPACT_METRIC_KEYS
     assert line["update_index"] == 1
     assert line["batch_size"] == 2
-    assert line["max_steps"] == 1
-    assert "reward_stderr" in line
     assert "objective_loss_mean" in line
-    assert "objective_loss_stderr" in line
     assert "surrogate_loss" in line
-    assert line["loss"] == pytest.approx(line["objective_loss_mean"])
     assert checkpoint.train_state.update_index == 2
-    assert checkpoint.rollout_config.batch_size == 2
-    assert checkpoint.rollout_config.max_steps == 1
-    assert checkpoint.train_state.optimizer_config.learning_rate == 1.0e-3
+    assert checkpoint.model_config.batch_size == 2
+    assert checkpoint.model_config.max_steps == 1
+    assert checkpoint.trainer_config.batch_size == 2
+    assert checkpoint.trainer_config.optimizer_config.learning_rate == 1.0e-3
 
 
 @pytest.mark.parametrize("updates", ["0", "-1"])
@@ -159,6 +179,16 @@ def test_train_cli_rejects_non_positive_updates(tmp_path, updates):
                 updates,
             ]
         )
+
+    assert exc_info.value.code == 2
+
+
+def test_train_cli_requires_static_pads_for_fresh_run(tmp_path):
+    input_path = tmp_path / "actionable.json"
+    input_path.write_text(actionable_json())
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--input", str(input_path)])
 
     assert exc_info.value.code == 2
 

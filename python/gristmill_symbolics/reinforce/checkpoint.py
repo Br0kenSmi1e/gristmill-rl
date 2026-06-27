@@ -10,14 +10,12 @@ from gristmill_symbolics.policy import PolicyConfig
 
 from .types import (
     CHECKPOINT_SCHEMA_VERSION,
-    TOKENIZER_SCHEMA_VERSION,
     BaselineConfig,
     CheckpointData,
-    LossConfig,
+    CurrentTransformerModelConfig,
     OptimizerConfig,
-    PolicyState,
+    ReinforceTrainerConfig,
     RewardConfig,
-    RolloutConfig,
     TrainState,
     TrainingError,
     UpdateMetrics,
@@ -28,23 +26,22 @@ def save_checkpoint(
     path,
     train_state: TrainState,
     *,
-    rollout_config: RolloutConfig,
-    reward_config: RewardConfig,
-    baseline_config: BaselineConfig,
-    loss_config: LossConfig,
+    model_config: CurrentTransformerModelConfig,
+    trainer_config: ReinforceTrainerConfig,
     recent_metrics: tuple[UpdateMetrics, ...],
 ) -> None:
+    model_config_payload = asdict(model_config)
+    model_config_payload.pop("policy_config")
+    trainer_config_payload = asdict(trainer_config)
+    trainer_config_payload.pop("optimizer_config")
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
-        "tokenizer_schema_version": TOKENIZER_SCHEMA_VERSION,
-        "policy_config": asdict(train_state.policy.config),
-        "policy_params": train_state.policy.params,
-        "optimizer_config": asdict(train_state.optimizer_config),
+        "policy_config": asdict(model_config.policy_config),
+        "policy_params": train_state.params,
+        "optimizer_config": asdict(trainer_config.optimizer_config),
         "optimizer_state": train_state.opt_state,
-        "rollout_config": asdict(rollout_config),
-        "reward_config": asdict(reward_config),
-        "baseline_config": asdict(baseline_config),
-        "loss_config": asdict(loss_config),
+        "model_config": model_config_payload,
+        "trainer_config": trainer_config_payload,
         "update_index": int(train_state.update_index),
         "root_key": np.asarray(train_state.root_key, dtype=np.uint32),
         "recent_metrics": tuple(asdict(metrics) for metrics in recent_metrics),
@@ -67,32 +64,30 @@ def load_checkpoint(path) -> CheckpointData:
             f"{schema_version}; expected {CHECKPOINT_SCHEMA_VERSION}"
         )
 
-    tokenizer_schema_version = payload.get("tokenizer_schema_version")
-    if tokenizer_schema_version != TOKENIZER_SCHEMA_VERSION:
-        raise TrainingError(
-            "unsupported tokenizer schema "
-            f"{tokenizer_schema_version}; expected {TOKENIZER_SCHEMA_VERSION}"
-        )
-
     try:
         policy_config = PolicyConfig(**payload["policy_config"])
         optimizer_config = OptimizerConfig(**payload["optimizer_config"])
-        train_state = TrainState(
-            policy=PolicyState(
-                config=policy_config,
-                params=payload["policy_params"],
-            ),
+        model_config = CurrentTransformerModelConfig(
+            policy_config=policy_config,
+            **payload["model_config"],
+        )
+        trainer_config_payload = payload["trainer_config"]
+        trainer_config = ReinforceTrainerConfig(
+            batch_size=trainer_config_payload["batch_size"],
             optimizer_config=optimizer_config,
+            reward_config=RewardConfig(**trainer_config_payload["reward_config"]),
+            baseline_config=BaselineConfig(**trainer_config_payload["baseline_config"]),
+        )
+        train_state = TrainState(
+            params=payload["policy_params"],
             opt_state=payload["optimizer_state"],
             root_key=jnp.asarray(payload["root_key"], dtype=jnp.uint32),
             update_index=int(payload["update_index"]),
         )
         return CheckpointData(
             train_state=train_state,
-            rollout_config=RolloutConfig(**payload["rollout_config"]),
-            reward_config=RewardConfig(**payload["reward_config"]),
-            baseline_config=BaselineConfig(**payload["baseline_config"]),
-            loss_config=LossConfig(**payload["loss_config"]),
+            model_config=model_config,
+            trainer_config=trainer_config,
             recent_metrics=tuple(
                 UpdateMetrics(**metrics) for metrics in payload["recent_metrics"]
             ),

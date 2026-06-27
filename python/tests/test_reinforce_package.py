@@ -13,13 +13,9 @@ from gristmill_symbolics.reinforce import (
     CheckpointData,
     CurrentTransformerModelConfig,
     ExpressionModel,
-    FinalColumnMetrics,
-    LossConfig,
     OptimizerConfig,
-    PolicyState,
     ReinforceTrainerConfig,
     RewardConfig,
-    RolloutConfig,
     TrainState,
     Trainer,
     TrainingError,
@@ -32,14 +28,15 @@ from gristmill_symbolics.reinforce.types import (
     DECISION_ACTION,
     DECISION_TARGET,
     TOKENIZER_SCHEMA_VERSION,
+    LossConfig,
+    PolicyState,
+    RolloutConfig,
     validate_policy_state,
     validate_rollout_config,
 )
 
 
-def test_reinforce_package_exports_streamed_training_contracts():
-    config = PolicyConfig(d_model=8)
-    state = PolicyState(config=config, params={})
+def test_reinforce_package_exports_protocol_training_contracts():
     expected_exports = {
         "advance_train_state",
         "BaselineConfig",
@@ -49,18 +46,13 @@ def test_reinforce_package_exports_streamed_training_contracts():
         "CurrentTransformerModel",
         "CurrentTransformerModelConfig",
         "ExpressionModel",
-        "FinalColumnMetrics",
         "init_train_state",
         "load_checkpoint",
-        "LossConfig",
         "make_optimizer",
-        "make_rng_grid",
         "OptimizerConfig",
-        "PolicyState",
         "ReinforceTrainer",
         "ReinforceTrainerConfig",
         "RewardConfig",
-        "RolloutConfig",
         "save_checkpoint",
         "train_update",
         "TrainState",
@@ -71,23 +63,14 @@ def test_reinforce_package_exports_streamed_training_contracts():
         "validate_trainer_config",
     }
 
-    assert state.config is config
-    assert state.params == {}
-    assert RolloutConfig(batch_size=2, max_steps=3).seed == 0
-    assert RolloutConfig(batch_size=2, max_steps=3).state_token_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).action_token_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).definition_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).static_policy_batch is False
     assert RewardConfig().kind == "log_flops_improvement"
     assert BaselineConfig().standardize is False
-    assert LossConfig().require_scored_terms is True
     assert OptimizerConfig().learning_rate == pytest.approx(1.0e-3)
     assert issubclass(TrainingError, RuntimeError)
     assert reinforce.CheckpointData is CheckpointData
     assert reinforce.CurrentTransformerModel is ImplCurrentTransformerModel
     assert reinforce.CurrentTransformerModelConfig is CurrentTransformerModelConfig
     assert reinforce.ExpressionModel is ExpressionModel
-    assert reinforce.FinalColumnMetrics is FinalColumnMetrics
     assert reinforce.ReinforceTrainer is ImplReinforceTrainer
     assert reinforce.ReinforceTrainerConfig is ReinforceTrainerConfig
     assert reinforce.Trainer is Trainer
@@ -96,13 +79,35 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert reinforce.validate_model_config is validate_model_config
     assert reinforce.validate_trainer_config is validate_trainer_config
     assert set(reinforce.__all__) == expected_exports
+    assert "RolloutConfig" not in reinforce.__all__
+    assert "LossConfig" not in reinforce.__all__
+    assert "PolicyState" not in reinforce.__all__
+    assert "FinalColumnMetrics" not in reinforce.__all__
+    assert hasattr(reinforce, "RolloutConfig")
+    assert hasattr(reinforce, "LossConfig")
+    assert hasattr(reinforce, "PolicyState")
+    assert hasattr(reinforce, "FinalColumnMetrics")
 
 
 def test_reinforce_rng_and_schema_constants_are_stable():
     assert DECISION_TARGET == 0
     assert DECISION_ACTION == 1
-    assert CHECKPOINT_SCHEMA_VERSION == 1
+    assert CHECKPOINT_SCHEMA_VERSION == 2
     assert TOKENIZER_SCHEMA_VERSION == 1
+
+
+def test_legacy_rollout_types_remain_available_from_types_module():
+    config = PolicyConfig(d_model=8)
+    state = PolicyState(config=config, params={})
+
+    assert state.config is config
+    assert state.params == {}
+    assert RolloutConfig(batch_size=2, max_steps=3).seed == 0
+    assert RolloutConfig(batch_size=2, max_steps=3).state_token_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).action_token_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).definition_pad_to is None
+    assert RolloutConfig(batch_size=2, max_steps=3).static_policy_batch is False
+    assert LossConfig().require_scored_terms is True
 
 
 def test_rollout_config_validation_rejects_non_positive_values():

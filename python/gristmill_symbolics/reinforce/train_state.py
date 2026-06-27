@@ -10,15 +10,10 @@ import optax
 from gristmill_symbolics import RewriteState
 from gristmill_symbolics.policy import PolicyConfig, init_policy_params
 
-from .objective import compute_advantages, compute_rewards
-from .rollout import _collect_streamed_rollout_gradients
 from .types import (
-    BaselineConfig,
-    LossConfig,
+    CurrentTransformerModelConfig,
     OptimizerConfig,
-    PolicyState,
-    RewardConfig,
-    RolloutConfig,
+    ReinforceTrainerConfig,
     TrainState,
     TrainingError,
     UpdateMetrics,
@@ -52,15 +47,11 @@ def init_train_state(
     root_key = jax.random.PRNGKey(int(seed))
     # fold_in data is uint32; use the unsigned representation of -1.
     params_key = jax.random.fold_in(root_key, np.uint32(0xFFFFFFFF))
-    policy = PolicyState(
-        config=policy_config,
-        params=init_policy_params(policy_config, params_key),
-    )
+    params = init_policy_params(policy_config, params_key)
     optimizer = make_optimizer(optimizer_config)
     return TrainState(
-        policy=policy,
-        optimizer_config=optimizer_config,
-        opt_state=optimizer.init(policy.params),
+        params=params,
+        opt_state=optimizer.init(params),
         root_key=root_key,
         update_index=int(update_index),
     )
@@ -120,87 +111,68 @@ def _surrogate_loss(trajectory_logp, advantage):
     return -jnp.mean(stopped_advantage * trajectory_logp)
 
 
+def advance_train_state(
+    state: TrainState,
+    initial_states: Sequence[RewriteState],
+    *,
+    model_config: CurrentTransformerModelConfig,
+    trainer_config: ReinforceTrainerConfig,
+    model=None,
+    trainer=None,
+):
+    if model is None:
+        from .model import CurrentTransformerModel
+
+        model = CurrentTransformerModel()
+    if trainer is None:
+        from .trainer import ReinforceTrainer
+
+        trainer = ReinforceTrainer()
+
+    rng = jax.random.fold_in(state.root_key, int(state.update_index))
+    new_params, new_opt_state, trainer_metrics = trainer.update(
+        state.params,
+        state.opt_state,
+        list(initial_states),
+        _ConfiguredModel(model, model_config),
+        rng,
+        trainer_config,
+    )
+    metrics = UpdateMetrics(
+        update_index=state.update_index,
+        batch_size=trainer_config.batch_size,
+        reward_mean=float(trainer_metrics["reward_mean"]),
+        reward_std=float(trainer_metrics["reward_std"]),
+        objective_loss_mean=float(trainer_metrics["objective_loss_mean"]),
+        surrogate_loss=float(trainer_metrics["surrogate_loss"]),
+        final_flops_best=float(trainer_metrics["final_flops_best"]),
+        params_changed=bool(trainer_metrics["params_changed"]),
+    )
+    return (
+        TrainState(
+            params=new_params,
+            opt_state=new_opt_state,
+            root_key=state.root_key,
+            update_index=state.update_index + 1,
+        ),
+        metrics,
+    )
+
+
 def train_update(
     state: TrainState,
     initial_states: Sequence[RewriteState],
-    rollout_config: RolloutConfig,
-    reward_config: RewardConfig = RewardConfig(),
-    baseline_config: BaselineConfig = BaselineConfig(),
-    loss_config: LossConfig = LossConfig(),
+    *,
+    model_config: CurrentTransformerModelConfig,
+    trainer_config: ReinforceTrainerConfig,
+    model=None,
+    trainer=None,
 ):
-    # Stateful training owns rollout RNG through TrainState.root_key and
-    # update_index; RolloutConfig.seed is retained for standalone rollout and
-    # serialization compatibility.
-    streamed = _collect_streamed_rollout_gradients(
-        state.policy,
+    return advance_train_state(
+        state,
         initial_states,
-        rollout_config,
-        update_index=state.update_index,
-        root_key=state.root_key,
+        model_config=model_config,
+        trainer_config=trainer_config,
+        model=model,
+        trainer=trainer,
     )
-    reward = compute_rewards(streamed.final, reward_config)
-    advantage = compute_advantages(reward, baseline_config)
-    if (
-        loss_config.require_scored_terms
-        and streamed.target_score_count + streamed.action_score_count == 0
-    ):
-        raise TrainingError("no scored policy terms in rollout batch")
-
-    grads = _reinforce_grad_loss(streamed.trajectory_grad_logp, advantage)
-    surrogate_loss = _surrogate_loss(streamed.trajectory_logp, advantage)
-    if not bool(np.isfinite(np.asarray(surrogate_loss))):
-        raise TrainingError("loss is non-finite")
-
-    optimizer = make_optimizer(state.optimizer_config)
-    updates, opt_state = optimizer.update(grads, state.opt_state, state.policy.params)
-    new_params = optax.apply_updates(state.policy.params, updates)
-    _validate_finite_params(new_params)
-    params_changed = _params_changed(state.policy.params, new_params)
-
-    reward_mean = float(np.mean(reward))
-    reward_std = float(np.std(reward))
-    reward_stderr = reward_std / float(np.sqrt(rollout_config.batch_size))
-    objective_loss_mean = -reward_mean
-    metrics = UpdateMetrics(
-        update_index=state.update_index,
-        batch_size=rollout_config.batch_size,
-        max_steps=rollout_config.max_steps,
-        initial_log_flops_mean=float(np.mean(streamed.final.initial_log_flops)),
-        final_log_flops_mean=float(np.mean(streamed.final.final_log_flops)),
-        final_log_flops_best=float(np.min(streamed.final.final_log_flops)),
-        reward_mean=reward_mean,
-        reward_std=reward_std,
-        reward_stderr=reward_stderr,
-        advantage_mean=float(np.mean(advantage)),
-        advantage_std=float(np.std(advantage)),
-        valid_action_count=streamed.valid_action_count,
-        stop_count=streamed.stop_count,
-        empty_action_space_count=streamed.empty_action_space_count,
-        finished_count=streamed.finished_count,
-        max_steps_count=int(np.sum(streamed.final.max_steps)),
-        target_score_count=streamed.target_score_count,
-        action_score_count=streamed.action_score_count,
-        loss=objective_loss_mean,
-        objective_loss_mean=objective_loss_mean,
-        objective_loss_stderr=reward_stderr,
-        surrogate_loss=float(np.asarray(surrogate_loss)),
-        target_logp_mean=(
-            streamed.target_logp_sum / streamed.target_score_count
-            if streamed.target_score_count
-            else 0.0
-        ),
-        action_logp_mean=(
-            streamed.action_logp_sum / streamed.action_score_count
-            if streamed.action_score_count
-            else 0.0
-        ),
-        params_changed=params_changed,
-    )
-    new_state = TrainState(
-        policy=PolicyState(config=state.policy.config, params=new_params),
-        optimizer_config=state.optimizer_config,
-        opt_state=opt_state,
-        root_key=state.root_key,
-        update_index=state.update_index + 1,
-    )
-    return new_state, metrics

@@ -11,7 +11,7 @@ from gristmill_symbolics.policy import PolicyConfig
 DECISION_TARGET = 0
 DECISION_ACTION = 1
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
 TOKENIZER_SCHEMA_VERSION = 1
 
 
@@ -80,8 +80,7 @@ class ReinforceTrainerConfig:
 
 @dataclass(frozen=True)
 class TrainState:
-    policy: PolicyState
-    optimizer_config: OptimizerConfig
+    params: object
     opt_state: object
     root_key: jax.Array
     update_index: int
@@ -99,38 +98,19 @@ class FinalColumnMetrics:
 class UpdateMetrics:
     update_index: int
     batch_size: int
-    max_steps: int
-    initial_log_flops_mean: float
-    final_log_flops_mean: float
-    final_log_flops_best: float
     reward_mean: float
     reward_std: float
-    reward_stderr: float
-    advantage_mean: float
-    advantage_std: float
-    valid_action_count: int
-    stop_count: int
-    empty_action_space_count: int
-    finished_count: int
-    max_steps_count: int
-    target_score_count: int
-    action_score_count: int
-    loss: float
     objective_loss_mean: float
-    objective_loss_stderr: float
     surrogate_loss: float
-    target_logp_mean: float
-    action_logp_mean: float
+    final_flops_best: float
     params_changed: bool
 
 
 @dataclass(frozen=True)
 class CheckpointData:
     train_state: TrainState
-    rollout_config: RolloutConfig
-    reward_config: RewardConfig
-    baseline_config: BaselineConfig
-    loss_config: LossConfig
+    model_config: CurrentTransformerModelConfig
+    trainer_config: ReinforceTrainerConfig
     recent_metrics: tuple[UpdateMetrics, ...]
 
 

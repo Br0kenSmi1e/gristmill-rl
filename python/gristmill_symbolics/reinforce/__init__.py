@@ -47,12 +47,6 @@ def advance_train_state(*args, **kwargs):
     return _advance_train_state(*args, **kwargs)
 
 
-def make_rng_grid(*args, **kwargs):
-    from .rollout import make_rng_grid as _make_rng_grid
-
-    return _make_rng_grid(*args, **kwargs)
-
-
 def make_optimizer(*args, **kwargs):
     from .train_state import make_optimizer as _make_optimizer
 
@@ -76,16 +70,11 @@ __all__ = (
     "ExpressionModel",
     "init_train_state",
     "load_checkpoint",
-    "make_rng_grid",
     "make_optimizer",
-    "FinalColumnMetrics",
-    "LossConfig",
     "OptimizerConfig",
-    "PolicyState",
     "ReinforceTrainer",
     "ReinforceTrainerConfig",
     "RewardConfig",
-    "RolloutConfig",
     "save_checkpoint",
     "train_update",
     "TrainState",
