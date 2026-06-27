@@ -35,6 +35,7 @@ def _tree_allclose(left, right, *, atol=1.0e-5):
         strict=True,
     ):
         if hasattr(left_leaf, "dtype") and hasattr(right_leaf, "dtype"):
+            assert left_leaf.dtype == right_leaf.dtype
             if jnp.issubdtype(left_leaf.dtype, jnp.inexact) or jnp.issubdtype(
                 right_leaf.dtype,
                 jnp.inexact,
@@ -52,6 +53,10 @@ def _tree_allclose(left, right, *, atol=1.0e-5):
         (
             {"count": jnp.asarray(1, dtype=jnp.int32)},
             {"count": jnp.asarray(2, dtype=jnp.int32)},
+        ),
+        (
+            {"count": jnp.asarray(1, dtype=jnp.int16)},
+            {"count": jnp.asarray(1, dtype=jnp.int32)},
         ),
         ({"tag": "new"}, {"tag": "legacy"}),
     ],
