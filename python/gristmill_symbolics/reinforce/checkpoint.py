@@ -19,6 +19,7 @@ from .types import (
     TrainState,
     TrainingError,
     UpdateMetrics,
+    validate_training_configs,
 )
 
 
@@ -30,6 +31,7 @@ def save_checkpoint(
     trainer_config: ReinforceTrainerConfig,
     recent_metrics: tuple[UpdateMetrics, ...],
 ) -> None:
+    validate_training_configs(model_config, trainer_config)
     model_config_payload = asdict(model_config)
     model_config_payload.pop("policy_config")
     trainer_config_payload = asdict(trainer_config)
@@ -78,6 +80,7 @@ def load_checkpoint(path) -> CheckpointData:
             reward_config=RewardConfig(**trainer_config_payload["reward_config"]),
             baseline_config=BaselineConfig(**trainer_config_payload["baseline_config"]),
         )
+        validate_training_configs(model_config, trainer_config)
         train_state = TrainState(
             params=payload["policy_params"],
             opt_state=payload["optimizer_state"],

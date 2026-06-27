@@ -17,6 +17,7 @@ from .types import (
     TrainState,
     TrainingError,
     UpdateMetrics,
+    validate_training_configs,
 )
 
 
@@ -120,6 +121,7 @@ def advance_train_state(
     model=None,
     trainer=None,
 ):
+    validate_training_configs(model_config, trainer_config)
     if model is None:
         from .model import CurrentTransformerModel
 

@@ -150,6 +150,18 @@ def validate_trainer_config(config: ReinforceTrainerConfig) -> None:
         raise TrainingError("baseline_config must be a BaselineConfig")
 
 
+def validate_training_configs(
+    model_config: CurrentTransformerModelConfig,
+    trainer_config: ReinforceTrainerConfig,
+) -> None:
+    validate_model_config(model_config)
+    validate_trainer_config(trainer_config)
+    if model_config.batch_size != trainer_config.batch_size:
+        raise TrainingError(
+            "model_config.batch_size must match trainer_config.batch_size"
+        )
+
+
 def validate_rollout_config(config: RolloutConfig) -> None:
     if type(config.batch_size) is not int:
         raise TrainingError("batch_size must be an int")

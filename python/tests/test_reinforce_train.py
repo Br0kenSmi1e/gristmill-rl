@@ -182,6 +182,34 @@ def test_advance_train_state_folds_update_index_into_trainer_rng():
     assert metrics.params_changed is False
 
 
+def test_advance_train_state_rejects_mismatched_config_batch_sizes():
+    policy_config = PolicyConfig(d_model=8)
+    optimizer_config = OptimizerConfig(learning_rate=1.0e-2)
+    state = init_train_state(policy_config, optimizer_config, seed=31)
+    model_config = CurrentTransformerModelConfig(
+        policy_config=policy_config,
+        batch_size=2,
+        max_steps=1,
+        state_token_pad_to=128,
+        action_token_pad_to=128,
+        definition_pad_to=4,
+    )
+    trainer_config = ReinforceTrainerConfig(
+        batch_size=3,
+        optimizer_config=optimizer_config,
+    )
+
+    with pytest.raises(TrainingError, match="batch_size"):
+        advance_train_state(
+            state,
+            _mixed_initial_states(),
+            model=object(),
+            trainer=object(),
+            model_config=model_config,
+            trainer_config=trainer_config,
+        )
+
+
 def test_train_update_is_protocol_wrapper_not_streamed_rollout(monkeypatch):
     state = init_train_state(
         PolicyConfig(d_model=8),

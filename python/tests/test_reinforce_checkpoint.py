@@ -160,6 +160,63 @@ def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
     assert jnp.array_equal(loaded.train_state.root_key, state.root_key)
 
 
+def test_checkpoint_rejects_mismatched_config_batch_sizes_on_save(tmp_path):
+    policy_config = PolicyConfig(d_model=8)
+    optimizer_config = OptimizerConfig(learning_rate=1.0e-2)
+    state = init_train_state(policy_config, optimizer_config, seed=13)
+
+    with pytest.raises(TrainingError, match="batch_size"):
+        save_checkpoint(
+            tmp_path / "checkpoint.pkl",
+            state,
+            model_config=CurrentTransformerModelConfig(
+                policy_config=policy_config,
+                batch_size=2,
+                max_steps=1,
+                state_token_pad_to=128,
+                action_token_pad_to=128,
+                definition_pad_to=4,
+            ),
+            trainer_config=ReinforceTrainerConfig(
+                batch_size=3,
+                optimizer_config=optimizer_config,
+            ),
+            recent_metrics=(),
+        )
+
+
+def test_checkpoint_rejects_mismatched_config_batch_sizes_on_load(tmp_path):
+    policy_config = PolicyConfig(d_model=8)
+    optimizer_config = OptimizerConfig(learning_rate=1.0e-2)
+    state = init_train_state(policy_config, optimizer_config, seed=13)
+    path = tmp_path / "checkpoint.pkl"
+    save_checkpoint(
+        path,
+        state,
+        model_config=CurrentTransformerModelConfig(
+            policy_config=policy_config,
+            batch_size=2,
+            max_steps=1,
+            state_token_pad_to=128,
+            action_token_pad_to=128,
+            definition_pad_to=4,
+        ),
+        trainer_config=ReinforceTrainerConfig(
+            batch_size=2,
+            optimizer_config=optimizer_config,
+        ),
+        recent_metrics=(),
+    )
+    with path.open("rb") as handle:
+        payload = pickle.load(handle)
+    payload["trainer_config"]["batch_size"] = 3
+    with path.open("wb") as handle:
+        pickle.dump(payload, handle)
+
+    with pytest.raises(TrainingError, match="batch_size"):
+        load_checkpoint(path)
+
+
 def test_checkpoint_rejects_old_schema_version(tmp_path):
     path = tmp_path / "bad.pkl"
     with path.open("wb") as handle:
