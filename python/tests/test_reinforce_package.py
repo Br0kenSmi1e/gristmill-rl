@@ -5,15 +5,21 @@ from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
     CheckpointData,
+    CurrentTransformerModelConfig,
+    ExpressionModel,
     FinalColumnMetrics,
     LossConfig,
     OptimizerConfig,
     PolicyState,
+    ReinforceTrainerConfig,
     RewardConfig,
     RolloutConfig,
     TrainState,
+    Trainer,
     TrainingError,
     UpdateMetrics,
+    validate_model_config,
+    validate_trainer_config,
 )
 from gristmill_symbolics.reinforce.types import (
     CHECKPOINT_SCHEMA_VERSION,
@@ -29,10 +35,14 @@ def test_reinforce_package_exports_streamed_training_contracts():
     config = PolicyConfig(d_model=8)
     state = PolicyState(config=config, params={})
     expected_exports = {
+        "advance_train_state",
         "BaselineConfig",
         "CheckpointData",
         "compute_advantages",
         "compute_rewards",
+        "CurrentTransformerModel",
+        "CurrentTransformerModelConfig",
+        "ExpressionModel",
         "FinalColumnMetrics",
         "init_train_state",
         "load_checkpoint",
@@ -41,13 +51,18 @@ def test_reinforce_package_exports_streamed_training_contracts():
         "make_rng_grid",
         "OptimizerConfig",
         "PolicyState",
+        "ReinforceTrainer",
+        "ReinforceTrainerConfig",
         "RewardConfig",
         "RolloutConfig",
         "save_checkpoint",
         "train_update",
         "TrainState",
+        "Trainer",
         "TrainingError",
         "UpdateMetrics",
+        "validate_model_config",
+        "validate_trainer_config",
     }
 
     assert state.config is config
@@ -63,9 +78,15 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert OptimizerConfig().learning_rate == pytest.approx(1.0e-3)
     assert issubclass(TrainingError, RuntimeError)
     assert reinforce.CheckpointData is CheckpointData
+    assert reinforce.CurrentTransformerModelConfig is CurrentTransformerModelConfig
+    assert reinforce.ExpressionModel is ExpressionModel
     assert reinforce.FinalColumnMetrics is FinalColumnMetrics
+    assert reinforce.ReinforceTrainerConfig is ReinforceTrainerConfig
+    assert reinforce.Trainer is Trainer
     assert reinforce.TrainState is TrainState
     assert reinforce.UpdateMetrics is UpdateMetrics
+    assert reinforce.validate_model_config is validate_model_config
+    assert reinforce.validate_trainer_config is validate_trainer_config
     assert set(reinforce.__all__) == expected_exports
 
 

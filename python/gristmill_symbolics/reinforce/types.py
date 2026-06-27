@@ -61,6 +61,24 @@ class OptimizerConfig:
 
 
 @dataclass(frozen=True)
+class CurrentTransformerModelConfig:
+    policy_config: PolicyConfig
+    batch_size: int
+    max_steps: int
+    state_token_pad_to: int
+    action_token_pad_to: int
+    definition_pad_to: int
+
+
+@dataclass(frozen=True)
+class ReinforceTrainerConfig:
+    batch_size: int
+    optimizer_config: OptimizerConfig
+    reward_config: RewardConfig = RewardConfig()
+    baseline_config: BaselineConfig = BaselineConfig()
+
+
+@dataclass(frozen=True)
 class TrainState:
     policy: PolicyState
     optimizer_config: OptimizerConfig
@@ -123,6 +141,33 @@ def _validate_optional_positive_int(name: str, value: int | None) -> None:
         raise TrainingError(f"{name} must be an int or None")
     if value <= 0:
         raise TrainingError(f"{name} must be positive")
+
+
+def _validate_positive_int(name: str, value: int) -> None:
+    if type(value) is not int:
+        raise TrainingError(f"{name} must be an int")
+    if value <= 0:
+        raise TrainingError(f"{name} must be positive")
+
+
+def validate_model_config(config: CurrentTransformerModelConfig) -> None:
+    if not isinstance(config.policy_config, PolicyConfig):
+        raise TrainingError("policy_config must be a PolicyConfig")
+    _validate_positive_int("batch_size", config.batch_size)
+    _validate_positive_int("max_steps", config.max_steps)
+    _validate_positive_int("state_token_pad_to", config.state_token_pad_to)
+    _validate_positive_int("action_token_pad_to", config.action_token_pad_to)
+    _validate_positive_int("definition_pad_to", config.definition_pad_to)
+
+
+def validate_trainer_config(config: ReinforceTrainerConfig) -> None:
+    _validate_positive_int("batch_size", config.batch_size)
+    if not isinstance(config.optimizer_config, OptimizerConfig):
+        raise TrainingError("optimizer_config must be an OptimizerConfig")
+    if not isinstance(config.reward_config, RewardConfig):
+        raise TrainingError("reward_config must be a RewardConfig")
+    if not isinstance(config.baseline_config, BaselineConfig):
+        raise TrainingError("baseline_config must be a BaselineConfig")
 
 
 def validate_rollout_config(config: RolloutConfig) -> None:

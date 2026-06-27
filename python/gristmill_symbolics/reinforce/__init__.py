@@ -1,18 +1,23 @@
 """On-policy REINFORCE trainer over the row rewrite environment."""
 
 from .checkpoint import load_checkpoint, save_checkpoint
+from .protocols import ExpressionModel, Trainer
 from .types import (
     BaselineConfig,
     CheckpointData,
+    CurrentTransformerModelConfig,
     FinalColumnMetrics,
     LossConfig,
     OptimizerConfig,
     PolicyState,
+    ReinforceTrainerConfig,
     RewardConfig,
     RolloutConfig,
     TrainState,
     TrainingError,
     UpdateMetrics,
+    validate_model_config,
+    validate_trainer_config,
 )
 
 
@@ -34,6 +39,12 @@ def init_train_state(*args, **kwargs):
     return _init_train_state(*args, **kwargs)
 
 
+def advance_train_state(*args, **kwargs):
+    from .train_state import advance_train_state as _advance_train_state
+
+    return _advance_train_state(*args, **kwargs)
+
+
 def make_rng_grid(*args, **kwargs):
     from .rollout import make_rng_grid as _make_rng_grid
 
@@ -52,11 +63,27 @@ def train_update(*args, **kwargs):
     return _train_update(*args, **kwargs)
 
 
+def CurrentTransformerModel(*args, **kwargs):
+    from .model import CurrentTransformerModel as _CurrentTransformerModel
+
+    return _CurrentTransformerModel(*args, **kwargs)
+
+
+def ReinforceTrainer(*args, **kwargs):
+    from .trainer import ReinforceTrainer as _ReinforceTrainer
+
+    return _ReinforceTrainer(*args, **kwargs)
+
+
 __all__ = (
+    "advance_train_state",
     "BaselineConfig",
     "CheckpointData",
     "compute_advantages",
     "compute_rewards",
+    "CurrentTransformerModel",
+    "CurrentTransformerModelConfig",
+    "ExpressionModel",
     "init_train_state",
     "load_checkpoint",
     "make_rng_grid",
@@ -65,11 +92,16 @@ __all__ = (
     "LossConfig",
     "OptimizerConfig",
     "PolicyState",
+    "ReinforceTrainer",
+    "ReinforceTrainerConfig",
     "RewardConfig",
     "RolloutConfig",
     "save_checkpoint",
     "train_update",
     "TrainState",
+    "Trainer",
     "TrainingError",
     "UpdateMetrics",
+    "validate_model_config",
+    "validate_trainer_config",
 )
