@@ -1,7 +1,6 @@
 import pytest
 
 import gristmill_symbolics.reinforce as reinforce
-from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce.model import (
     CurrentTransformerModel as ImplCurrentTransformerModel,
 )
@@ -28,11 +27,6 @@ from gristmill_symbolics.reinforce.types import (
     DECISION_ACTION,
     DECISION_TARGET,
     TOKENIZER_SCHEMA_VERSION,
-    LossConfig,
-    PolicyState,
-    RolloutConfig,
-    validate_policy_state,
-    validate_rollout_config,
 )
 
 
@@ -79,14 +73,15 @@ def test_reinforce_package_exports_protocol_training_contracts():
     assert reinforce.validate_model_config is validate_model_config
     assert reinforce.validate_trainer_config is validate_trainer_config
     assert set(reinforce.__all__) == expected_exports
-    assert "RolloutConfig" not in reinforce.__all__
-    assert "LossConfig" not in reinforce.__all__
-    assert "PolicyState" not in reinforce.__all__
-    assert "FinalColumnMetrics" not in reinforce.__all__
-    assert hasattr(reinforce, "RolloutConfig")
-    assert hasattr(reinforce, "LossConfig")
-    assert hasattr(reinforce, "PolicyState")
-    assert hasattr(reinforce, "FinalColumnMetrics")
+    removed_exports = {
+        "Rollout" + "Config",
+        "Loss" + "Config",
+        "Policy" + "State",
+        "Final" + "Column" + "Metrics",
+    }
+    assert removed_exports.isdisjoint(reinforce.__all__)
+    for name in removed_exports:
+        assert not hasattr(reinforce, name)
 
 
 def test_reinforce_rng_and_schema_constants_are_stable():
@@ -94,84 +89,3 @@ def test_reinforce_rng_and_schema_constants_are_stable():
     assert DECISION_ACTION == 1
     assert CHECKPOINT_SCHEMA_VERSION == 2
     assert TOKENIZER_SCHEMA_VERSION == 1
-
-
-def test_legacy_rollout_types_remain_available_from_types_module():
-    config = PolicyConfig(d_model=8)
-    state = PolicyState(config=config, params={})
-
-    assert state.config is config
-    assert state.params == {}
-    assert RolloutConfig(batch_size=2, max_steps=3).seed == 0
-    assert RolloutConfig(batch_size=2, max_steps=3).state_token_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).action_token_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).definition_pad_to is None
-    assert RolloutConfig(batch_size=2, max_steps=3).static_policy_batch is False
-    assert LossConfig().require_scored_terms is True
-
-
-def test_rollout_config_validation_rejects_non_positive_values():
-    with pytest.raises(TrainingError, match="batch_size"):
-        validate_rollout_config(RolloutConfig(batch_size=0, max_steps=1))
-    with pytest.raises(TrainingError, match="max_steps"):
-        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=0))
-
-
-def test_rollout_config_validation_requires_integer_values():
-    with pytest.raises(TrainingError, match="batch_size"):
-        validate_rollout_config(RolloutConfig(batch_size=True, max_steps=1))
-    with pytest.raises(TrainingError, match="max_steps"):
-        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1.5))
-    with pytest.raises(TrainingError, match="seed"):
-        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1, seed=False))
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "field_name"),
-    [
-        ({"state_token_pad_to": 0}, "state_token_pad_to"),
-        ({"state_token_pad_to": True}, "state_token_pad_to"),
-        ({"action_token_pad_to": 0}, "action_token_pad_to"),
-        ({"action_token_pad_to": False}, "action_token_pad_to"),
-        ({"definition_pad_to": 0}, "definition_pad_to"),
-        ({"definition_pad_to": 1.5}, "definition_pad_to"),
-        ({"static_policy_batch": 1}, "static_policy_batch"),
-    ],
-)
-def test_rollout_config_validation_rejects_invalid_static_shape_fields(
-    kwargs, field_name
-):
-    config = RolloutConfig(batch_size=1, max_steps=1, **kwargs)
-
-    with pytest.raises(TrainingError, match=field_name):
-        validate_rollout_config(config)
-
-
-@pytest.mark.parametrize(
-    "missing_field",
-    [
-        "state_token_pad_to",
-        "action_token_pad_to",
-        "definition_pad_to",
-    ],
-)
-def test_rollout_config_validation_requires_all_static_pads(missing_field):
-    kwargs = {
-        "state_token_pad_to": 64,
-        "action_token_pad_to": 64,
-        "definition_pad_to": 4,
-        "static_policy_batch": True,
-    }
-    kwargs[missing_field] = None
-
-    with pytest.raises(TrainingError, match=missing_field):
-        validate_rollout_config(RolloutConfig(batch_size=1, max_steps=1, **kwargs))
-
-
-def test_policy_state_validation_requires_config_and_params_dict():
-    with pytest.raises(TrainingError, match="PolicyState"):
-        validate_policy_state(None)
-    with pytest.raises(TrainingError, match="PolicyConfig"):
-        validate_policy_state(PolicyState(config=object(), params={}))
-    with pytest.raises(TrainingError, match="params"):
-        validate_policy_state(PolicyState(config=PolicyConfig(), params=[]))

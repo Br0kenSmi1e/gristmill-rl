@@ -210,7 +210,7 @@ def test_advance_train_state_rejects_mismatched_config_batch_sizes():
         )
 
 
-def test_train_update_is_protocol_wrapper_not_streamed_rollout(monkeypatch):
+def test_train_update_delegates_to_trainer_protocol():
     state = init_train_state(
         PolicyConfig(d_model=8),
         OptimizerConfig(learning_rate=1.0e-2),
@@ -229,16 +229,6 @@ def test_train_update_is_protocol_wrapper_not_streamed_rollout(monkeypatch):
     trainer_config = ReinforceTrainerConfig(
         batch_size=2,
         optimizer_config=optimizer_config,
-    )
-
-    def fail_legacy_direct_rollout(*_args, **_kwargs):
-        raise AssertionError("legacy direct rollout path was called")
-
-    monkeypatch.setattr(
-        train_state_module,
-        "_collect_streamed_rollout_gradients",
-        fail_legacy_direct_rollout,
-        raising=False,
     )
 
     class RecordingTrainer:

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 import jax
-import numpy as np
 
 from gristmill_symbolics.policy import PolicyConfig
 
@@ -20,23 +19,6 @@ class TrainingError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PolicyState:
-    config: PolicyConfig
-    params: dict[str, object]
-
-
-@dataclass(frozen=True)
-class RolloutConfig:
-    batch_size: int
-    max_steps: int
-    seed: int = 0
-    state_token_pad_to: int | None = None
-    action_token_pad_to: int | None = None
-    definition_pad_to: int | None = None
-    static_policy_batch: bool = False
-
-
-@dataclass(frozen=True)
 class RewardConfig:
     kind: Literal["log_flops_improvement"] = "log_flops_improvement"
 
@@ -45,11 +27,6 @@ class RewardConfig:
 class BaselineConfig:
     standardize: bool = False
     epsilon: float = 1.0e-8
-
-
-@dataclass(frozen=True)
-class LossConfig:
-    require_scored_terms: bool = True
 
 
 @dataclass(frozen=True)
@@ -87,14 +64,6 @@ class TrainState:
 
 
 @dataclass(frozen=True)
-class FinalColumnMetrics:
-    initial_log_flops: np.ndarray
-    final_log_flops: np.ndarray
-    stopped: np.ndarray
-    max_steps: np.ndarray
-
-
-@dataclass(frozen=True)
 class UpdateMetrics:
     update_index: int
     batch_size: int
@@ -112,15 +81,6 @@ class CheckpointData:
     model_config: CurrentTransformerModelConfig
     trainer_config: ReinforceTrainerConfig
     recent_metrics: tuple[UpdateMetrics, ...]
-
-
-def _validate_optional_positive_int(name: str, value: int | None) -> None:
-    if value is None:
-        return
-    if type(value) is not int:
-        raise TrainingError(f"{name} must be an int or None")
-    if value <= 0:
-        raise TrainingError(f"{name} must be positive")
 
 
 def _validate_positive_int(name: str, value: int) -> None:
@@ -160,37 +120,3 @@ def validate_training_configs(
         raise TrainingError(
             "model_config.batch_size must match trainer_config.batch_size"
         )
-
-
-def validate_rollout_config(config: RolloutConfig) -> None:
-    if type(config.batch_size) is not int:
-        raise TrainingError("batch_size must be an int")
-    if config.batch_size <= 0:
-        raise TrainingError("batch_size must be positive")
-    if type(config.max_steps) is not int:
-        raise TrainingError("max_steps must be an int")
-    if config.max_steps <= 0:
-        raise TrainingError("max_steps must be positive")
-    if type(config.seed) is not int:
-        raise TrainingError("seed must be an int")
-    _validate_optional_positive_int("state_token_pad_to", config.state_token_pad_to)
-    _validate_optional_positive_int("action_token_pad_to", config.action_token_pad_to)
-    _validate_optional_positive_int("definition_pad_to", config.definition_pad_to)
-    if type(config.static_policy_batch) is not bool:
-        raise TrainingError("static_policy_batch must be a bool")
-    if config.static_policy_batch:
-        if config.state_token_pad_to is None:
-            raise TrainingError("static_policy_batch requires state_token_pad_to")
-        if config.action_token_pad_to is None:
-            raise TrainingError("static_policy_batch requires action_token_pad_to")
-        if config.definition_pad_to is None:
-            raise TrainingError("static_policy_batch requires definition_pad_to")
-
-
-def validate_policy_state(policy: PolicyState) -> None:
-    if not isinstance(policy, PolicyState):
-        raise TrainingError("policy must be a PolicyState")
-    if not isinstance(policy.config, PolicyConfig):
-        raise TrainingError("policy.config must be a PolicyConfig")
-    if not isinstance(policy.params, dict):
-        raise TrainingError("policy.params must be a dict pytree")

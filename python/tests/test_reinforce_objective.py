@@ -1,9 +1,10 @@
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
-    FinalColumnMetrics,
     RewardConfig,
     compute_advantages,
     compute_rewards,
@@ -11,8 +12,16 @@ from gristmill_symbolics.reinforce import (
 from gristmill_symbolics.reinforce.types import TrainingError
 
 
+@dataclass(frozen=True)
+class _RewardInput:
+    initial_log_flops: np.ndarray
+    final_log_flops: np.ndarray
+    stopped: np.ndarray
+    max_steps: np.ndarray
+
+
 def test_compute_rewards_uses_float64_log_flops_improvement():
-    final = FinalColumnMetrics(
+    final = _RewardInput(
         initial_log_flops=np.asarray([10.0, 2.0 + 1.0e-12], dtype=np.float64),
         final_log_flops=np.asarray([7.5, 2.0], dtype=np.float64),
         stopped=np.asarray([False, True], dtype=bool),
@@ -27,7 +36,7 @@ def test_compute_rewards_uses_float64_log_flops_improvement():
 
 
 def test_compute_rewards_rejects_non_1d_log_flops():
-    final = FinalColumnMetrics(
+    final = _RewardInput(
         initial_log_flops=np.asarray([[10.0, 9.0]], dtype=np.float64),
         final_log_flops=np.asarray([[7.5, 6.0]], dtype=np.float64),
         stopped=np.asarray([[False, True]], dtype=bool),
@@ -39,7 +48,7 @@ def test_compute_rewards_rejects_non_1d_log_flops():
 
 
 def test_compute_rewards_rejects_metric_shape_mismatch():
-    final = FinalColumnMetrics(
+    final = _RewardInput(
         initial_log_flops=np.asarray([10.0, 9.0], dtype=np.float64),
         final_log_flops=np.asarray([7.5, 6.0], dtype=np.float64),
         stopped=np.asarray([False], dtype=bool),

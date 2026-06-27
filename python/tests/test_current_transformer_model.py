@@ -10,8 +10,7 @@ from gristmill_symbolics.reinforce import (
     CurrentTransformerModelConfig,
     TrainingError,
 )
-from gristmill_symbolics.reinforce.rollout import _collect_streamed_rollout_gradients
-from gristmill_symbolics.reinforce.types import PolicyState, RolloutConfig
+from gristmill_symbolics.reinforce.rollout import _sample_static_model_rollout
 from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
 
@@ -49,44 +48,31 @@ def _model_config(**overrides):
     return CurrentTransformerModelConfig(**values)
 
 
-def test_current_transformer_model_matches_legacy_static_rollout():
+def test_current_transformer_model_returns_static_rollout_outputs():
     config = _model_config()
     params = init_policy_params(config.policy_config, jax.random.PRNGKey(0))
     initial_json = [actionable_json(), exact_empty_json()]
-    legacy_policy = PolicyState(config=config.policy_config, params=params)
     root_key = jax.random.PRNGKey(23)
-    update_index = 4
-    legacy = _collect_streamed_rollout_gradients(
-        legacy_policy,
-        [_state_from_json(text) for text in initial_json],
-        RolloutConfig(
-            batch_size=config.batch_size,
-            max_steps=config.max_steps,
-            seed=23,
-            static_policy_batch=True,
-            state_token_pad_to=config.state_token_pad_to,
-            action_token_pad_to=config.action_token_pad_to,
-            definition_pad_to=config.definition_pad_to,
-        ),
-        update_index=update_index,
-        root_key=root_key,
+    expected_row = RewriteStateRow.from_states(
+        [_state_from_json(text) for text in initial_json]
     )
+    expected = _sample_static_model_rollout(params, root_key, expected_row, config)
     row = RewriteStateRow.from_states([_state_from_json(text) for text in initial_json])
     model = CurrentTransformerModel()
 
     out_row, logp, grad_logp, metrics = model.sample_with_logp_grad(
         params,
-        jax.random.fold_in(root_key, update_index),
+        root_key,
         row,
         config,
     )
 
     assert out_row is row
-    assert np.allclose(out_row.log_total_flops(), legacy.final.final_log_flops)
-    assert jnp.allclose(logp, legacy.trajectory_logp, atol=1.0e-5)
-    _tree_allclose(grad_logp, legacy.trajectory_grad_logp)
+    assert np.allclose(out_row.log_total_flops(), expected.out_row.log_total_flops())
+    assert jnp.allclose(logp, expected.logp, atol=1.0e-5)
+    _tree_allclose(grad_logp, expected.grad_logp)
     assert set(metrics) == {"stopped"}
-    assert metrics["stopped"].tolist() == legacy.final.stopped.tolist()
+    assert metrics["stopped"].tolist() == expected.stopped.tolist()
 
 
 def test_current_transformer_model_rejects_batch_size_mismatch():

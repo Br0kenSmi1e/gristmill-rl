@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from .types import BaselineConfig, FinalColumnMetrics, RewardConfig, TrainingError
+from .types import BaselineConfig, RewardConfig, TrainingError
 
 
-def compute_rewards(final_metrics: FinalColumnMetrics, config: RewardConfig) -> np.ndarray:
+def compute_rewards(final_metrics: object, config: RewardConfig) -> np.ndarray:
     if config.kind != "log_flops_improvement":
         raise TrainingError(f"unsupported reward kind {config.kind!r}")
     initial = np.asarray(final_metrics.initial_log_flops, dtype=np.float64)
