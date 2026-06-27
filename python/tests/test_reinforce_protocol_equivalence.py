@@ -34,8 +34,31 @@ def _tree_allclose(left, right, *, atol=1.0e-5):
         jax.tree_util.tree_leaves(right),
         strict=True,
     ):
-        if hasattr(left_leaf, "dtype") and jnp.issubdtype(left_leaf.dtype, jnp.floating):
-            assert jnp.allclose(left_leaf, right_leaf, atol=atol, rtol=atol)
+        if hasattr(left_leaf, "dtype") and hasattr(right_leaf, "dtype"):
+            if jnp.issubdtype(left_leaf.dtype, jnp.inexact) or jnp.issubdtype(
+                right_leaf.dtype,
+                jnp.inexact,
+            ):
+                assert jnp.allclose(left_leaf, right_leaf, atol=atol, rtol=atol)
+            else:
+                assert jnp.array_equal(left_leaf, right_leaf)
+        else:
+            assert left_leaf == right_leaf
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        (
+            {"count": jnp.asarray(1, dtype=jnp.int32)},
+            {"count": jnp.asarray(2, dtype=jnp.int32)},
+        ),
+        ({"tag": "new"}, {"tag": "legacy"}),
+    ],
+)
+def test_tree_allclose_rejects_exact_leaf_mismatch(left, right):
+    with pytest.raises(AssertionError):
+        _tree_allclose(left, right)
 
 
 def test_new_trainer_model_path_matches_legacy_static_train_update():
