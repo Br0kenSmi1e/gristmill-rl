@@ -1,6 +1,7 @@
 """On-policy REINFORCE trainer over the row rewrite environment."""
 
 from .checkpoint import load_checkpoint, save_checkpoint
+from .model import CurrentTransformerModel
 from .protocols import ExpressionModel, Trainer
 from .types import (
     BaselineConfig,
@@ -61,12 +62,6 @@ def train_update(*args, **kwargs):
     from .train_state import train_update as _train_update
 
     return _train_update(*args, **kwargs)
-
-
-def CurrentTransformerModel(*args, **kwargs):
-    from .model import CurrentTransformerModel as _CurrentTransformerModel
-
-    return _CurrentTransformerModel(*args, **kwargs)
 
 
 def ReinforceTrainer(*args, **kwargs):

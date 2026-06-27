@@ -2,6 +2,9 @@ import pytest
 
 import gristmill_symbolics.reinforce as reinforce
 from gristmill_symbolics.policy import PolicyConfig
+from gristmill_symbolics.reinforce.model import (
+    CurrentTransformerModel as ImplCurrentTransformerModel,
+)
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
     CheckpointData,
@@ -78,6 +81,7 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert OptimizerConfig().learning_rate == pytest.approx(1.0e-3)
     assert issubclass(TrainingError, RuntimeError)
     assert reinforce.CheckpointData is CheckpointData
+    assert reinforce.CurrentTransformerModel is ImplCurrentTransformerModel
     assert reinforce.CurrentTransformerModelConfig is CurrentTransformerModelConfig
     assert reinforce.ExpressionModel is ExpressionModel
     assert reinforce.FinalColumnMetrics is FinalColumnMetrics

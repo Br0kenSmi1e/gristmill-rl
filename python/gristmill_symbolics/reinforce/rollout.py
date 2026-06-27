@@ -238,7 +238,6 @@ def _sample_static_model_rollout(
             space_snapshots = spaces.snapshots()
 
         non_empty_samples: list[int] = []
-        non_empty_active_positions: list[int] = []
         selected_def_indices: list[int] = []
         action_items: list[tuple[TokenTree, jax.Array]] = []
 
@@ -271,7 +270,6 @@ def _sample_static_model_rollout(
                 action_space_snapshot
             )
             non_empty_samples.append(sample)
-            non_empty_active_positions.append(active_position_by_sample[sample])
             selected_def_indices.append(target_choice)
             action_items.append((action_tokens, action_token_mask))
             exact_empty_def_masks[sample] = None
