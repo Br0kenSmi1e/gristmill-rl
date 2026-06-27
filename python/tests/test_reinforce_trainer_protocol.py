@@ -100,10 +100,10 @@ def test_reinforce_trainer_standardizes_advantage_when_configured():
     optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
     batch = _batch()
     initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
-    final = initial - np.asarray([2.0, 4.0], dtype=np.float64)
+    final = initial - np.asarray([2.0, 8.0], dtype=np.float64)
     model = FakeModel(
         final_log_flops=final,
-        logp=jnp.asarray([-1.0, -1.0], dtype=jnp.float32),
+        logp=jnp.asarray([1.0, 3.0], dtype=jnp.float32),
         grad_logp=_zero_grad_logp(params, 2),
     )
     config = ReinforceTrainerConfig(
@@ -121,8 +121,9 @@ def test_reinforce_trainer_standardizes_advantage_when_configured():
         config,
     )
 
-    assert metrics["reward_mean"] == pytest.approx(3.0)
-    assert np.isfinite(metrics["surrogate_loss"])
+    assert metrics["reward_mean"] == pytest.approx(5.0)
+    assert metrics["reward_std"] == pytest.approx(3.0)
+    assert metrics["surrogate_loss"] == pytest.approx(-1.0)
 
 
 def test_reinforce_trainer_validates_batch_length_before_model_call():
@@ -166,6 +167,11 @@ def test_reinforce_trainer_validates_batch_length_before_model_call():
             jnp.asarray([0.0, 0.0], dtype=jnp.float32),
             {"w": jnp.zeros((1, 2), dtype=jnp.float32)},
             "leading dimension",
+        ),
+        (
+            jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+            {"w": jnp.asarray(0.0, dtype=jnp.float32)},
+            "leading dimension|grad_logp",
         ),
         (
             jnp.asarray([0.0, 0.0], dtype=jnp.float32),

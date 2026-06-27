@@ -43,6 +43,11 @@ def _validate_grad_logp(params, grad_logp, batch_size: int):
     ):
         param_leaf = jnp.asarray(param_leaf)
         grad_leaf = jnp.asarray(grad_leaf)
+        if grad_leaf.ndim == 0:
+            raise TrainingError(
+                "grad_logp floating leaves must have leading dimension "
+                f"{batch_size}, got {grad_leaf.shape}"
+            )
         if grad_leaf.shape[0] != batch_size:
             raise TrainingError(
                 "grad_logp floating leaves must have leading dimension "
