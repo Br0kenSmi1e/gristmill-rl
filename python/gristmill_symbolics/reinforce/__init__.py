@@ -3,6 +3,7 @@
 from .checkpoint import load_checkpoint, save_checkpoint
 from .model import CurrentTransformerModel
 from .protocols import ExpressionModel, Trainer
+from .trainer import ReinforceTrainer
 from .types import (
     BaselineConfig,
     CheckpointData,
@@ -62,12 +63,6 @@ def train_update(*args, **kwargs):
     from .train_state import train_update as _train_update
 
     return _train_update(*args, **kwargs)
-
-
-def ReinforceTrainer(*args, **kwargs):
-    from .trainer import ReinforceTrainer as _ReinforceTrainer
-
-    return _ReinforceTrainer(*args, **kwargs)
 
 
 __all__ = (

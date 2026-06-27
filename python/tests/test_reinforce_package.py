@@ -5,6 +5,9 @@ from gristmill_symbolics.policy import PolicyConfig
 from gristmill_symbolics.reinforce.model import (
     CurrentTransformerModel as ImplCurrentTransformerModel,
 )
+from gristmill_symbolics.reinforce.trainer import (
+    ReinforceTrainer as ImplReinforceTrainer,
+)
 from gristmill_symbolics.reinforce import (
     BaselineConfig,
     CheckpointData,
@@ -85,6 +88,7 @@ def test_reinforce_package_exports_streamed_training_contracts():
     assert reinforce.CurrentTransformerModelConfig is CurrentTransformerModelConfig
     assert reinforce.ExpressionModel is ExpressionModel
     assert reinforce.FinalColumnMetrics is FinalColumnMetrics
+    assert reinforce.ReinforceTrainer is ImplReinforceTrainer
     assert reinforce.ReinforceTrainerConfig is ReinforceTrainerConfig
     assert reinforce.Trainer is Trainer
     assert reinforce.TrainState is TrainState
