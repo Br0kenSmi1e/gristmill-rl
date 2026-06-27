@@ -10,6 +10,7 @@ from gristmill_symbolics.reinforce import (
     OptimizerConfig,
     ReinforceTrainer,
     ReinforceTrainerConfig,
+    RewardConfig,
     TrainingError,
     make_optimizer,
 )
@@ -148,6 +149,153 @@ def test_reinforce_trainer_validates_batch_length_before_model_call():
             ),
         )
     assert model.calls == []
+
+
+def test_reinforce_trainer_rejects_unsupported_reward_kind():
+    params = _simple_params()
+    optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
+    batch = _batch()
+    initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
+    final = initial - np.asarray([1.0, -1.0], dtype=np.float64)
+    model = FakeModel(
+        final_log_flops=final,
+        logp=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        grad_logp=_zero_grad_logp(params, 2),
+    )
+
+    with pytest.raises(TrainingError, match="unsupported reward kind"):
+        ReinforceTrainer().update(
+            params,
+            optimizer.init(params),
+            batch,
+            model,
+            jax.random.PRNGKey(0),
+            ReinforceTrainerConfig(
+                batch_size=2,
+                optimizer_config=OptimizerConfig(learning_rate=1.0e-2),
+                reward_config=RewardConfig(kind="unsupported"),  # type: ignore[arg-type]
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "logp",
+    [
+        jnp.asarray([0, 0], dtype=jnp.int32),
+        jnp.asarray([0.0 + 0.0j, 0.0 + 0.0j], dtype=jnp.complex64),
+    ],
+)
+def test_reinforce_trainer_rejects_non_floating_logp(logp):
+    params = _simple_params()
+    optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
+    batch = _batch()
+    initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
+    final = initial - np.asarray([1.0, -1.0], dtype=np.float64)
+    model = FakeModel(
+        final_log_flops=final,
+        logp=logp,
+        grad_logp=_zero_grad_logp(params, 2),
+    )
+
+    with pytest.raises(TrainingError, match="logp"):
+        ReinforceTrainer().update(
+            params,
+            optimizer.init(params),
+            batch,
+            model,
+            jax.random.PRNGKey(0),
+            ReinforceTrainerConfig(
+                batch_size=2,
+                optimizer_config=OptimizerConfig(learning_rate=1.0e-2),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "grad_logp",
+    [
+        {"w": jnp.zeros((2, 2), dtype=jnp.int32)},
+        {"w": jnp.zeros((2, 2), dtype=jnp.complex64)},
+    ],
+)
+def test_reinforce_trainer_rejects_non_floating_grad_logp(grad_logp):
+    params = _simple_params()
+    optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
+    batch = _batch()
+    initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
+    final = initial - np.asarray([1.0, -1.0], dtype=np.float64)
+    model = FakeModel(
+        final_log_flops=final,
+        logp=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        grad_logp=grad_logp,
+    )
+
+    with pytest.raises(TrainingError, match="grad_logp"):
+        ReinforceTrainer().update(
+            params,
+            optimizer.init(params),
+            batch,
+            model,
+            jax.random.PRNGKey(0),
+            ReinforceTrainerConfig(
+                batch_size=2,
+                optimizer_config=OptimizerConfig(learning_rate=1.0e-2),
+            ),
+        )
+
+
+def test_reinforce_trainer_rejects_non_floating_params():
+    params = {"w": jnp.asarray([1, -2], dtype=jnp.int32)}
+    optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
+    batch = _batch()
+    initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
+    final = initial - np.asarray([1.0, -1.0], dtype=np.float64)
+    model = FakeModel(
+        final_log_flops=final,
+        logp=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        grad_logp={"w": jnp.zeros((2, 2), dtype=jnp.float32)},
+    )
+
+    with pytest.raises(TrainingError, match="params"):
+        ReinforceTrainer().update(
+            params,
+            optimizer.init(_simple_params()),
+            batch,
+            model,
+            jax.random.PRNGKey(0),
+            ReinforceTrainerConfig(
+                batch_size=2,
+                optimizer_config=OptimizerConfig(learning_rate=1.0e-2),
+            ),
+        )
+
+
+def test_reinforce_trainer_accepts_scalar_floating_param_leaf():
+    params = {"w": jnp.asarray(1.0, dtype=jnp.float32)}
+    optimizer = make_optimizer(OptimizerConfig(learning_rate=1.0e-2))
+    batch = _batch()
+    initial = np.asarray([state.log_total_flops() for state in batch], dtype=np.float64)
+    final = initial - np.asarray([1.0, -1.0], dtype=np.float64)
+    model = FakeModel(
+        final_log_flops=final,
+        logp=jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        grad_logp={"w": jnp.asarray([1.0, -1.0], dtype=jnp.float32)},
+    )
+
+    new_params, _new_opt_state, metrics = ReinforceTrainer().update(
+        params,
+        optimizer.init(params),
+        batch,
+        model,
+        jax.random.PRNGKey(0),
+        ReinforceTrainerConfig(
+            batch_size=2,
+            optimizer_config=OptimizerConfig(learning_rate=1.0e-2),
+        ),
+    )
+
+    assert new_params["w"].shape == ()
+    assert metrics["params_changed"] is True
 
 
 @pytest.mark.parametrize(

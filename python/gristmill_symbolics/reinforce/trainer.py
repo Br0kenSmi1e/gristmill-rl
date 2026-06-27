@@ -19,13 +19,29 @@ from .train_state import (
 )
 from .types import (
     ReinforceTrainerConfig,
+    RewardConfig,
     TrainingError,
     validate_trainer_config,
 )
 
 
+def _as_jax_array(name: str, value):
+    try:
+        return jnp.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise TrainingError(f"{name} must be array-like") from exc
+
+
+def _validate_real_floating_dtype(name: str, values) -> None:
+    if not jnp.issubdtype(values.dtype, jnp.floating):
+        raise TrainingError(
+            f"{name} must have real floating dtype, got {values.dtype}"
+        )
+
+
 def _validate_logp(logp, batch_size: int):
-    values = jnp.asarray(logp)
+    values = _as_jax_array("logp", logp)
+    _validate_real_floating_dtype("logp", values)
     if values.shape != (batch_size,):
         raise TrainingError(f"logp must have shape {(batch_size,)}, got {values.shape}")
     if not bool(jnp.all(jnp.isfinite(values))):
@@ -41,8 +57,10 @@ def _validate_grad_logp(params, grad_logp, batch_size: int):
         jax.tree_util.tree_leaves(grad_logp),
         strict=True,
     ):
-        param_leaf = jnp.asarray(param_leaf)
-        grad_leaf = jnp.asarray(grad_leaf)
+        param_leaf = _as_jax_array("params leaf", param_leaf)
+        grad_leaf = _as_jax_array("grad_logp leaf", grad_leaf)
+        _validate_real_floating_dtype("params leaves", param_leaf)
+        _validate_real_floating_dtype("grad_logp leaves", grad_leaf)
         if grad_leaf.ndim == 0:
             raise TrainingError(
                 "grad_logp floating leaves must have leading dimension "
@@ -64,6 +82,39 @@ def _validate_grad_logp(params, grad_logp, batch_size: int):
     return grad_logp
 
 
+def _as_float64_array(name: str, values):
+    try:
+        return np.asarray(values, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise TrainingError(f"{name} must be numeric") from exc
+
+
+def _compute_reward(
+    initial_log_flops,
+    final_log_flops,
+    config: RewardConfig,
+) -> np.ndarray:
+    if config.kind != "log_flops_improvement":
+        raise TrainingError(f"unsupported reward kind {config.kind!r}")
+    initial = _as_float64_array("initial_log_flops", initial_log_flops)
+    final = _as_float64_array("final_log_flops", final_log_flops)
+    if initial.ndim != 1:
+        raise TrainingError(
+            f"initial_log_flops must be 1D, got shape {initial.shape}"
+        )
+    if final.ndim != 1:
+        raise TrainingError(f"final_log_flops must be 1D, got shape {final.shape}")
+    if initial.shape != final.shape:
+        raise TrainingError(
+            "initial_log_flops and final_log_flops shapes differ: "
+            f"{initial.shape} != {final.shape}"
+        )
+    reward = initial - final
+    if not bool(np.all(np.isfinite(reward))):
+        raise TrainingError("reward contains non-finite values")
+    return reward.astype(np.float64, copy=False)
+
+
 class ReinforceTrainer:
     def update(
         self,
@@ -82,10 +133,7 @@ class ReinforceTrainer:
                 f"batch_size {config.batch_size}"
             )
 
-        initial_log_flops = np.asarray(
-            [state.log_total_flops() for state in initial_states],
-            dtype=np.float64,
-        )
+        initial_log_flops = [state.log_total_flops() for state in initial_states]
         row = RewriteStateRow.from_states(initial_states)
         out_row, logp, grad_logp, _model_metrics = model.sample_with_logp_grad(
             params,
@@ -96,15 +144,13 @@ class ReinforceTrainer:
         logp = _validate_logp(logp, config.batch_size)
         grad_logp = _validate_grad_logp(params, grad_logp, config.batch_size)
 
-        final_log_flops = np.asarray(out_row.log_total_flops(), dtype=np.float64)
-        if final_log_flops.shape != initial_log_flops.shape:
-            raise TrainingError(
-                "final_log_flops shape does not match initial_log_flops shape: "
-                f"{final_log_flops.shape} != {initial_log_flops.shape}"
-            )
-        reward = initial_log_flops - final_log_flops
-        if not bool(np.all(np.isfinite(reward))):
-            raise TrainingError("reward contains non-finite values")
+        raw_final_log_flops = out_row.log_total_flops()
+        reward = _compute_reward(
+            initial_log_flops,
+            raw_final_log_flops,
+            config.reward_config,
+        )
+        final_log_flops = _as_float64_array("final_log_flops", raw_final_log_flops)
         advantage = compute_advantages(reward, config.baseline_config)
 
         grads = _reinforce_grad_loss(grad_logp, advantage)
