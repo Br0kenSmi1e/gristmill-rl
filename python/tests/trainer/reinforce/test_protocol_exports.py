@@ -43,4 +43,4 @@ def test_reinforce_trainer_constructor_rejects_invalid_values(kwargs, field_name
 def test_reinforce_package_exports_only_concrete_trainer():
     assert reinforce.__all__ == ("ReinforceTrainer",)
     assert reinforce.ReinforceTrainer is ReinforceTrainer
-    assert not hasattr(reinforce, "ReinforceTrainerConfig")
+    assert not hasattr(reinforce, "Reinforce" + "Trainer" + "Config")

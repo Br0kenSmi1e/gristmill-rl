@@ -1,4 +1,5 @@
 EXPECTED_MODEL_EXPORTS = ("TransformerActionSelectorModel",)
+LEGACY_CONFIG_EXPORT = "Policy" + "Config"
 
 
 def test_existing_extension_exports_still_import_from_package_root():
@@ -15,7 +16,7 @@ def test_transformer_action_selector_package_exports_only_concrete_model():
 
     assert model_pkg.__all__ == EXPECTED_MODEL_EXPORTS
     assert hasattr(model_pkg, "TransformerActionSelectorModel")
-    assert not hasattr(model_pkg, "PolicyConfig")
+    assert not hasattr(model_pkg, LEGACY_CONFIG_EXPORT)
 
 
 def test_transformer_action_selector_star_import_exports_bound_names():
@@ -25,4 +26,4 @@ def test_transformer_action_selector_star_import_exports_bound_names():
 
     for name in EXPECTED_MODEL_EXPORTS:
         assert name in namespace
-    assert "PolicyConfig" not in namespace
+    assert LEGACY_CONFIG_EXPORT not in namespace

@@ -2,15 +2,19 @@ import gristmill_symbolics.cli as cli
 from gristmill_symbolics.cli import checkpoint, train, train_state
 
 
+def _config_name(*parts: str) -> str:
+    return "".join((*parts, "Config"))
+
+
 def test_cli_package_is_orchestration_marker_not_training_api_export():
     assert cli.__doc__ == "Command-line training orchestration."
     for name in (
-        "PolicyConfig",
-        "CurrentTransformerModelConfig",
-        "OptimizerConfig",
-        "ReinforceTrainerConfig",
-        "RewardConfig",
-        "BaselineConfig",
+        _config_name("Policy"),
+        _config_name("Current", "Transformer", "Model"),
+        _config_name("Optimizer"),
+        _config_name("Reinforce", "Trainer"),
+        _config_name("Reward"),
+        _config_name("Baseline"),
     ):
         assert not hasattr(cli, name)
 

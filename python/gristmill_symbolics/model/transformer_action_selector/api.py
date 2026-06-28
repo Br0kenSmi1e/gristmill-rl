@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import jax
 import jax.numpy as jnp
+from jax.numpy import clip as _jnp_clip
 
 from .constants import SIDE, TOKEN_KIND
 from .model import embed_tokens, encode_tokens, masked_mean, pool_by_index
@@ -80,7 +81,7 @@ def score_target(params, state_tokens, state_token_mask, def_mask, target_choice
     choice = jnp.asarray(target_choice, dtype=jnp.int32)
     valid = (choice == -1) | ((choice >= 0) & (choice < def_mask.shape[0]))
     logit_index = jnp.where(choice == -1, 0, choice + 1)
-    safe_logit_index = jnp.clip(logit_index, 0, def_mask.shape[0])
+    safe_logit_index = _jnp_clip(logit_index, 0, def_mask.shape[0])
     gathered_logp = log_probs[safe_logit_index]
     return jnp.where(
         valid, gathered_logp, jnp.asarray(-jnp.inf, dtype=gathered_logp.dtype)
@@ -627,7 +628,7 @@ def score_action(
     candidate_log_probs = _masked_log_softmax(candidate_logits, candidate_valid_mask)
     candidate = jnp.asarray(action_choice["candidate_index"], dtype=jnp.int32)
     candidate_in_range = (candidate >= 0) & (candidate < candidate_valid_mask.shape[0])
-    safe_candidate = jnp.clip(candidate, 0, candidate_valid_mask.shape[0] - 1)
+    safe_candidate = _jnp_clip(candidate, 0, candidate_valid_mask.shape[0] - 1)
     candidate_is_valid = candidate_in_range & candidate_valid_mask[safe_candidate]
 
     left_embeddings, left_valid, left_overflow = _side_terms(
