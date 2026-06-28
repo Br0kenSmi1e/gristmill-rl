@@ -10,22 +10,19 @@ from gristmill_symbolics import (
     TensorComputation,
     validate_decision,
 )
-from gristmill_symbolics.policy import (
-    PolicyConfig,
-    action_choice_to_python,
-    init_policy_params,
+from gristmill_symbolics._training import TrainingError
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.model.transformer_action_selector.api import (
     sample_action,
     sample_target,
     score_action,
     score_target,
-    tokenize_action_space_snapshot,
-    tokenize_state_snapshot,
 )
-from gristmill_symbolics.reinforce import (
-    CurrentTransformerModel,
-    CurrentTransformerModelConfig,
-)
-from gristmill_symbolics.reinforce.rollout import (
+from gristmill_symbolics.model.transformer_action_selector.rollout import (
+    DECISION_ACTION,
+    DECISION_TARGET,
     _dummy_action_policy_item,
     _dummy_state_policy_item,
     _make_decision_rng_grid,
@@ -33,14 +30,12 @@ from gristmill_symbolics.reinforce.rollout import (
     _sample_static_model_rollout,
     _stack_bool_masks,
 )
-from gristmill_symbolics.reinforce.train_state import (
-    _reinforce_grad_loss,
-    _surrogate_loss,
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
+    tokenize_action_space_snapshot,
+    tokenize_state_snapshot,
 )
-from gristmill_symbolics.reinforce.types import (
-    DECISION_ACTION,
-    DECISION_TARGET,
-    TrainingError,
+from gristmill_symbolics.model.transformer_action_selector.types import (
+    action_choice_to_python,
 )
 from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
@@ -58,17 +53,18 @@ def _floating_leaves(tree):
     ]
 
 
-def _model_config(**overrides):
+def _model(**overrides):
     values = {
-        "policy_config": PolicyConfig(d_model=8, stop_bias_init=-20.0),
         "batch_size": 1,
         "max_steps": 1,
         "state_token_pad_to": 512,
         "action_token_pad_to": 512,
         "definition_pad_to": 8,
+        "d_model": 8,
+        "stop_bias_init": -20.0,
     }
     values.update(overrides)
-    return CurrentTransformerModelConfig(**values)
+    return TransformerActionSelectorModel(**values)
 
 
 def _two_definition_json():
@@ -105,8 +101,8 @@ def _no_target_json():
     )
 
 
-def _params(config):
-    return init_policy_params(config.policy_config, jax.random.PRNGKey(0))
+def _params(model):
+    return model.init_params(jax.random.PRNGKey(0))
 
 
 def _tree_allclose(left, right, *, atol=1.0e-5):
@@ -146,19 +142,19 @@ def _trim_choice(choice):
     }
 
 
-def _manual_decision_keys(rng, config):
-    flat_keys = jax.random.split(rng, config.max_steps * config.batch_size * 2)
-    return flat_keys.reshape((config.max_steps, config.batch_size, 2, 2))
+def _manual_decision_keys(rng, model):
+    flat_keys = jax.random.split(rng, model.max_steps * model.batch_size * 2)
+    return flat_keys.reshape((model.max_steps, model.batch_size, 2, 2))
 
 
-def _scalar_oracle(params, rng, state, config, *, sample_index=0):
-    decision_keys = _manual_decision_keys(rng, config)
+def _scalar_oracle(params, rng, state, model, *, sample_index=0):
+    decision_keys = _manual_decision_keys(rng, model)
     logp = jnp.asarray(0.0, dtype=jnp.float32)
     grad_logp = jax.tree_util.tree_map(jnp.zeros_like, params)
     exact_empty_def_mask = None
     stopped = False
 
-    for step in range(config.max_steps):
+    for step in range(model.max_steps):
         state_tokens, state_mask = tokenize_state_snapshot(state.snapshot())
         def_mask = jnp.asarray(state.definition_mask(), dtype=jnp.bool_)
         if exact_empty_def_mask is not None and not bool(np.asarray(jnp.any(def_mask))):
@@ -222,18 +218,18 @@ def _scalar_oracle(params, rng, state, config, *, sample_index=0):
 
 
 def test_model_rollout_matches_scalar_oracle_for_sampled_score_accumulation():
-    config = _model_config(max_steps=2)
-    params = _params(config)
+    model = _model(max_steps=2)
+    params = _params(model)
     rng = jax.random.PRNGKey(17)
     row = RewriteStateRow.from_states([_state_from_json(_two_definition_json())])
     expected_logp, expected_grad, expected_stopped, expected_state = _scalar_oracle(
         params,
         rng,
         _state_from_json(_two_definition_json()),
-        config,
+        model,
     )
 
-    result = _sample_static_model_rollout(params, rng, row, config)
+    result = _sample_static_model_rollout(params, rng, row, model)
 
     assert jnp.allclose(result.logp[0], expected_logp, atol=1.0e-5)
     _tree_allclose(_tree_row(result.grad_logp, 0), expected_grad)
@@ -244,8 +240,8 @@ def test_model_rollout_matches_scalar_oracle_for_sampled_score_accumulation():
 
 
 def test_model_rollout_uses_physical_sample_rng_and_masks_inactive_rows():
-    config = _model_config(batch_size=2, max_steps=2)
-    params = _params(config)
+    model = _model(batch_size=2, max_steps=2)
+    params = _params(model)
     rng = jax.random.PRNGKey(19)
     row = RewriteStateRow.from_states(
         [_state_from_json(_no_target_json()), _state_from_json(actionable_json())]
@@ -254,18 +250,18 @@ def test_model_rollout_uses_physical_sample_rng_and_masks_inactive_rows():
         params,
         rng,
         _state_from_json(_no_target_json()),
-        config,
+        model,
         sample_index=0,
     )
     expected1_logp, expected1_grad, expected1_stopped, expected1_state = _scalar_oracle(
         params,
         rng,
         _state_from_json(actionable_json()),
-        config,
+        model,
         sample_index=1,
     )
 
-    result = _sample_static_model_rollout(params, rng, row, config)
+    result = _sample_static_model_rollout(params, rng, row, model)
 
     assert result.stopped.tolist() == [expected0_stopped, expected1_stopped]
     assert jnp.allclose(result.logp[0], expected0_logp, atol=1.0e-5)
@@ -278,18 +274,18 @@ def test_model_rollout_uses_physical_sample_rng_and_masks_inactive_rows():
 
 
 def test_model_rollout_replays_exact_empty_definition_with_scalar_oracle():
-    config = _model_config(max_steps=2)
-    params = _params(config)
+    model = _model(max_steps=2)
+    params = _params(model)
     rng = jax.random.PRNGKey(23)
     row = RewriteStateRow.from_states([_state_from_json(exact_empty_json())])
     expected_logp, expected_grad, expected_stopped, expected_state = _scalar_oracle(
         params,
         rng,
         _state_from_json(exact_empty_json()),
-        config,
+        model,
     )
 
-    result = _sample_static_model_rollout(params, rng, row, config)
+    result = _sample_static_model_rollout(params, rng, row, model)
 
     assert jnp.allclose(result.logp[0], expected_logp, atol=1.0e-5)
     _tree_allclose(_tree_row(result.grad_logp, 0), expected_grad)
@@ -300,12 +296,12 @@ def test_model_rollout_replays_exact_empty_definition_with_scalar_oracle():
 
 
 def test_decision_rng_grid_matches_manual_step_sample_decision_layout():
-    config = _model_config(batch_size=2, max_steps=3)
+    model = _model(batch_size=2, max_steps=3)
     rng = jax.random.PRNGKey(123)
 
     assert jnp.array_equal(
-        _make_decision_rng_grid(rng, config.max_steps, config.batch_size),
-        _manual_decision_keys(rng, config),
+        _make_decision_rng_grid(rng, model.max_steps, model.batch_size),
+        _manual_decision_keys(rng, model),
     )
 
 
@@ -354,8 +350,8 @@ def test_mask_tree_rows_zeroes_inactive_rows_without_changing_active_rows():
 
 
 def test_dummy_action_policy_inputs_score_finite_values():
-    config = _model_config()
-    params = _params(config)
+    model = _model()
+    params = _params(model)
     state_tokens, state_mask = _dummy_state_policy_item()
     action_tokens, action_mask = _dummy_action_policy_item()
     selected = jnp.asarray(0, dtype=jnp.int32)
@@ -384,40 +380,9 @@ def test_dummy_action_policy_inputs_score_finite_values():
         assert bool(jnp.all(jnp.isfinite(leaf)))
 
 
-def test_reinforce_grad_loss_is_negative_mean_advantage_times_trajectory_grad():
-    trajectory_grad = {
-        "leaf": jnp.asarray(
-            [
-                [1.0, 2.0],
-                [3.0, 5.0],
-                [-7.0, 11.0],
-            ],
-            dtype=jnp.float32,
-        )
-    }
-    advantage = np.asarray([2.0, -1.0, 0.5], dtype=np.float64)
-
-    grad_loss = _reinforce_grad_loss(trajectory_grad, advantage)
-
-    expected = -jnp.mean(
-        jnp.asarray(advantage, dtype=jnp.float32)[:, None] * trajectory_grad["leaf"],
-        axis=0,
-    )
-    assert jnp.allclose(grad_loss["leaf"], expected)
-
-
-def test_surrogate_loss_uses_trajectory_logp_diagnostic_only():
-    logp = jnp.asarray([-1.0, -2.0, -4.0], dtype=jnp.float32)
-    advantage = np.asarray([2.0, -1.0, 0.5], dtype=np.float64)
-
-    assert float(_surrogate_loss(logp, advantage)) == pytest.approx(
-        float(-jnp.mean(jnp.asarray(advantage, dtype=jnp.float32) * logp))
-    )
-
-
 def test_model_rollout_rejects_non_floating_param_leaves():
-    config = _model_config()
-    params = {**_params(config), "unused_integer_leaf": jnp.asarray(1, dtype=jnp.int32)}
+    model = _model()
+    params = {**_params(model), "unused_integer_leaf": jnp.asarray(1, dtype=jnp.int32)}
     row = RewriteStateRow.from_states([_state_from_json(actionable_json())])
 
     with pytest.raises(TrainingError, match="floating|streamed gradients"):
@@ -425,55 +390,54 @@ def test_model_rollout_rejects_non_floating_param_leaves():
             params,
             jax.random.PRNGKey(5),
             row,
-            config,
+            model,
         )
 
 
 def test_model_rollout_rejects_too_small_state_token_pad():
-    config = _model_config(state_token_pad_to=1)
+    model = _model(state_token_pad_to=1)
     row = RewriteStateRow.from_states([_state_from_json(actionable_json())])
 
     with pytest.raises(
         TrainingError,
         match="state token length .* exceeds state_token_pad_to 1",
     ):
-        _sample_static_model_rollout(_params(config), jax.random.PRNGKey(5), row, config)
+        _sample_static_model_rollout(_params(model), jax.random.PRNGKey(5), row, model)
 
 
 def test_model_rollout_rejects_too_small_definition_pad():
-    config = _model_config(definition_pad_to=1)
+    model = _model(definition_pad_to=1)
     row = RewriteStateRow.from_states([_state_from_json(_two_definition_json())])
 
     with pytest.raises(
         TrainingError,
         match="definition mask length 2 exceeds definition_pad_to 1",
     ):
-        _sample_static_model_rollout(_params(config), jax.random.PRNGKey(5), row, config)
+        _sample_static_model_rollout(_params(model), jax.random.PRNGKey(5), row, model)
 
 
 def test_model_rollout_rejects_too_small_action_token_pad():
-    config = _model_config(action_token_pad_to=1)
+    model = _model(action_token_pad_to=1)
     row = RewriteStateRow.from_states([_state_from_json(actionable_json())])
 
     with pytest.raises(
         TrainingError,
         match="action token length .* exceeds action_token_pad_to 1",
     ):
-        _sample_static_model_rollout(_params(config), jax.random.PRNGKey(5), row, config)
+        _sample_static_model_rollout(_params(model), jax.random.PRNGKey(5), row, model)
 
 
-def test_current_model_returns_finite_batched_rollout_tensors():
-    config = _model_config(batch_size=2, max_steps=2)
-    params = _params(config)
+def test_transformer_action_selector_model_returns_finite_batched_rollout_tensors():
+    model = _model(batch_size=2, max_steps=2)
+    params = _params(model)
     row = RewriteStateRow.from_states(
         [_state_from_json(actionable_json()), _state_from_json(exact_empty_json())]
     )
 
-    out_row, logp, grad_logp, metrics = CurrentTransformerModel().sample_with_logp_grad(
+    out_row, logp, grad_logp, metrics = model.sample_with_logp_grad(
         params,
         jax.random.PRNGKey(8),
         row,
-        config,
     )
 
     assert out_row is row
