@@ -7,25 +7,23 @@ import jax.numpy as jnp
 import numpy as np
 
 from gristmill_symbolics import RewriteStateRow
-from gristmill_symbolics.policy import (
-    action_choice_to_python,
+from gristmill_symbolics._training import TrainingError
+
+from .batched import (
     batched_sample_action,
     batched_sample_target,
     batched_score_action_grad,
     batched_score_target_grad,
-    stack_token_trees,
+)
+from .tokenize import (
     tokenize_action_space_snapshot,
     tokenize_state_snapshot,
 )
-from gristmill_symbolics.policy.types import TokenTree
+from .tree import stack_token_trees
+from .types import TokenTree, action_choice_to_python
 
-from .types import (
-    DECISION_ACTION,
-    DECISION_TARGET,
-    CurrentTransformerModelConfig,
-    TrainingError,
-    validate_model_config,
-)
+DECISION_TARGET = 0
+DECISION_ACTION = 1
 
 
 @dataclass(frozen=True)
@@ -93,31 +91,30 @@ def _sample_static_model_rollout(
     params,
     rng,
     row: RewriteStateRow,
-    config: CurrentTransformerModelConfig,
+    model,
 ) -> _StaticModelRolloutResult:
-    validate_model_config(config)
-    _validate_streamed_gradient_param_dtypes(params)
+    _validate_gradient_param_dtypes(params)
 
-    if int(row.len()) != config.batch_size:
+    if int(row.len()) != model.batch_size:
         raise TrainingError(
-            f"row batch size {row.len()} differs from batch_size {config.batch_size}"
+            f"row batch size {row.len()} differs from batch_size {model.batch_size}"
         )
 
     rng_grid = _make_decision_rng_grid(
         rng,
-        max_steps=config.max_steps,
-        batch_size=config.batch_size,
+        max_steps=model.max_steps,
+        batch_size=model.batch_size,
     )
-    active = [True] * config.batch_size
-    stopped = [False] * config.batch_size
-    exact_empty_def_masks: list[jax.Array | None] = [None] * config.batch_size
-    trajectory_logp = jnp.zeros((config.batch_size,), dtype=jnp.float32)
-    trajectory_grad_logp = _zero_trajectory_grad(params, config.batch_size)
-    static_state_pad_to = config.state_token_pad_to
-    static_definition_pad_to = config.definition_pad_to
-    static_action_pad_to = config.action_token_pad_to
+    active = [True] * model.batch_size
+    stopped = [False] * model.batch_size
+    exact_empty_def_masks: list[jax.Array | None] = [None] * model.batch_size
+    trajectory_logp = jnp.zeros((model.batch_size,), dtype=jnp.float32)
+    trajectory_grad_logp = _zero_trajectory_grad(params, model.batch_size)
+    static_state_pad_to = model.state_token_pad_to
+    static_definition_pad_to = model.definition_pad_to
+    static_action_pad_to = model.action_token_pad_to
 
-    for step in range(config.max_steps):
+    for step in range(model.max_steps):
         active_indices = [sample for sample, is_active in enumerate(active) if is_active]
         if not active_indices:
             continue
@@ -128,7 +125,7 @@ def _sample_static_model_rollout(
         target_def_masks: list[jax.Array] = []
         target_keys: list[jax.Array] = []
         replay_exact_empty_samples: set[int] = set()
-        target_policy_samples = list(range(config.batch_size))
+        target_policy_samples = list(range(model.batch_size))
 
         for sample in target_policy_samples:
             if not active[sample]:
@@ -185,7 +182,7 @@ def _sample_static_model_rollout(
             trajectory_grad_logp, target_scatter_samples, target_grads
         )
 
-        target_choice_list = [-1] * config.batch_size
+        target_choice_list = [-1] * model.batch_size
         query_active = active.copy()
         active_position_by_sample = {
             sample: position for position, sample in enumerate(target_policy_samples)
@@ -254,7 +251,7 @@ def _sample_static_model_rollout(
             sample: position for position, sample in enumerate(non_empty_samples)
         }
         target_position_by_sample = active_position_by_sample
-        action_policy_samples = list(range(config.batch_size))
+        action_policy_samples = list(range(model.batch_size))
         action_state_items: list[tuple[TokenTree, jax.Array]] = []
         action_policy_items: list[tuple[TokenTree, jax.Array]] = []
         selected_def_policy_indices: list[int] = []
@@ -294,7 +291,7 @@ def _sample_static_model_rollout(
         selected = jnp.asarray(selected_def_policy_indices, dtype=jnp.int32)
         stacked_action_keys = jnp.stack(action_keys_for_policy, axis=0)
         action_position_by_sample = {
-            sample: sample for sample in range(config.batch_size)
+            sample: sample for sample in range(model.batch_size)
         }
         action_choices = batched_sample_action(
             params,
@@ -331,8 +328,8 @@ def _sample_static_model_rollout(
         if non_empty_samples:
             action_choices_for_row: list[dict[str, object] | None] = [
                 None
-            ] * config.batch_size
-            action_score_mask = [False] * config.batch_size
+            ] * model.batch_size
+            action_score_mask = [False] * model.batch_size
             for sample in non_empty_samples:
                 action_choices_for_row[sample] = action_choice_to_python(
                     _slice_tree(action_choices, action_position_by_sample[sample])
@@ -357,17 +354,17 @@ def _sample_static_model_rollout(
     )
 
 
-def _validate_streamed_gradient_param_dtypes(params) -> None:
+def _validate_gradient_param_dtypes(params) -> None:
     for leaf in jax.tree_util.tree_leaves(params):
         try:
             dtype = jnp.asarray(leaf).dtype
         except (TypeError, ValueError) as exc:
             raise TrainingError(
-                "policy params must contain only floating arrays for streamed gradients"
+                "model params must contain only floating arrays for log-prob gradients"
             ) from exc
         if not jnp.issubdtype(dtype, jnp.floating):
             raise TrainingError(
-                "policy params must contain only floating arrays for streamed gradients"
+                "model params must contain only floating arrays for log-prob gradients"
             )
 
 

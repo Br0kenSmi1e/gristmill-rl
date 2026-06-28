@@ -12,7 +12,7 @@ ActionChoiceTree: TypeAlias = dict[str, jax.Array]
 
 
 @dataclass(frozen=True)
-class PolicyConfig:
+class _PolicySettings:
     d_model: int = 32
     num_attention_layers: int = 1
     id_vocab_size: int = 128

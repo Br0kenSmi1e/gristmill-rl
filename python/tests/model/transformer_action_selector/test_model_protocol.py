@@ -1,4 +1,5 @@
 import inspect
+import importlib
 
 import jax
 import jax.numpy as jnp
@@ -50,6 +51,37 @@ def test_transformer_action_selector_model_protocol_is_config_free():
         "rng",
         "row",
     ]
+
+
+def test_transformer_action_selector_constructor_kwargs_round_trip():
+    model = _model(init_scale=0.03, stop_bias_init=-7.0)
+
+    kwargs = model.constructor_kwargs()
+    restored = TransformerActionSelectorModel(**kwargs)
+
+    assert restored.constructor_kwargs() == kwargs
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"init_scale": float("nan")},
+        {"stop_bias_init": None},
+        {"init_scale": True},
+        {"init_scale": np.bool_(True)},
+    ],
+)
+def test_transformer_action_selector_model_rejects_invalid_float_settings(overrides):
+    with pytest.raises(TrainingError, match="must be a finite float"):
+        _model(**overrides)
+
+
+def test_transformer_action_selector_model_module_does_not_export_old_param_helper():
+    module = importlib.import_module(
+        "gristmill_symbolics.model.transformer_action_selector.model"
+    )
+
+    assert not hasattr(module, "init_policy_params")
 
 
 def test_transformer_action_selector_model_initializes_params_and_samples():
