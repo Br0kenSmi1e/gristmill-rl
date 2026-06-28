@@ -7,6 +7,7 @@ import pytest
 
 from gristmill_symbolics import RewriteState, RewriteStateRow, TensorComputation
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
+from gristmill_symbolics.trainer.reinforce.objective import compute_rewards
 from gristmill_symbolics._training import TrainingError
 from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
@@ -72,6 +73,39 @@ def test_reinforce_trainer_protocol_is_config_free():
     ]
 
 
+def test_reinforce_trainer_constructor_kwargs_round_trip():
+    trainer = ReinforceTrainer(
+        batch_size=2,
+        learning_rate=2.0e-3,
+        b1=0.8,
+        b2=0.99,
+        eps=1.0e-7,
+        reward_kind="log_flops_improvement",
+        standardize_baseline=True,
+        baseline_epsilon=1.0e-6,
+    )
+
+    round_tripped = ReinforceTrainer(**trainer.constructor_kwargs())
+
+    assert round_tripped.constructor_kwargs() == trainer.constructor_kwargs()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"learning_rate": float("nan")},
+        {"learning_rate": None},
+        {"learning_rate": np.bool_(True)},
+        {"reward_kind": "unsupported"},
+        {"standardize_baseline": "yes"},
+        {"baseline_epsilon": 0.0},
+    ],
+)
+def test_reinforce_trainer_constructor_rejects_invalid_values(kwargs):
+    with pytest.raises(TrainingError):
+        ReinforceTrainer(batch_size=2, **kwargs)
+
+
 def test_reinforce_trainer_calls_model_without_config_and_updates():
     params = _simple_params()
     trainer = ReinforceTrainer(batch_size=2, learning_rate=1.0e-2)
@@ -125,3 +159,17 @@ def test_reinforce_trainer_validates_batch_length_before_model_call():
             jax.random.PRNGKey(0),
         )
     assert model.calls == []
+
+
+def test_reinforce_reward_rejects_empty_metric_batch():
+    final_metrics = type(
+        "FinalMetrics",
+        (),
+        {
+            "initial_log_flops": np.asarray([], dtype=np.float64),
+            "final_log_flops": np.asarray([], dtype=np.float64),
+        },
+    )()
+
+    with pytest.raises(TrainingError, match="reward must contain at least one sample"):
+        compute_rewards(final_metrics, reward_kind="log_flops_improvement")
