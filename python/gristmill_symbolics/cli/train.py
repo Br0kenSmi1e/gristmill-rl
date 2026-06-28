@@ -6,17 +6,13 @@ import json
 from pathlib import Path
 
 from gristmill_symbolics import RewriteState, TensorComputation
-from gristmill_symbolics.policy import PolicyConfig
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
 
 from .checkpoint import load_checkpoint, save_checkpoint
-from .model import CurrentTransformerModel
-from .trainer import ReinforceTrainer
 from .train_state import advance_train_state, init_train_state
-from .types import (
-    CurrentTransformerModelConfig,
-    OptimizerConfig,
-    ReinforceTrainerConfig,
-)
 
 
 def _positive_int(value: str) -> int:
@@ -67,49 +63,43 @@ def main(argv=None) -> int:
                 + ", ".join(missing_pad_flags)
             )
 
-        policy_config = PolicyConfig(d_model=8)
-        optimizer_config = OptimizerConfig(learning_rate=args.learning_rate)
-        model_config = CurrentTransformerModelConfig(
-            policy_config=policy_config,
+        model = TransformerActionSelectorModel(
             batch_size=args.batch_size,
             max_steps=args.max_steps,
             state_token_pad_to=args.state_token_pad_to,
             action_token_pad_to=args.action_token_pad_to,
             definition_pad_to=args.definition_pad_to,
+            d_model=8,
         )
-        trainer_config = ReinforceTrainerConfig(
+        trainer = ReinforceTrainer(
             batch_size=args.batch_size,
-            optimizer_config=optimizer_config,
+            learning_rate=args.learning_rate,
         )
         train_state = init_train_state(
-            policy_config,
-            optimizer_config,
+            model,
+            trainer,
             seed=args.seed,
         )
         recent_metrics = []
     else:
         checkpoint = load_checkpoint(args.checkpoint_in)
         train_state = checkpoint.train_state
-        model_config = checkpoint.model_config
-        trainer_config = checkpoint.trainer_config
+        model = checkpoint.model
+        trainer = checkpoint.trainer
         recent_metrics = list(checkpoint.recent_metrics)
 
-    model = CurrentTransformerModel()
-    trainer = ReinforceTrainer()
     input_path = Path(args.input)
     for _ in range(args.updates):
         comp = TensorComputation.load_json(input_path)
         initial_states = [
             RewriteState.from_computation(comp)
-            for _ in range(trainer_config.batch_size)
+            for _ in range(trainer.batch_size)
         ]
         train_state, metrics = advance_train_state(
             train_state,
             initial_states,
             model=model,
             trainer=trainer,
-            model_config=model_config,
-            trainer_config=trainer_config,
         )
         recent_metrics.append(metrics)
         print(json.dumps(asdict(metrics), sort_keys=True))
@@ -118,8 +108,8 @@ def main(argv=None) -> int:
         save_checkpoint(
             args.checkpoint_out,
             train_state,
-            model_config=model_config,
-            trainer_config=trainer_config,
+            model=model,
+            trainer=trainer,
             recent_metrics=tuple(recent_metrics[-10:]),
         )
 
