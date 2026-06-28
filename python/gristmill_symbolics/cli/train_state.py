@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 from gristmill_symbolics._training import TrainingError
@@ -48,27 +47,6 @@ def init_train_state(
         root_key=root_key,
         update_index=int(update_index),
     )
-
-
-def _reinforce_grad_loss(trajectory_grad_logp, advantage):
-    stopped_advantage = jax.lax.stop_gradient(
-        jnp.asarray(advantage, dtype=jnp.float32)
-    )
-
-    def reduce_leaf(grad_leaf):
-        scale = stopped_advantage.reshape(
-            (stopped_advantage.shape[0],) + (1,) * (grad_leaf.ndim - 1)
-        )
-        return -jnp.mean(scale * grad_leaf, axis=0)
-
-    return jax.tree_util.tree_map(reduce_leaf, trajectory_grad_logp)
-
-
-def _surrogate_loss(trajectory_logp, advantage):
-    stopped_advantage = jax.lax.stop_gradient(
-        jnp.asarray(advantage, dtype=jnp.float32)
-    )
-    return -jnp.mean(stopped_advantage * trajectory_logp)
 
 
 def advance_train_state(

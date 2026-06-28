@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from gristmill_symbolics import RewriteState, TensorComputation
+import gristmill_symbolics.cli.train_state as train_state_module
 from gristmill_symbolics.cli.train_state import (
     advance_train_state,
     init_train_state,
@@ -94,3 +95,8 @@ def test_advance_train_state_calls_trainer_directly_without_adapter_or_config():
     assert new_state.update_index == 8
     assert metrics.update_index == 7
     assert metrics.params_changed is False
+
+
+def test_train_state_does_not_own_trainer_loss_math():
+    assert not hasattr(train_state_module, "_reinforce_grad_loss")
+    assert not hasattr(train_state_module, "_surrogate_loss")
