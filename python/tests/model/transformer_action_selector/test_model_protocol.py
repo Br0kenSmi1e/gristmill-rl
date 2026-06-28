@@ -76,6 +76,24 @@ def test_transformer_action_selector_model_rejects_invalid_float_settings(overri
         _model(**overrides)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "field_name"),
+    [
+        ({"batch_size": 0}, "batch_size"),
+        ({"max_steps": 0}, "max_steps"),
+        ({"state_token_pad_to": None}, "state_token_pad_to"),
+        ({"action_token_pad_to": 0}, "action_token_pad_to"),
+        ({"definition_pad_to": True}, "definition_pad_to"),
+    ],
+)
+def test_transformer_action_selector_model_rejects_invalid_static_shapes(
+    overrides,
+    field_name,
+):
+    with pytest.raises(TrainingError, match=field_name):
+        _model(**overrides)
+
+
 def test_transformer_action_selector_model_module_does_not_export_old_param_helper():
     module = importlib.import_module(
         "gristmill_symbolics.model.transformer_action_selector.model"

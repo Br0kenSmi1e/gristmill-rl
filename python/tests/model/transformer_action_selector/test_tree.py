@@ -1,18 +1,24 @@
 import jax.numpy as jnp
 import pytest
 
-from gristmill_symbolics.policy import (
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.model.transformer_action_selector.constants import (
     ACTION_TOKEN_FIELDS,
     SENTINEL,
     STATE_TOKEN_FIELDS,
-    PolicyConfig,
-    action_choice_to_python,
-    make_action_choice,
+    TOKEN_KIND,
+)
+from gristmill_symbolics.model.transformer_action_selector.tree import (
+    make_token_tree,
     pad_token_tree,
     stack_token_trees,
 )
-from gristmill_symbolics.policy.constants import TOKEN_KIND
-from gristmill_symbolics.policy.tree import make_token_tree
+from gristmill_symbolics.model.transformer_action_selector.types import (
+    action_choice_to_python,
+    make_action_choice,
+)
 
 
 def test_state_and_action_field_sets_are_concrete_columnar_records():
@@ -231,13 +237,20 @@ def test_action_choice_rejects_non_scalar_candidate_index():
         )
 
 
-def test_policy_config_defaults_match_phase_2_small_model():
-    config = PolicyConfig()
+def test_model_constructor_defaults_match_phase_2_small_model():
+    model = TransformerActionSelectorModel(
+        batch_size=1,
+        max_steps=1,
+        state_token_pad_to=512,
+        action_token_pad_to=512,
+        definition_pad_to=8,
+    )
+    config = model.constructor_kwargs()
 
-    assert config.d_model == 32
-    assert config.num_attention_layers == 1
+    assert config["d_model"] == 32
+    assert config["num_attention_layers"] == 1
     for attr in ("max_" + "candidates", "max_" + "side_terms"):
-        assert not hasattr(config, attr)
-    assert config.stop_bias_init == -20.0
-    assert config.id_vocab_size == 128
-    assert config.init_scale == 0.02
+        assert attr not in config
+    assert config["stop_bias_init"] == -20.0
+    assert config["id_vocab_size"] == 128
+    assert config["init_scale"] == 0.02

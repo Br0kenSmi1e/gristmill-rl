@@ -2,18 +2,29 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from gristmill_symbolics.policy import (
-    PolicyConfig,
-    init_policy_params,
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.model.transformer_action_selector.api import (
     sample_target,
     score_target,
+)
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
     tokenize_state_snapshot,
 )
 from tests.policy_fixtures import actionable_state_snapshot
 
 
 def _params():
-    return init_policy_params(PolicyConfig(d_model=16), jax.random.PRNGKey(0))
+    model = TransformerActionSelectorModel(
+        batch_size=1,
+        max_steps=1,
+        state_token_pad_to=512,
+        action_token_pad_to=512,
+        definition_pad_to=8,
+        d_model=16,
+    )
+    return model.init_params(jax.random.PRNGKey(0))
 
 
 def _state():

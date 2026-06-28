@@ -1,15 +1,35 @@
 import jax
 import jax.numpy as jnp
 
-from gristmill_symbolics.policy import PolicyConfig, init_policy_params, tokenize_state_snapshot
-from gristmill_symbolics.policy.constants import TOKEN_KIND
-from gristmill_symbolics.policy.model import embed_tokens, encode_tokens, pool_by_index
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.model.transformer_action_selector.constants import TOKEN_KIND
+from gristmill_symbolics.model.transformer_action_selector.model import (
+    embed_tokens,
+    encode_tokens,
+    pool_by_index,
+)
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
+    tokenize_state_snapshot,
+)
 from tests.policy_fixtures import actionable_state_snapshot
 
 
-def test_init_policy_params_shapes_and_stop_bias():
-    config = PolicyConfig(d_model=16, id_vocab_size=32)
-    params = init_policy_params(config, jax.random.PRNGKey(0))
+def _model(**overrides):
+    values = {
+        "batch_size": 1,
+        "max_steps": 1,
+        "state_token_pad_to": 512,
+        "action_token_pad_to": 512,
+        "definition_pad_to": 8,
+    }
+    values.update(overrides)
+    return TransformerActionSelectorModel(**values)
+
+
+def test_init_params_shapes_and_stop_bias():
+    params = _model(d_model=16, id_vocab_size=32).init_params(jax.random.PRNGKey(0))
 
     assert params["field_embeddings"]["token_kind"].shape[1] == 16
     assert set(params["action"]) == {
@@ -28,16 +48,19 @@ def test_init_policy_params_shapes_and_stop_bias():
     assert float(params["target"]["stop_bias"]) == -20.0
 
 
-def test_init_policy_params_supports_configured_attention_layer_count():
-    config = PolicyConfig(d_model=8, num_attention_layers=8, id_vocab_size=16)
-    params = init_policy_params(config, jax.random.PRNGKey(3))
+def test_init_params_supports_configured_attention_layer_count():
+    params = _model(
+        d_model=8,
+        num_attention_layers=8,
+        id_vocab_size=16,
+    ).init_params(jax.random.PRNGKey(3))
 
     assert len(params["attention"]) == 8
     assert params["attention"][-1]["w2"].shape == (16, 8)
 
 
 def test_embed_tokens_and_encoder_return_dense_token_vectors():
-    params = init_policy_params(PolicyConfig(d_model=16), jax.random.PRNGKey(1))
+    params = _model(d_model=16).init_params(jax.random.PRNGKey(1))
     tokens, mask = tokenize_state_snapshot(actionable_state_snapshot())
 
     embedded = embed_tokens(params, tokens)
@@ -49,7 +72,7 @@ def test_embed_tokens_and_encoder_return_dense_token_vectors():
 
 
 def test_sentinel_only_tokens_embed_to_zero_before_attention():
-    params = init_policy_params(PolicyConfig(d_model=8), jax.random.PRNGKey(2))
+    params = _model(d_model=8).init_params(jax.random.PRNGKey(2))
     for name, table in params["field_embeddings"].items():
         params["field_embeddings"][name] = table.at[0].set(1.0)
     tokens = {
@@ -74,9 +97,7 @@ def test_sentinel_only_tokens_embed_to_zero_before_attention():
 
 
 def test_sentinel_and_pad_embedding_rows_have_zero_gradients():
-    params = init_policy_params(
-        PolicyConfig(d_model=4, id_vocab_size=8), jax.random.PRNGKey(4)
-    )
+    params = _model(d_model=4, id_vocab_size=8).init_params(jax.random.PRNGKey(4))
     tokens = {
         "token_kind": jnp.array(
             [int(TOKEN_KIND.PAD), int(TOKEN_KIND.RANGE)], dtype=jnp.int32
@@ -99,7 +120,7 @@ def test_sentinel_and_pad_embedding_rows_have_zero_gradients():
 
 
 def test_negative_coefficient_numerators_contribute_to_embedding():
-    params = init_policy_params(PolicyConfig(d_model=4), jax.random.PRNGKey(5))
+    params = _model(d_model=4).init_params(jax.random.PRNGKey(5))
     params["numeric_projection"] = jnp.asarray(
         [
             [1.0, 0.0, 0.0, 0.0],

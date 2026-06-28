@@ -1,8 +1,11 @@
 import jax
 import jax.numpy as jnp
 
-from gristmill_symbolics.reinforce.rollout import _make_decision_rng_grid
-from gristmill_symbolics.reinforce.types import DECISION_ACTION, DECISION_TARGET
+from gristmill_symbolics.model.transformer_action_selector.rollout import (
+    DECISION_ACTION,
+    DECISION_TARGET,
+    _make_decision_rng_grid,
+)
 
 
 def test_decision_rng_grid_uses_step_sample_decision_kind_axes():

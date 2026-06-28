@@ -1,11 +1,14 @@
 import jax.numpy as jnp
 
-from gristmill_symbolics.policy import (
+from gristmill_symbolics.model.transformer_action_selector.constants import (
     SENTINEL,
     STATE_TOKEN_FIELDS,
+    SEGMENT,
+    TOKEN_KIND,
+)
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
     tokenize_state_snapshot,
 )
-from gristmill_symbolics.policy.constants import SEGMENT, TOKEN_KIND
 from tests.policy_fixtures import actionable_state_snapshot
 
 

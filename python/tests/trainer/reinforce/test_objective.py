@@ -3,13 +3,11 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from gristmill_symbolics.reinforce import (
-    BaselineConfig,
-    RewardConfig,
+from gristmill_symbolics._training import TrainingError
+from gristmill_symbolics.trainer.reinforce.objective import (
     compute_advantages,
     compute_rewards,
 )
-from gristmill_symbolics.reinforce.types import TrainingError
 
 
 @dataclass(frozen=True)
@@ -28,7 +26,7 @@ def test_compute_rewards_uses_float64_log_flops_improvement():
         max_steps=np.asarray([True, False], dtype=bool),
     )
 
-    reward = compute_rewards(final, RewardConfig())
+    reward = compute_rewards(final, reward_kind="log_flops_improvement")
 
     assert reward.dtype == np.float64
     assert reward.tolist()[0] == pytest.approx(2.5)
@@ -44,7 +42,7 @@ def test_compute_rewards_rejects_non_1d_log_flops():
     )
 
     with pytest.raises(TrainingError, match="initial_log_flops.*1D"):
-        compute_rewards(final, RewardConfig())
+        compute_rewards(final, reward_kind="log_flops_improvement")
 
 
 def test_compute_rewards_rejects_metric_shape_mismatch():
@@ -56,16 +54,17 @@ def test_compute_rewards_rejects_metric_shape_mismatch():
     )
 
     with pytest.raises(TrainingError, match="stopped.*shape"):
-        compute_rewards(final, RewardConfig())
+        compute_rewards(final, reward_kind="log_flops_improvement")
 
 
 def test_compute_advantages_batch_mean_and_optional_standardization():
     reward = np.asarray([1.0, 3.0, 5.0], dtype=np.float64)
 
-    advantage = compute_advantages(reward, BaselineConfig())
+    advantage = compute_advantages(reward)
     standardized = compute_advantages(
         reward,
-        BaselineConfig(standardize=True, epsilon=1.0e-12),
+        standardize=True,
+        epsilon=1.0e-12,
     )
 
     assert advantage.dtype == np.float64

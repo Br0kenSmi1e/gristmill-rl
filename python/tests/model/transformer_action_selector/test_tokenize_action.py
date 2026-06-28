@@ -1,8 +1,14 @@
 import jax.numpy as jnp
 
-from gristmill_symbolics.policy import ACTION_TOKEN_FIELDS, tokenize_action_space_snapshot
-from gristmill_symbolics.policy.constants import SIDE, TOKEN_KIND
-from gristmill_symbolics.policy.tokenize import candidate_count, side_term_counts
+from gristmill_symbolics.model.transformer_action_selector.constants import SIDE, TOKEN_KIND
+from gristmill_symbolics.model.transformer_action_selector.constants import (
+    ACTION_TOKEN_FIELDS,
+)
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
+    candidate_count,
+    side_term_counts,
+    tokenize_action_space_snapshot,
+)
 from tests.policy_fixtures import actionable_action_space_snapshot
 
 

@@ -3,16 +3,21 @@ import copy
 import jax
 import jax.numpy as jnp
 
-from gristmill_symbolics.policy import (
-    PolicyConfig,
-    init_policy_params,
+from gristmill_symbolics.model.transformer_action_selector import (
+    TransformerActionSelectorModel,
+)
+from gristmill_symbolics.model.transformer_action_selector.api import (
     sample_action,
     sample_target,
     score_action,
     score_target,
-    stack_token_trees,
+)
+from gristmill_symbolics.model.transformer_action_selector.tokenize import (
     tokenize_action_space_snapshot,
     tokenize_state_snapshot,
+)
+from gristmill_symbolics.model.transformer_action_selector.tree import (
+    stack_token_trees,
 )
 from tests.policy_fixtures import (
     actionable_action_space_snapshot,
@@ -21,10 +26,15 @@ from tests.policy_fixtures import (
 
 
 def _params():
-    return init_policy_params(
-        PolicyConfig(d_model=16),
-        jax.random.PRNGKey(0),
+    model = TransformerActionSelectorModel(
+        batch_size=2,
+        max_steps=1,
+        state_token_pad_to=512,
+        action_token_pad_to=512,
+        definition_pad_to=8,
+        d_model=16,
     )
+    return model.init_params(jax.random.PRNGKey(0))
 
 
 def _state_tree():

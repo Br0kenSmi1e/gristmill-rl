@@ -2,7 +2,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from gristmill_symbolics._training import TrainingError
 from gristmill_symbolics.trainer.reinforce.trainer import (
+    _validate_finite_params,
     _reinforce_grad_loss,
     _surrogate_loss,
 )
@@ -37,3 +39,8 @@ def test_surrogate_loss_uses_trajectory_logp_diagnostic_only():
     assert float(_surrogate_loss(logp, advantage)) == pytest.approx(
         float(-jnp.mean(jnp.asarray(advantage, dtype=jnp.float32) * logp))
     )
+
+
+def test_validate_finite_params_rejects_non_finite_updated_param_leaf():
+    with pytest.raises(TrainingError, match="updated model parameters"):
+        _validate_finite_params({"w": jnp.asarray([1.0, jnp.nan])})
