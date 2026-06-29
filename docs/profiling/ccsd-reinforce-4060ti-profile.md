@@ -4,6 +4,40 @@ Use this on the RTX 4060 Ti machine with the CUDA JAX environment already
 installed. Run commands from the repository checkout that contains
 `tmp/ccsd/working_eqn.json`.
 
+## Run The Attention Backend Probe
+
+Run this before changing the model. It profiles synthetic forward+grad attention
+with the hot shape from the OOM: `B=8`, `L=5000`, `d=32`.
+
+```bash
+cd "$(git rev-parse --show-toplevel)"
+git fetch origin
+git switch profile-model-trainer-protocols-4060ti
+git pull --ff-only
+
+cd python
+RUN_ROOT=/tmp/ccsd-profile/attention-backends-4060ti
+
+for BACKEND in explicit xla cudnn; do
+  uv run --no-sync python tools/profile_attention_backend.py \
+    --backend "$BACKEND" \
+    --run-root "$RUN_ROOT" \
+    --run-name "$BACKEND" \
+    --batch-size 8 \
+    --seq-len 5000 \
+    --d-model 32 \
+    --dtype float32 \
+    --xla-dump-all-passes || true
+
+  RUN=$RUN_ROOT/$BACKEND
+  uv run --no-sync python tools/summarize_profile_run.py "$RUN"
+done
+```
+
+Compare the `== largest xla allocation lines ==` sections. A useful `cudnn`
+result should either complete or fail with a clear backend constraint, and it
+should not allocate multiple `f32[8,5000,5000]` temporaries like `explicit`.
+
 ## Run The Current Peak Profile
 
 ```bash
