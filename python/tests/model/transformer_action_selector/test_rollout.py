@@ -105,6 +105,61 @@ def _params(model):
     return model.init_params(jax.random.PRNGKey(0))
 
 
+def test_model_rollout_profiling_is_silent_by_default(capsys):
+    model = _model()
+    row = RewriteStateRow.from_states([_state_from_json(actionable_json())])
+
+    _sample_static_model_rollout(
+        _params(model),
+        jax.random.PRNGKey(5),
+        row,
+        model,
+    )
+
+    assert capsys.readouterr().err == ""
+
+
+def test_model_rollout_profiling_emits_json_phase_events(monkeypatch, capsys):
+    monkeypatch.setenv("GRISTMILL_PROFILE_ROLLOUT", "1")
+    model = _model()
+    row = RewriteStateRow.from_states([_state_from_json(actionable_json())])
+
+    _sample_static_model_rollout(
+        _params(model),
+        jax.random.PRNGKey(5),
+        row,
+        model,
+    )
+
+    events = [
+        json.loads(line)
+        for line in capsys.readouterr().err.splitlines()
+        if line.strip()
+    ]
+    phase_names = {event["phase"] for event in events}
+
+    assert events
+    assert all(event["event"] == "rollout_phase" for event in events)
+    assert all(event["elapsed_ms"] >= 0.0 for event in events)
+    assert all(event["step"] == 0 for event in events)
+    assert {
+        "row_snapshots",
+        "tokenize_state",
+        "stack_state_tokens",
+        "sample_target",
+        "score_target_grad",
+        "row_query_action_spaces",
+        "tokenize_action_space",
+        "stack_action_tokens",
+        "sample_action",
+        "score_action_grad",
+        "action_choice_to_python",
+        "row_validate_apply_actions",
+    } <= phase_names
+    assert any(event.get("state_token_len_max", 0) > 0 for event in events)
+    assert any(event.get("action_token_len_max", 0) > 0 for event in events)
+
+
 def _tree_allclose(left, right, *, atol=1.0e-5):
     assert jax.tree_util.tree_structure(left) == jax.tree_util.tree_structure(right)
     for left_leaf, right_leaf in zip(
