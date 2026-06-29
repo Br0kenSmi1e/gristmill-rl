@@ -152,3 +152,36 @@ def test_summarize_run_reports_largest_xla_buffer_allocations(tmp_path: Path):
 
     formatted = format_summary(summary)
     assert "2.24 GiB  f32[8,5000,5000]" in formatted
+
+
+def test_summarize_run_includes_large_allocation_context(tmp_path: Path):
+    xla_dir = tmp_path / "xla"
+    xla_dir.mkdir()
+    (xla_dir / "module_0003.jit_score_target.buffer-assignment.txt").write_text(
+        "\n".join(
+            [
+                "BufferAssignment:",
+                "allocation 183: size 2409769272, preallocated-temp:",
+                "  value: <fusion.12 @0> size=800000000, shape=f32[8,5000,5000]{2,1,0}",
+                "  value: <broadcast.7 @0> size=200000000, shape=pred[8,5000,5000]{2,1,0}",
+                "allocation 184: size 160000, parameter 0, shape |s32[8,5000]| at ShapeIndex {}:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_run(tmp_path)
+
+    assert summary.largest_xla_allocations[0].context == (
+        "value: <fusion.12 @0> size=800000000, shape=f32[8,5000,5000]{2,1,0}",
+        "value: <broadcast.7 @0> size=200000000, shape=pred[8,5000,5000]{2,1,0}",
+    )
+    assert summary.largest_xla_allocations[0].context_shapes == (
+        "f32[8,5000,5000]",
+        "pred[8,5000,5000]",
+    )
+
+    formatted = format_summary(summary)
+    assert "context_shapes=f32[8,5000,5000], pred[8,5000,5000]" in formatted
+    assert "value: <fusion.12 @0>" in formatted

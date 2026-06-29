@@ -42,6 +42,10 @@ The summary should include these sections:
 - `== largest xla shapes ==`
 - `== largest xla allocation lines ==`
 
+Large allocation lines include the captured allocation block context when XLA
+prints one. For the current failure, inspect the `jit_score_target`
+`preallocated-temp` entry and its `context_shapes`.
+
 ## Rerun Only If Allocation Lines Are Missing
 
 Use this only when the first summary has `(none found)` under

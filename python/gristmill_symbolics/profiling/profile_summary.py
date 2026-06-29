@@ -24,8 +24,10 @@ _TOTAL_BYTES_RE = re.compile(
     r"\b(?:total\s+)?bytes\s+used\s*:\s*(?P<size>\d+)\b",
     re.IGNORECASE,
 )
+_ALLOCATION_HEADER_RE = re.compile(r"^\s*allocation\s+\d+:", re.IGNORECASE)
 _XLA_SHAPE_LIMIT = 20
 _XLA_ALLOCATION_LIMIT = 20
+_XLA_ALLOCATION_CONTEXT_LIMIT = 8
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,8 @@ class XlaAllocationSummary:
     shape: str | None
     source: str
     text: str
+    context: tuple[str, ...] = ()
+    context_shapes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,10 @@ def format_summary(summary: ProfileRunSummary) -> str:
                 f"{size}  {allocation.shape or '(shape missing)'}  "
                 f"{allocation.source}  {allocation.text}"
             )
+            if allocation.context_shapes:
+                lines.append(f"  context_shapes={', '.join(allocation.context_shapes)}")
+            for context_line in allocation.context:
+                lines.append(f"  {context_line}")
     else:
         lines.append("(none found)")
     return "\n".join(lines)
@@ -314,20 +322,24 @@ def _scan_xla_dump(run_dir: Path) -> _XlaScan:
     for path in sorted(candidate for candidate in xla_dir.rglob("*") if candidate.is_file()):
         rel_source = path.relative_to(run_dir).as_posix()
         try:
-            with path.open(encoding="utf-8", errors="ignore") as handle:
-                files_scanned += 1
-                for line_number, line in enumerate(handle, start=1):
-                    stripped = line.strip()
-                    if not stripped:
-                        continue
-                    for shape in _shape_strings(stripped):
-                        shape_counts[shape] += 1
-                        shape_sources[shape].add(rel_source)
-                    allocation = _allocation_summary(stripped, f"{rel_source}:{line_number}")
-                    if allocation is not None:
-                        allocations.append(allocation)
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
         except OSError:
             continue
+        files_scanned += 1
+        for line_number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            for shape in _shape_strings(stripped):
+                shape_counts[shape] += 1
+                shape_sources[shape].add(rel_source)
+            allocation = _allocation_summary(
+                stripped,
+                f"{rel_source}:{line_number}",
+                _allocation_context(lines, line_number - 1),
+            )
+            if allocation is not None:
+                allocations.append(allocation)
 
     return _XlaScan(files_scanned, shape_counts, dict(shape_sources), allocations)
 
@@ -336,7 +348,11 @@ def _shape_strings(text: str) -> tuple[str, ...]:
     return tuple(match.group(0) for match in _HLO_SHAPE_RE.finditer(text))
 
 
-def _allocation_summary(line: str, source: str) -> XlaAllocationSummary | None:
+def _allocation_summary(
+    line: str,
+    source: str,
+    context: tuple[str, ...],
+) -> XlaAllocationSummary | None:
     lower = line.lower()
     if "allocation" not in lower and "bytes used" not in lower:
         return None
@@ -345,12 +361,34 @@ def _allocation_summary(line: str, source: str) -> XlaAllocationSummary | None:
     shape = shape_match.group(0) if shape_match is not None else None
     if size is None and shape is None:
         return None
+    context_shapes = tuple(
+        dict.fromkeys(shape for item in context for shape in _shape_strings(item))
+    )
     return XlaAllocationSummary(
         size_bytes=size,
         shape=shape,
         source=source,
         text=line,
+        context=context,
+        context_shapes=context_shapes,
     )
+
+
+def _allocation_context(lines: list[str], header_index: int) -> tuple[str, ...]:
+    header = lines[header_index].strip()
+    if not _ALLOCATION_HEADER_RE.match(header):
+        return ()
+    context: list[str] = []
+    for line in lines[header_index + 1 :]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _ALLOCATION_HEADER_RE.match(stripped):
+            break
+        context.append(stripped)
+        if len(context) >= _XLA_ALLOCATION_CONTEXT_LIMIT:
+            break
+    return tuple(context)
 
 
 def _line_size_bytes(line: str) -> int | None:
