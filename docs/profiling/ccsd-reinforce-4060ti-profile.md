@@ -100,7 +100,10 @@ for UPDATES in 1 2 3; do
 
   STATUS=$?
   kill "$SMI_PID"
-  test "$STATUS" -eq 0 || exit "$STATUS"
+  if [ "$STATUS" -ne 0 ]; then
+    echo "profile failed for updates=${UPDATES}; see $RUN/stderr.log" >&2
+    break
+  fi
 done
 ```
 
