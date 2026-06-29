@@ -8,5 +8,5 @@ pub use batch::{
 };
 pub use single::{
     action_space_for_def, apply_decision, validate_decision, ActionSpace,
-    Decision, Factorization, RewriteError,
+    Decision, DecisionSide, Factorization, RewriteError,
 };

@@ -1,10 +1,13 @@
 use gristmill_symbolics::canon::CanonError;
 use gristmill_symbolics::graph::GraphError;
 use gristmill_symbolics::repr::{
-    Factor, Index, IndexId, RangeId, Rational, TensorComputation, TensorId, Term,
+    Factor, Index, IndexId, RangeId, Rational, TensorComputation, TensorId,
+    Term,
 };
 use gristmill_symbolics::rewrite::{
-    ActionSpaceEntry, Decision, RewriteError, RewriteState, RewriteStateRow, validate_decision,
+    action_space_for_def, action_spaces_for_batch, apply_decision,
+    apply_decisions_for_batch, validate_decision, validate_decisions_for_batch,
+    BatchField, BatchRewriteError, Decision, DecisionSide, RewriteError,
 };
 use gristmill_symbolics::split::SplitError;
 
@@ -34,6 +37,20 @@ fn term(sum_indices: Vec<Index>, factors: Vec<Factor>) -> Term {
     }
 }
 
+fn comp_with_one_term() -> TensorComputation {
+    let mut comp = TensorComputation::new();
+    comp.add_range(8);
+    let a = comp.add_tensor(vec![]);
+    let out = comp.add_tensor(vec![]);
+
+    comp.add_definition(
+        out,
+        vec![idx(0)],
+        vec![term(vec![], vec![factor(a, &[0])])],
+    );
+    comp
+}
+
 fn comp_with_shared_left_candidate() -> TensorComputation {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
@@ -50,7 +67,6 @@ fn comp_with_shared_left_candidate() -> TensorComputation {
             term(vec![idx(3)], vec![factor(a, &[0, 3]), factor(c, &[3, 1])]),
         ],
     );
-
     comp
 }
 
@@ -66,25 +82,6 @@ fn comp_with_two_unsplittable_terms() -> TensorComputation {
         vec![
             term(vec![], vec![factor(a, &[0])]),
             term(vec![], vec![factor(a, &[0])]),
-        ],
-    );
-
-    comp
-}
-
-fn comp_with_split_error() -> TensorComputation {
-    let mut comp = TensorComputation::new();
-    comp.add_range(8);
-    let a = comp.add_tensor(vec![]);
-    let out = comp.add_tensor(vec![]);
-    let many_factors = (0..65).map(|_| factor(a, &[])).collect();
-
-    comp.add_definition(
-        out,
-        vec![],
-        vec![
-            term(vec![], many_factors),
-            term(vec![], vec![factor(a, &[])]),
         ],
     );
     comp
@@ -107,589 +104,7 @@ fn comp_with_unsplittable_then_actionable_definition() -> TensorComputation {
     comp
 }
 
-fn first_full_decision(space: &gristmill_symbolics::rewrite::ActionSpace) -> Decision {
-    let template = &space.candidate_templates[0];
-    Decision {
-        candidate_index: 0,
-        left_mask: vec![true; template.left_definition.terms.len()],
-        right_mask: vec![true; template.right_definition.terms.len()],
-    }
-}
-
-fn first_non_empty_decision(spaces: &gristmill_symbolics::rewrite::ActionSpaceRow) -> Decision {
-    let ActionSpaceEntry::NonEmpty(space) = &spaces.entries()[0] else {
-        panic!("expected first row entry to be non-empty");
-    };
-    first_full_decision(space)
-}
-
-fn computation_snapshots(row: &RewriteStateRow) -> Vec<TensorComputation> {
-    row.states()
-        .iter()
-        .map(|state| state.computation().clone())
-        .collect()
-}
-
-#[test]
-fn rewrite_state_row_preserves_length_masks_and_sample_order() {
-    let left = RewriteState::new(comp_with_shared_left_candidate());
-    let middle = RewriteState::new(comp_with_two_unsplittable_terms());
-    let right = RewriteState::new(comp_with_shared_left_candidate());
-
-    let row = RewriteStateRow::from_states(vec![left.clone(), middle.clone(), right.clone()]);
-
-    assert_eq!(row.len(), 3);
-    assert!(!row.is_empty());
-    assert_eq!(
-        row.definition_masks(),
-        vec![
-            left.definition_mask().to_vec(),
-            middle.definition_mask().to_vec(),
-            right.definition_mask().to_vec(),
-        ]
-    );
-    assert_eq!(row.states()[0].computation(), left.computation());
-    assert_eq!(row.states()[1].computation(), middle.computation());
-    assert_eq!(row.states()[2].computation(), right.computation());
-}
-
-#[test]
-fn row_query_width_one_matches_scalar_action_space_for_def() {
-    let comp = comp_with_shared_left_candidate();
-    let mut scalar = RewriteState::new(comp.clone());
-    let scalar_space = scalar.action_space_for_def(0).unwrap().unwrap();
-    let mut row = RewriteStateRow::from_states(vec![RewriteState::new(comp)]);
-
-    let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
-
-    assert_eq!(spaces.len(), 1);
-    assert!(!spaces.is_empty());
-    assert_eq!(spaces.entry_kinds(), vec!["non_empty"]);
-    assert_eq!(
-        spaces.entries(),
-        &[ActionSpaceEntry::NonEmpty(scalar_space)]
-    );
-}
-
-#[test]
-fn row_query_skips_stop_and_inactive_entries_without_mutating_them() {
-    let stop = RewriteState::new(comp_with_shared_left_candidate());
-    let inactive = RewriteState::new(comp_with_two_unsplittable_terms());
-    let active = RewriteState::new(comp_with_shared_left_candidate());
-    let mut row = RewriteStateRow::from_states(vec![stop, inactive, active]);
-    let before = computation_snapshots(&row);
-
-    let spaces = row
-        .query_action_spaces_for_row(&[-1, 0, 0], &[true, false, true])
-        .unwrap();
-
-    assert_eq!(
-        spaces.entry_kinds(),
-        vec!["skipped", "skipped", "non_empty"]
-    );
-    assert_eq!(row.states()[0].computation(), &before[0]);
-    assert_eq!(row.states()[1].computation(), &before[1]);
-}
-
-#[test]
-fn row_query_exact_empty_refines_only_owning_state_mask() {
-    let exact_empty = RewriteState::new(comp_with_two_unsplittable_terms());
-    let actionable = RewriteState::new(comp_with_shared_left_candidate());
-    let mut row = RewriteStateRow::from_states(vec![exact_empty, actionable]);
-
-    let spaces = row
-        .query_action_spaces_for_row(&[0, 0], &[true, true])
-        .unwrap();
-
-    assert_eq!(spaces.entry_kinds(), vec!["exact_empty", "non_empty"]);
-    assert_eq!(row.definition_masks()[0], vec![false]);
-    assert_eq!(row.definition_masks()[1], vec![true]);
-}
-
-#[test]
-fn row_query_wraps_scalar_errors_and_leaves_row_state_unchanged() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_two_unsplittable_terms()),
-        RewriteState::new(comp_with_split_error()),
-    ]);
-    let before_masks = row.definition_masks();
-    let before_computations = computation_snapshots(&row);
-
-    assert_eq!(
-        row.query_action_spaces_for_row(&[0, 0], &[true, true]),
-        Err(RewriteError::RowQueryFailed {
-            sample: 1,
-            source: Box::new(RewriteError::Split(SplitError::TooManyFactors {
-                len: 65,
-                max: 64,
-            })),
-        })
-    );
-    assert_eq!(row.definition_masks(), before_masks);
-    assert_eq!(computation_snapshots(&row), before_computations);
-}
-
-#[test]
-fn row_query_rejects_length_mismatches_and_masked_definitions() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_shared_left_candidate()),
-    ]);
-
-    assert_eq!(
-        row.query_action_spaces_for_row(&[0], &[true, true]),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "query_action_spaces_for_row",
-            field: "target_choices",
-            expected: 2,
-            got: 1,
-        })
-    );
-
-    assert_eq!(
-        row.query_action_spaces_for_row(&[0, 0], &[true]),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "query_action_spaces_for_row",
-            field: "active_mask",
-            expected: 2,
-            got: 1,
-        })
-    );
-
-    let mut masked = RewriteStateRow::from_states(vec![RewriteState::new({
-        let mut comp = TensorComputation::new();
-        comp.add_range(8);
-        let a = comp.add_tensor(vec![]);
-        let out = comp.add_tensor(vec![]);
-        comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
-        comp
-    })]);
-
-    assert_eq!(
-        masked.query_action_spaces_for_row(&[0], &[true]),
-        Err(RewriteError::TargetDefinitionMasked {
-            sample: 0,
-            index: 0,
-        })
-    );
-}
-
-#[test]
-fn row_validation_accepts_valid_injected_choices_and_skips_unscored_entries() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_two_unsplittable_terms()),
-    ]);
-    let spaces = row
-        .query_action_spaces_for_row(&[0, 0], &[true, true])
-        .unwrap();
-    assert_eq!(spaces.entry_kinds(), vec!["non_empty", "exact_empty"]);
-    let decision = first_non_empty_decision(&spaces);
-
-    let validated = row
-        .validate_actions_for_row(&spaces, &[Some(decision), None], &[true, false])
-        .unwrap();
-
-    assert_eq!(validated.len(), 2);
-    assert!(!validated.is_empty());
-    assert_eq!(validated.entry_kinds(), vec!["valid", "skipped"]);
-}
-
-#[test]
-fn row_validation_rejects_invalid_choice_before_any_state_mutation() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_shared_left_candidate()),
-    ]);
-    let spaces = row
-        .query_action_spaces_for_row(&[0, 0], &[true, true])
-        .unwrap();
-    let before = computation_snapshots(&row);
-    let expected_len = match &spaces.entries()[0] {
-        ActionSpaceEntry::NonEmpty(space) => space.candidate_templates.len(),
-        _ => panic!("expected first row entry to be non-empty"),
-    };
-    let bad = Decision {
-        candidate_index: usize::MAX,
-        left_mask: vec![true],
-        right_mask: vec![true],
-    };
-    let good = first_non_empty_decision(&spaces);
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[Some(bad), Some(good)], &[true, true]),
-        Err(RewriteError::RowValidationFailed {
-            sample: 0,
-            source: Box::new(RewriteError::CandidateIndexOutOfRange {
-                index: usize::MAX,
-                len: expected_len,
-            }),
-        })
-    );
-    assert_eq!(computation_snapshots(&row), before);
-}
-
-#[test]
-fn row_validation_rejects_scored_skipped_or_exact_empty_entries() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_two_unsplittable_terms()),
-    ]);
-    let spaces = row
-        .query_action_spaces_for_row(&[-1, 0], &[true, true])
-        .unwrap();
-    let dummy = Decision {
-        candidate_index: 0,
-        left_mask: vec![true],
-        right_mask: vec![true],
-    };
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[Some(dummy.clone()), None], &[true, false]),
-        Err(RewriteError::ActionSpaceEntryNotActionable {
-            sample: 0,
-            entry_kind: "skipped",
-        })
-    );
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[None, Some(dummy)], &[false, true]),
-        Err(RewriteError::ActionSpaceEntryNotActionable {
-            sample: 1,
-            entry_kind: "exact_empty",
-        })
-    );
-}
-
-#[test]
-fn row_validation_rejects_missing_scored_decision() {
-    let mut row =
-        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
-    let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[None], &[true]),
-        Err(RewriteError::MissingScoredDecision { sample: 0 })
-    );
-}
-
-#[test]
-fn row_validation_rejects_length_mismatches() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_shared_left_candidate()),
-    ]);
-    let spaces = row
-        .query_action_spaces_for_row(&[0, 0], &[true, true])
-        .unwrap();
-    let mut width_one =
-        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
-    let short_spaces = width_one
-        .query_action_spaces_for_row(&[0], &[true])
-        .unwrap();
-    let decision = first_non_empty_decision(&spaces);
-
-    assert_eq!(
-        row.validate_actions_for_row(
-            &short_spaces,
-            &[Some(decision.clone()), Some(decision.clone())],
-            &[true, true],
-        ),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "validate_actions_for_row",
-            field: "action_space_row",
-            expected: 2,
-            got: 1,
-        })
-    );
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[Some(decision.clone())], &[true, true]),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "validate_actions_for_row",
-            field: "decisions",
-            expected: 2,
-            got: 1,
-        })
-    );
-
-    assert_eq!(
-        row.validate_actions_for_row(&spaces, &[Some(decision.clone()), Some(decision)], &[true]),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "validate_actions_for_row",
-            field: "action_score_mask",
-            expected: 2,
-            got: 1,
-        })
-    );
-}
-
-#[test]
-fn row_application_matches_scalar_for_width_one() {
-    let comp = comp_with_shared_left_candidate();
-    let mut scalar = RewriteState::new(comp.clone());
-    let scalar_space = scalar.action_space_for_def(0).unwrap().unwrap();
-    let scalar_decision = first_full_decision(&scalar_space);
-    validate_decision(&scalar_space, &scalar_decision).unwrap();
-    scalar
-        .apply_validated_decision(&scalar_space, &scalar_decision)
-        .unwrap();
-
-    let mut row = RewriteStateRow::from_states(vec![RewriteState::new(comp)]);
-    let spaces = row.query_action_spaces_for_row(&[0], &[true]).unwrap();
-    let row_decision = first_non_empty_decision(&spaces);
-    let validated = row
-        .validate_actions_for_row(&spaces, &[Some(row_decision)], &[true])
-        .unwrap();
-    let applied = row.apply_validated_actions_for_row(&validated).unwrap();
-
-    assert_eq!(applied, vec![true]);
-    assert_eq!(row.states()[0].computation(), scalar.computation());
-    assert_eq!(row.states()[0].definition_mask(), scalar.definition_mask());
-}
-
-#[test]
-fn row_application_mutates_only_valid_action_positions() {
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_two_unsplittable_terms()),
-    ]);
-    let spaces = row
-        .query_action_spaces_for_row(&[0, -1, 0], &[true, true, true])
-        .unwrap();
-    let before = computation_snapshots(&row);
-    let decision = first_non_empty_decision(&spaces);
-    let validated = row
-        .validate_actions_for_row(
-            &spaces,
-            &[Some(decision), None, None],
-            &[true, false, false],
-        )
-        .unwrap();
-
-    let applied = row.apply_validated_actions_for_row(&validated).unwrap();
-
-    assert_eq!(applied, vec![true, false, false]);
-    assert_ne!(row.states()[0].computation(), &before[0]);
-    assert_eq!(row.states()[1].computation(), &before[1]);
-    assert_eq!(row.states()[2].computation(), &before[2]);
-}
-
-#[test]
-fn row_application_rejects_length_mismatch() {
-    let mut width_one =
-        RewriteStateRow::from_states(vec![RewriteState::new(comp_with_shared_left_candidate())]);
-    let spaces = width_one
-        .query_action_spaces_for_row(&[0], &[true])
-        .unwrap();
-    let decision = first_non_empty_decision(&spaces);
-    let validated = width_one
-        .validate_actions_for_row(&spaces, &[Some(decision)], &[true])
-        .unwrap();
-
-    let mut row = RewriteStateRow::from_states(vec![
-        RewriteState::new(comp_with_shared_left_candidate()),
-        RewriteState::new(comp_with_shared_left_candidate()),
-    ]);
-
-    assert_eq!(
-        row.apply_validated_actions_for_row(&validated),
-        Err(RewriteError::RowLengthMismatch {
-            operation: "apply_validated_actions_for_row",
-            field: "validated_action_row",
-            expected: 2,
-            got: 1,
-        })
-    );
-}
-
-#[test]
-fn public_validate_decision_rejects_the_same_decision_errors() {
-    let mut state = RewriteState::new(comp_with_shared_left_candidate());
-    let space = state.action_space_for_def(0).unwrap().unwrap();
-    let template = &space.candidate_templates[0];
-
-    assert_eq!(
-        validate_decision(
-            &space,
-            &Decision {
-                candidate_index: space.candidate_templates.len(),
-                left_mask: vec![true; template.left_definition.terms.len()],
-                right_mask: vec![true; template.right_definition.terms.len()],
-            },
-        ),
-        Err(RewriteError::CandidateIndexOutOfRange {
-            index: space.candidate_templates.len(),
-            len: space.candidate_templates.len(),
-        })
-    );
-
-    assert_eq!(
-        validate_decision(
-            &space,
-            &Decision {
-                candidate_index: 0,
-                left_mask: vec![],
-                right_mask: vec![true; template.right_definition.terms.len()],
-            },
-        ),
-        Err(RewriteError::LeftMaskLengthMismatch {
-            expected: template.left_definition.terms.len(),
-            got: 0,
-        })
-    );
-}
-
-#[test]
-fn apply_validated_decision_preserves_caller_owned_action_space_provenance() {
-    let comp = comp_with_shared_left_candidate();
-    let mut source_state = RewriteState::new(comp.clone());
-    let space = source_state.action_space_for_def(0).unwrap().unwrap();
-    let decision = first_full_decision(&space);
-    validate_decision(&space, &decision).unwrap();
-
-    let mut left = RewriteState::new(comp.clone());
-    let mut right = RewriteState::new(comp);
-
-    left.apply_validated_decision(&space, &decision).unwrap();
-    right.apply_validated_decision(&space, &decision).unwrap();
-
-    assert_eq!(left.computation(), right.computation());
-    assert_eq!(left.definition_mask(), right.definition_mask());
-}
-
-#[test]
-fn validate_decision_rejects_invalid_decision_before_state_mutation() {
-    let mut state = RewriteState::new(comp_with_shared_left_candidate());
-    let space = state.action_space_for_def(0).unwrap().unwrap();
-    let before = state.computation().clone();
-    let bad_decision = Decision {
-        candidate_index: 0,
-        left_mask: vec![],
-        right_mask: vec![true],
-    };
-
-    assert!(validate_decision(&space, &bad_decision).is_err());
-    assert_eq!(state.computation(), &before);
-}
-
-#[test]
-fn rewrite_state_initializes_definition_mask_from_term_count() {
-    let basic = {
-        let mut comp = TensorComputation::new();
-        comp.add_range(8);
-        let a = comp.add_tensor(vec![]);
-        let out = comp.add_tensor(vec![]);
-        comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
-        comp
-    };
-    let exact_empty = comp_with_two_unsplittable_terms();
-    let actionable = comp_with_shared_left_candidate();
-
-    assert_eq!(RewriteState::new(basic).definition_mask(), &[false]);
-    assert_eq!(RewriteState::new(exact_empty).definition_mask(), &[true]);
-    assert_eq!(RewriteState::new(actionable).definition_mask(), &[true]);
-}
-
-#[test]
-fn action_space_for_def_returns_none_for_false_mask_entry() {
-    let mut comp = TensorComputation::new();
-    comp.add_range(8);
-    let a = comp.add_tensor(vec![]);
-    let out = comp.add_tensor(vec![]);
-    comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
-    let mut state = RewriteState::new(comp);
-
-    assert_eq!(state.definition_mask(), &[false]);
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-    assert_eq!(state.definition_mask(), &[false]);
-}
-
-#[test]
-fn action_space_for_def_refines_exact_empty_definition_to_false() {
-    let mut state = RewriteState::new(comp_with_two_unsplittable_terms());
-
-    assert_eq!(state.definition_mask(), &[true]);
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-    assert_eq!(state.definition_mask(), &[false]);
-}
-
-#[test]
-fn action_space_for_def_returns_requested_definition_without_scanning() {
-    let mut state = RewriteState::new(comp_with_unsplittable_then_actionable_definition());
-
-    assert_eq!(state.definition_mask(), &[true, true]);
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-    assert_eq!(state.definition_mask(), &[false, true]);
-
-    let space = state.action_space_for_def(1).unwrap().unwrap();
-
-    assert_eq!(space.def_index, 1);
-    assert!(!space.candidate_templates.is_empty());
-}
-
-#[test]
-fn action_space_for_def_rejects_out_of_range_definition_index() {
-    let mut state = RewriteState::new(comp_with_shared_left_candidate());
-
-    assert_eq!(
-        state.action_space_for_def(7),
-        Err(RewriteError::DefinitionIndexOutOfRange { index: 7, len: 1 })
-    );
-}
-
-#[test]
-fn rewrite_state_apply_validated_decision_mutates_computation_and_updates_mask() {
-    let original = comp_with_unsplittable_then_actionable_definition();
-    let original_tensors = original.tensors().len();
-    let original_definitions = original.definitions().len();
-    let mut state = RewriteState::new(original);
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-    let space = state.action_space_for_def(1).unwrap().unwrap();
-    let decision = first_full_decision(&space);
-
-    validate_decision(&space, &decision).unwrap();
-    state.apply_validated_decision(&space, &decision).unwrap();
-
-    assert_eq!(state.computation().tensors().len(), original_tensors + 2);
-    assert_eq!(
-        state.computation().definitions().len(),
-        original_definitions + 2
-    );
-    assert_eq!(state.computation().validate(), Ok(()));
-    assert_eq!(
-        state.definition_mask().len(),
-        state.computation().definitions().len()
-    );
-    assert!(!state.definition_mask()[0]);
-}
-
-#[test]
-fn rewrite_state_returns_none_when_no_definition_is_actionable() {
-    let mut comp = TensorComputation::new();
-    comp.add_range(8);
-    let a = comp.add_tensor(vec![]);
-    let out = comp.add_tensor(vec![]);
-    comp.add_definition(out, vec![idx(0)], vec![term(vec![], vec![factor(a, &[0])])]);
-    let mut state = RewriteState::new(comp);
-
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-}
-
-#[test]
-fn rewrite_state_returns_action_space_for_selected_definition() {
-    let mut state = RewriteState::new(comp_with_unsplittable_then_actionable_definition());
-
-    assert_eq!(state.action_space_for_def(0), Ok(None));
-    let space = state.action_space_for_def(1).unwrap().unwrap();
-
-    assert_eq!(space.def_index, 1);
-    assert!(!space.candidate_templates.is_empty());
-}
-
-#[test]
-fn action_space_for_def_propagates_split_errors() {
+fn comp_with_split_error() -> TensorComputation {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
     let a = comp.add_tensor(vec![]);
@@ -704,19 +119,10 @@ fn action_space_for_def_propagates_split_errors() {
             term(vec![], vec![factor(a, &[])]),
         ],
     );
-    let mut state = RewriteState::new(comp);
-
-    assert_eq!(
-        state.action_space_for_def(0),
-        Err(RewriteError::Split(SplitError::TooManyFactors {
-            len: 65,
-            max: 64,
-        }))
-    );
+    comp
 }
 
-#[test]
-fn action_space_for_def_propagates_canon_errors() {
+fn comp_with_canon_error() -> TensorComputation {
     let mut comp = TensorComputation::new();
     comp.add_range(8);
     let out = comp.add_tensor(vec![]);
@@ -730,18 +136,10 @@ fn action_space_for_def_propagates_canon_errors() {
             term(vec![], vec![factor(missing, &[]), factor(missing, &[])]),
         ],
     );
-    let mut state = RewriteState::new(comp);
-
-    assert_eq!(
-        state.action_space_for_def(0),
-        Err(RewriteError::Canon(CanonError::MissingTensorSymmetry {
-            tensor: missing,
-        }))
-    );
+    comp
 }
 
-#[test]
-fn action_space_for_def_propagates_graph_errors() {
+fn comp_with_graph_error() -> TensorComputation {
     let mut comp = TensorComputation::new();
     comp.add_range(128);
     let a = comp.add_tensor(vec![]);
@@ -758,13 +156,356 @@ fn action_space_for_def_propagates_graph_errors() {
         .collect();
 
     comp.add_definition(out, vec![idx(0), idx(1)], terms);
-    let mut state = RewriteState::new(comp);
+    comp
+}
+
+fn first_full_decision(
+    space: &gristmill_symbolics::rewrite::ActionSpace,
+) -> Decision {
+    let template = &space.candidate_templates[0];
+    Decision {
+        candidate_index: 0,
+        left_mask: vec![true; template.left_definition.terms.len()],
+        right_mask: vec![true; template.right_definition.terms.len()],
+    }
+}
+
+#[test]
+fn action_space_for_def_returns_none_for_non_actionable_definitions() {
+    assert_eq!(action_space_for_def(&comp_with_one_term(), 0), Ok(None));
+    assert_eq!(
+        action_space_for_def(&comp_with_two_unsplittable_terms(), 0),
+        Ok(None)
+    );
+}
+
+#[test]
+fn action_space_for_def_returns_requested_definition_without_scanning() {
+    let comp = comp_with_unsplittable_then_actionable_definition();
+
+    assert_eq!(action_space_for_def(&comp, 0), Ok(None));
+    let space = action_space_for_def(&comp, 1).unwrap().unwrap();
+
+    assert_eq!(space.def_index, 1);
+    assert!(!space.candidate_templates.is_empty());
+}
+
+#[test]
+fn action_space_for_def_rejects_out_of_range_definition_index() {
+    let comp = comp_with_shared_left_candidate();
 
     assert_eq!(
-        state.action_space_for_def(0),
+        action_space_for_def(&comp, 7),
+        Err(RewriteError::DefinitionIndexOutOfRange { index: 7, len: 1 })
+    );
+}
+
+#[test]
+fn action_space_for_def_propagates_split_errors() {
+    assert_eq!(
+        action_space_for_def(&comp_with_split_error(), 0),
+        Err(RewriteError::Split(SplitError::TooManyFactors {
+            len: 65,
+            max: 64,
+        }))
+    );
+}
+
+#[test]
+fn action_space_for_def_propagates_canon_errors() {
+    assert_eq!(
+        action_space_for_def(&comp_with_canon_error(), 0),
+        Err(RewriteError::Canon(CanonError::MissingTensorSymmetry {
+            tensor: TensorId(99),
+        }))
+    );
+}
+
+#[test]
+fn action_space_for_def_propagates_graph_errors() {
+    assert_eq!(
+        action_space_for_def(&comp_with_graph_error(), 0),
         Err(RewriteError::Graph(GraphError::TooManyTerms {
             len: 65,
             max: 64,
         }))
+    );
+}
+
+#[test]
+fn validate_decision_rejects_candidate_index_out_of_range() {
+    let space = action_space_for_def(&comp_with_shared_left_candidate(), 0)
+        .unwrap()
+        .unwrap();
+    let template = &space.candidate_templates[0];
+
+    assert_eq!(
+        validate_decision(
+            &space,
+            &Decision {
+                candidate_index: space.candidate_templates.len(),
+                left_mask: vec![true; template.left_definition.terms.len()],
+                right_mask: vec![true; template.right_definition.terms.len()],
+            },
+        ),
+        Err(RewriteError::CandidateIndexOutOfRange {
+            index: space.candidate_templates.len(),
+            len: space.candidate_templates.len(),
+        })
+    );
+}
+
+#[test]
+fn validate_decision_rejects_mask_length_mismatch() {
+    let space = action_space_for_def(&comp_with_shared_left_candidate(), 0)
+        .unwrap()
+        .unwrap();
+    let template = &space.candidate_templates[0];
+
+    assert_eq!(
+        validate_decision(
+            &space,
+            &Decision {
+                candidate_index: 0,
+                left_mask: vec![],
+                right_mask: vec![true; template.right_definition.terms.len()],
+            },
+        ),
+        Err(RewriteError::MaskLengthMismatch {
+            side: DecisionSide::Left,
+            expected: template.left_definition.terms.len(),
+            got: 0,
+        })
+    );
+}
+
+#[test]
+fn validate_decision_rejects_empty_masks() {
+    let space = action_space_for_def(&comp_with_shared_left_candidate(), 0)
+        .unwrap()
+        .unwrap();
+    let template = &space.candidate_templates[0];
+
+    assert_eq!(
+        validate_decision(
+            &space,
+            &Decision {
+                candidate_index: 0,
+                left_mask: vec![true; template.left_definition.terms.len()],
+                right_mask: vec![false; template.right_definition.terms.len()],
+            },
+        ),
+        Err(RewriteError::EmptyMask {
+            side: DecisionSide::Right,
+        })
+    );
+}
+
+#[test]
+fn apply_decision_mutates_computation_with_valid_decision() {
+    let mut comp = comp_with_unsplittable_then_actionable_definition();
+    let original_tensors = comp.tensors().len();
+    let original_definitions = comp.definitions().len();
+    let space = action_space_for_def(&comp, 1).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+
+    validate_decision(&space, &decision).unwrap();
+    apply_decision(&mut comp, &space, &decision).unwrap();
+
+    assert_eq!(comp.tensors().len(), original_tensors + 2);
+    assert_eq!(comp.definitions().len(), original_definitions + 2);
+    assert_eq!(comp.validate(), Ok(()));
+}
+
+#[test]
+fn apply_decision_is_deterministic_for_cloned_computations() {
+    let comp = comp_with_shared_left_candidate();
+    let space = action_space_for_def(&comp, 0).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+    let mut left = comp.clone();
+    let mut right = comp;
+
+    validate_decision(&space, &decision).unwrap();
+    apply_decision(&mut left, &space, &decision).unwrap();
+    apply_decision(&mut right, &space, &decision).unwrap();
+
+    assert_eq!(left, right);
+}
+
+#[test]
+fn action_spaces_for_batch_matches_single_for_width_one() {
+    let comp = comp_with_shared_left_candidate();
+    let expected = action_space_for_def(&comp, 0).unwrap();
+    let spaces = action_spaces_for_batch(&[comp], &[Some(0)]).unwrap();
+
+    assert_eq!(spaces, vec![expected]);
+}
+
+#[test]
+fn action_spaces_for_batch_skips_none_targets() {
+    let comps = vec![
+        comp_with_shared_left_candidate(),
+        comp_with_two_unsplittable_terms(),
+    ];
+
+    let spaces = action_spaces_for_batch(&comps, &[None, Some(0)]).unwrap();
+
+    assert_eq!(spaces, vec![None, None]);
+}
+
+#[test]
+fn action_spaces_for_batch_reports_length_mismatch() {
+    let comps = vec![
+        comp_with_shared_left_candidate(),
+        comp_with_shared_left_candidate(),
+    ];
+
+    assert_eq!(
+        action_spaces_for_batch(&comps, &[Some(0)]),
+        Err(BatchRewriteError::LengthMismatch {
+            field: BatchField::Targets,
+            expected: 2,
+            got: 1,
+        })
+    );
+}
+
+#[test]
+fn action_spaces_for_batch_wraps_single_errors_with_sample() {
+    let comps =
+        vec![comp_with_two_unsplittable_terms(), comp_with_split_error()];
+
+    assert_eq!(
+        action_spaces_for_batch(&comps, &[Some(0), Some(0)]),
+        Err(BatchRewriteError::Single {
+            sample: 1,
+            source: RewriteError::Split(SplitError::TooManyFactors {
+                len: 65,
+                max: 64,
+            }),
+        })
+    );
+}
+
+#[test]
+fn validate_decisions_for_batch_accepts_valid_and_skipped_decisions() {
+    let comp = comp_with_shared_left_candidate();
+    let space = action_space_for_def(&comp, 0).unwrap().unwrap();
+    let decision = first_full_decision(&space);
+    let spaces = vec![Some(space), None];
+    let decisions = vec![Some(decision), None];
+
+    assert_eq!(validate_decisions_for_batch(&spaces, &decisions), Ok(()));
+}
+
+#[test]
+fn validate_decisions_for_batch_rejects_decision_without_space() {
+    let decision = Decision {
+        candidate_index: 0,
+        left_mask: vec![true],
+        right_mask: vec![true],
+    };
+
+    assert_eq!(
+        validate_decisions_for_batch(&[None], &[Some(decision)]),
+        Err(BatchRewriteError::DecisionWithoutActionSpace { sample: 0 })
+    );
+}
+
+#[test]
+fn validate_decisions_for_batch_wraps_single_errors_with_sample() {
+    let comp = comp_with_shared_left_candidate();
+    let space = action_space_for_def(&comp, 0).unwrap().unwrap();
+    let len = space.candidate_templates.len();
+    let bad = Decision {
+        candidate_index: len,
+        left_mask: vec![true],
+        right_mask: vec![true],
+    };
+
+    assert_eq!(
+        validate_decisions_for_batch(&[Some(space)], &[Some(bad)]),
+        Err(BatchRewriteError::Single {
+            sample: 0,
+            source: RewriteError::CandidateIndexOutOfRange { index: len, len },
+        })
+    );
+}
+
+#[test]
+fn validate_decisions_for_batch_reports_length_mismatch() {
+    assert_eq!(
+        validate_decisions_for_batch(&[None, None], &[None]),
+        Err(BatchRewriteError::LengthMismatch {
+            field: BatchField::Decisions,
+            expected: 2,
+            got: 1,
+        })
+    );
+}
+
+#[test]
+fn apply_decisions_for_batch_mutates_only_decided_samples() {
+    let mut comps = vec![
+        comp_with_shared_left_candidate(),
+        comp_with_shared_left_candidate(),
+        comp_with_two_unsplittable_terms(),
+    ];
+    let spaces =
+        action_spaces_for_batch(&comps, &[Some(0), Some(0), Some(0)]).unwrap();
+    let decision = first_full_decision(spaces[0].as_ref().unwrap());
+    let before = comps.clone();
+
+    let applied = apply_decisions_for_batch(
+        &mut comps,
+        &spaces,
+        &[Some(decision), None, None],
+    )
+    .unwrap();
+
+    assert_eq!(applied, vec![true, false, false]);
+    assert_ne!(comps[0], before[0]);
+    assert_eq!(comps[1], before[1]);
+    assert_eq!(comps[2], before[2]);
+    assert_eq!(comps[0].validate(), Ok(()));
+}
+
+#[test]
+fn apply_decisions_for_batch_rejects_decision_without_space() {
+    let mut comps = vec![comp_with_shared_left_candidate()];
+    let decision = Decision {
+        candidate_index: 0,
+        left_mask: vec![true],
+        right_mask: vec![true],
+    };
+
+    assert_eq!(
+        apply_decisions_for_batch(&mut comps, &[None], &[Some(decision)]),
+        Err(BatchRewriteError::DecisionWithoutActionSpace { sample: 0 })
+    );
+}
+
+#[test]
+fn apply_decisions_for_batch_reports_length_mismatches() {
+    let mut comps = vec![
+        comp_with_shared_left_candidate(),
+        comp_with_shared_left_candidate(),
+    ];
+
+    assert_eq!(
+        apply_decisions_for_batch(&mut comps, &[None], &[None, None]),
+        Err(BatchRewriteError::LengthMismatch {
+            field: BatchField::Spaces,
+            expected: 2,
+            got: 1,
+        })
+    );
+    assert_eq!(
+        apply_decisions_for_batch(&mut comps, &[None, None], &[None]),
+        Err(BatchRewriteError::LengthMismatch {
+            field: BatchField::Decisions,
+            expected: 2,
+            got: 1,
+        })
     );
 }
