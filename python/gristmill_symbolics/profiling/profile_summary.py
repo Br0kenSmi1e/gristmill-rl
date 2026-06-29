@@ -48,6 +48,7 @@ class XlaAllocationSummary:
     text: str
     context: tuple[str, ...] = ()
     context_shapes: tuple[str, ...] = ()
+    context_value_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,11 @@ def format_summary(summary: ProfileRunSummary) -> str:
                 f"{size}  {allocation.shape or '(shape missing)'}  "
                 f"{allocation.source}  {allocation.text}"
             )
+            if allocation.context_value_count:
+                lines.append(
+                    f"  context_values_shown={len(allocation.context)}/"
+                    f"{allocation.context_value_count}"
+                )
             if allocation.context_shapes:
                 lines.append(f"  context_shapes={', '.join(allocation.context_shapes)}")
             for context_line in allocation.context:
@@ -333,10 +339,12 @@ def _scan_xla_dump(run_dir: Path) -> _XlaScan:
             for shape in _shape_strings(stripped):
                 shape_counts[shape] += 1
                 shape_sources[shape].add(rel_source)
+            context, context_value_count = _allocation_context(lines, line_number - 1)
             allocation = _allocation_summary(
                 stripped,
                 f"{rel_source}:{line_number}",
-                _allocation_context(lines, line_number - 1),
+                context,
+                context_value_count,
             )
             if allocation is not None:
                 allocations.append(allocation)
@@ -352,6 +360,7 @@ def _allocation_summary(
     line: str,
     source: str,
     context: tuple[str, ...],
+    context_value_count: int,
 ) -> XlaAllocationSummary | None:
     lower = line.lower()
     if "allocation" not in lower and "bytes used" not in lower:
@@ -371,13 +380,14 @@ def _allocation_summary(
         text=line,
         context=context,
         context_shapes=context_shapes,
+        context_value_count=context_value_count,
     )
 
 
-def _allocation_context(lines: list[str], header_index: int) -> tuple[str, ...]:
+def _allocation_context(lines: list[str], header_index: int) -> tuple[tuple[str, ...], int]:
     header = lines[header_index].strip()
     if not _ALLOCATION_HEADER_RE.match(header):
-        return ()
+        return (), 0
     context: list[str] = []
     for line in lines[header_index + 1 :]:
         stripped = line.strip()
@@ -386,9 +396,13 @@ def _allocation_context(lines: list[str], header_index: int) -> tuple[str, ...]:
         if _ALLOCATION_HEADER_RE.match(stripped):
             break
         context.append(stripped)
-        if len(context) >= _XLA_ALLOCATION_CONTEXT_LIMIT:
-            break
-    return tuple(context)
+    ranked = sorted(context, key=_allocation_context_sort_key, reverse=True)
+    return tuple(ranked[:_XLA_ALLOCATION_CONTEXT_LIMIT]), len(context)
+
+
+def _allocation_context_sort_key(line: str) -> tuple[bool, int]:
+    size = _line_size_bytes(line)
+    return size is not None, size or 0
 
 
 def _line_size_bytes(line: str) -> int | None:

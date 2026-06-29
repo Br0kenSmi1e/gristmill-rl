@@ -185,3 +185,47 @@ def test_summarize_run_includes_large_allocation_context(tmp_path: Path):
     formatted = format_summary(summary)
     assert "context_shapes=f32[8,5000,5000], pred[8,5000,5000]" in formatted
     assert "value: <fusion.12 @0>" in formatted
+
+
+def test_summarize_run_reports_largest_values_inside_allocation_context(tmp_path: Path):
+    xla_dir = tmp_path / "xla"
+    xla_dir.mkdir()
+    small_values = [
+        f"  value: <small.{index} @0> (size=40000,offset={index}): pred[8,5000]{{1,0}}"
+        for index in range(10)
+    ]
+    (xla_dir / "module_0004.jit_score_target.buffer-assignment.txt").write_text(
+        "\n".join(
+            [
+                "BufferAssignment:",
+                "allocation 183: size 2409769272, preallocated-temp:",
+                *small_values,
+                "  value: <attention_scores @0> (size=800000000,offset=409600): f32[8,5000,5000]{2,1,0}",
+                "  value: <pooling_tile @0> (size=163840000,offset=800409600): f32[8,128,5000,8]{3,2,1,0}",
+                "allocation 184: size 160000, parameter 0, shape |s32[8,5000]| at ShapeIndex {}:",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_run(tmp_path)
+    allocation = summary.largest_xla_allocations[0]
+
+    assert allocation.context_value_count == 12
+    assert allocation.context[0] == (
+        "value: <attention_scores @0> (size=800000000,offset=409600): "
+        "f32[8,5000,5000]{2,1,0}"
+    )
+    assert allocation.context[1] == (
+        "value: <pooling_tile @0> (size=163840000,offset=800409600): "
+        "f32[8,128,5000,8]{3,2,1,0}"
+    )
+    assert allocation.context_shapes[:2] == (
+        "f32[8,5000,5000]",
+        "f32[8,128,5000,8]",
+    )
+
+    formatted = format_summary(summary)
+    assert "context_values_shown=8/12" in formatted
+    assert "f32[8,5000,5000]" in formatted
