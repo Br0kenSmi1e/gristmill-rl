@@ -111,10 +111,12 @@ RUN=/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1-bs2
 uv run --no-sync python tools/summarize_profile_run.py "$RUN" --json
 ```
 
-## OOM And HLO Boundary Profile
+## OOM And Peak XLA Profile
 
-Use this after the completed baseline to capture the peak/failure shape. It
-skips cProfile overhead and writes HLO text into `$RUN/xla`.
+Use this after the completed baseline to capture the peak/failure context. It
+skips cProfile overhead and writes HLO text into `$RUN/xla`. The summary command
+then extracts the failing executable, failed allocation size, largest XLA shapes,
+and largest XLA buffer-allocation lines from the run directory.
 
 ```bash
 cd python
@@ -139,6 +141,40 @@ RUN=$RUN_ROOT/batch8-oom-xla
 uv run --no-sync python tools/summarize_profile_run.py "$RUN"
 ```
 
+The key sections in the summary are:
+
+- `== failure ==`, for the failed executable and requested allocation;
+- `== memory ==`, for sampled peak GPU memory and host RSS;
+- `== rollout phases ==`, for the phase reached before OOM;
+- `== largest xla shapes ==`, for estimated tensor sizes from `$RUN/xla`;
+- `== largest xla allocation lines ==`, for buffer-assignment and memory-report
+  lines when XLA emits them.
+
+If `largest xla allocation lines` is empty but `largest xla shapes` is present,
+rerun the same command with the deeper dump flag:
+
+```bash
+uv run --no-sync python tools/profile_ccsd_memory.py \
+  --input "$INPUT" \
+  --run-root "$RUN_ROOT" \
+  --run-name batch8-oom-xla-all-passes \
+  --updates 1 \
+  --batch-size 8 \
+  --max-steps 64 \
+  --seed 42 \
+  --state-token-pad-to 3072 \
+  --action-token-pad-to 4096 \
+  --definition-pad-to 128 \
+  --no-cprofile \
+  --xla-dump-all-passes
+
+RUN=$RUN_ROOT/batch8-oom-xla-all-passes
+uv run --no-sync python tools/summarize_profile_run.py "$RUN"
+```
+
+`--xla-dump-all-passes` can write a large `$RUN/xla` directory. Use it only when
+the standard `--xla-dump` run did not include enough buffer-assignment detail.
+
 ## Environment Flags
 
 The profile runner sets these for the training subprocess:
@@ -153,7 +189,8 @@ makes phase timings more useful, but can increase total wall time. Use
 `--no-rollout-sync` when collecting lower-overhead compile-count-only runs.
 
 `--xla-dump` appends `--xla_dump_to=$RUN/xla --xla_dump_hlo_as_text` to
-`XLA_FLAGS`.
+`XLA_FLAGS`. `--xla-dump-all-passes` implies `--xla-dump` and also appends
+`--xla_dump_hlo_pass_re=.*`.
 
 ## Artifacts To Keep
 
@@ -178,4 +215,5 @@ Before and after a memory optimization, compare:
 - `/usr/bin/time -v` max RSS, reported as `max_rss_kbytes`;
 - JAX compile count;
 - rollout phase totals and max token dimensions;
-- OOM HLO shapes from `stderr.log` and `xla/`.
+- failure allocation and executable from `stderr.log`;
+- largest XLA shapes and allocation lines from `xla/`.

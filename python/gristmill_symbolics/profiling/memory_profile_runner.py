@@ -27,6 +27,7 @@ class MemoryProfileConfig:
     sample_ms: int
     cprofile: bool
     xla_dump: bool
+    xla_dump_all_passes: bool
     rollout_sync: bool
     python_executable: str
     repo_root: Path
@@ -131,6 +132,8 @@ def _make_run_dir(config: MemoryProfileConfig) -> Path:
         suffix = f"bs{config.batch_size}"
         if config.xla_dump:
             suffix += "-xla"
+        if config.xla_dump_all_passes:
+            suffix += "-all-passes"
         name = f"{now}-{suffix}"
     return config.run_root / name
 
@@ -212,7 +215,10 @@ def _profile_env(config: MemoryProfileConfig, run_dir: Path) -> dict[str, str]:
     if config.xla_dump:
         xla_dir = run_dir / "xla"
         xla_dir.mkdir(parents=True, exist_ok=True)
-        dump_flags = f"--xla_dump_to={xla_dir} --xla_dump_hlo_as_text"
+        flags = [f"--xla_dump_to={xla_dir}", "--xla_dump_hlo_as_text"]
+        if config.xla_dump_all_passes:
+            flags.append("--xla_dump_hlo_pass_re=.*")
+        dump_flags = " ".join(flags)
         existing = env.get("XLA_FLAGS")
         env["XLA_FLAGS"] = f"{existing} {dump_flags}" if existing else dump_flags
     return env
@@ -253,6 +259,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--sample-ms", type=_positive_int, default=250)
     parser.add_argument("--no-cprofile", action="store_true")
     parser.add_argument("--xla-dump", action="store_true")
+    parser.add_argument(
+        "--xla-dump-all-passes",
+        action="store_true",
+        help=(
+            "Dump text for every XLA HLO pass. This implies --xla-dump and can "
+            "write a large xla/ directory."
+        ),
+    )
     parser.add_argument("--no-rollout-sync", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=_default_repo_root())
     return parser
@@ -273,7 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         definition_pad_to=args.definition_pad_to,
         sample_ms=args.sample_ms,
         cprofile=not args.no_cprofile,
-        xla_dump=args.xla_dump,
+        xla_dump=args.xla_dump or args.xla_dump_all_passes,
+        xla_dump_all_passes=args.xla_dump_all_passes,
         rollout_sync=not args.no_rollout_sync,
         python_executable=sys.executable,
         repo_root=args.repo_root.resolve(),

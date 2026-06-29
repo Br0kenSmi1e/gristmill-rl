@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from gristmill_symbolics.profiling.profile_summary import summarize_run
+from gristmill_symbolics.profiling.profile_summary import format_summary, summarize_run
 
 
 def test_summarize_run_reports_peak_gpu_memory_time_and_rollout_phases(
@@ -72,3 +72,83 @@ def test_summarize_run_extracts_oom_hlo_shapes(tmp_path: Path):
 
     assert "f32[8,3542,3542,8]" in summary.oom_hlo_shapes
     assert "f32[8,3542,8]" in summary.oom_hlo_shapes
+
+
+def test_summarize_run_extracts_failed_allocation_context(tmp_path: Path):
+    (tmp_path / "stderr.log").write_text(
+        "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while "
+        "trying to allocate 2.24GiB. [executable_name='jit_score_target'] "
+        "[tf-allocator-allocation-error='']\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_run(tmp_path)
+
+    assert summary.failed_executable_name == "jit_score_target"
+    assert summary.failed_allocation_bytes == int(2.24 * 1024**3)
+    assert summary.failed_allocation_text == "2.24GiB"
+
+    formatted = format_summary(summary)
+    assert "failed_executable=jit_score_target" in formatted
+    assert "failed_allocation=2.24 GiB requested (2.24GiB)" in formatted
+
+
+def test_summarize_run_reports_largest_xla_shapes(tmp_path: Path):
+    xla_dir = tmp_path / "xla"
+    xla_dir.mkdir()
+    (xla_dir / "module_0001.jit_score_target.before_optimizations.txt").write_text(
+        "\n".join(
+            [
+                "ENTRY %main {",
+                "  %scores = f32[8,5000,5000]{2,1,0} dot(%q, %k)",
+                "  %weights = f32[8,5000,5000]{2,1,0} exponential(%scores)",
+                "  %activations = bf16[8,5000,5000]{2,1,0} convert(%scores)",
+                "  %defs = f32[8,128,64]{2,1,0} parameter(0)",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_run(tmp_path)
+
+    assert summary.xla_files_scanned == 1
+    assert summary.largest_xla_shapes[0].shape == "f32[8,5000,5000]"
+    assert summary.largest_xla_shapes[0].estimated_bytes == 8 * 5000 * 5000 * 4
+    assert summary.largest_xla_shapes[0].count == 2
+    assert summary.largest_xla_shapes[0].sources == (
+        "xla/module_0001.jit_score_target.before_optimizations.txt",
+    )
+    assert summary.largest_xla_shapes[1].shape == "bf16[8,5000,5000]"
+
+    formatted = format_summary(summary)
+    assert "762.94 MiB  count=2  f32[8,5000,5000]" in formatted
+    assert "381.47 MiB  count=1  bf16[8,5000,5000]" in formatted
+
+
+def test_summarize_run_reports_largest_xla_buffer_allocations(tmp_path: Path):
+    xla_dir = tmp_path / "xla"
+    xla_dir.mkdir()
+    (xla_dir / "module_0002.jit_score_target.buffer-assignment.txt").write_text(
+        "\n".join(
+            [
+                "BufferAssignment:",
+                "allocation 7: size 2405181685, shape f32[8,5000,5000]{2,1,0}",
+                "allocation 8: size 536870912, shape f32[8,128,1024]{2,1,0}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_run(tmp_path)
+
+    assert summary.largest_xla_allocations[0].size_bytes == 2405181685
+    assert summary.largest_xla_allocations[0].shape == "f32[8,5000,5000]"
+    assert summary.largest_xla_allocations[0].source == (
+        "xla/module_0002.jit_score_target.buffer-assignment.txt:2"
+    )
+
+    formatted = format_summary(summary)
+    assert "2.24 GiB  f32[8,5000,5000]" in formatted
