@@ -24,7 +24,7 @@ print(jax.devices())
 PY
 ```
 
-## Single Profile Run
+## Baseline Memory Profile
 
 This records:
 
@@ -32,76 +32,54 @@ This records:
 - JAX compile logs, rollout phase JSON events, and `/usr/bin/time -v` in
   `stderr.log`;
 - Python cProfile data in `profile.prof`;
-- GPU utilization and memory samples in `nvidia-smi.csv`.
+- GPU utilization and memory samples in `nvidia-smi.csv`;
+- before/after `nvidia-smi -q -d MEMORY` snapshots;
+- git SHA/status and JAX device metadata.
 
 ```bash
 cd python
-RUN=/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1
-mkdir -p "$RUN"
+INPUT=../tmp/ccsd/working_eqn.json
+RUN_ROOT=/tmp/ccsd-profile/model-trainer-protocols-4060ti
 
-nvidia-smi \
-  --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.free,power.draw \
-  --format=csv \
-  -lms 500 > "$RUN/nvidia-smi.csv" &
-SMI_PID=$!
-
-XLA_PYTHON_CLIENT_PREALLOCATE=false \
-JAX_LOG_COMPILES=1 \
-GRISTMILL_PROFILE_ROLLOUT=1 \
-GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
-/usr/bin/time -v uv run --no-sync python -m cProfile -o "$RUN/profile.prof" \
-  -m gristmill_symbolics.cli.train \
+uv run --no-sync python tools/profile_ccsd_memory.py \
   --input "$INPUT" \
+  --run-root "$RUN_ROOT" \
+  --run-name updates1-bs2 \
   --updates 1 \
   --batch-size 2 \
   --max-steps 64 \
   --seed 42 \
   --state-token-pad-to 3072 \
   --action-token-pad-to 4096 \
-  --definition-pad-to 128 \
-  > "$RUN/stdout.jsonl" \
-  2> "$RUN/stderr.log"
+  --definition-pad-to 128
 
-STATUS=$?
-kill "$SMI_PID"
-test "$STATUS" -eq 0
+RUN=$RUN_ROOT/updates1-bs2
+uv run --no-sync python tools/summarize_profile_run.py "$RUN"
 ```
 
-## Updates 1/2/3 Compile Profile
+## Updates 1/2/3 Baseline Series
 
 ```bash
 cd python
+INPUT=../tmp/ccsd/working_eqn.json
+RUN_ROOT=/tmp/ccsd-profile/model-trainer-protocols-4060ti
+
 for UPDATES in 1 2 3; do
-  RUN="/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates${UPDATES}"
-  mkdir -p "$RUN"
-
-  nvidia-smi \
-    --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.free,power.draw \
-    --format=csv \
-    -lms 500 > "$RUN/nvidia-smi.csv" &
-  SMI_PID=$!
-
-  XLA_PYTHON_CLIENT_PREALLOCATE=false \
-  JAX_LOG_COMPILES=1 \
-  GRISTMILL_PROFILE_ROLLOUT=1 \
-  GRISTMILL_PROFILE_ROLLOUT_SYNC=1 \
-  /usr/bin/time -v uv run --no-sync python -m cProfile -o "$RUN/profile.prof" \
-    -m gristmill_symbolics.cli.train \
+  uv run --no-sync python tools/profile_ccsd_memory.py \
     --input "$INPUT" \
+    --run-root "$RUN_ROOT" \
+    --run-name "updates${UPDATES}-bs2" \
     --updates "$UPDATES" \
     --batch-size 2 \
     --max-steps 64 \
     --seed 42 \
     --state-token-pad-to 3072 \
     --action-token-pad-to 4096 \
-    --definition-pad-to 128 \
-    > "$RUN/stdout.jsonl" \
-    2> "$RUN/stderr.log"
+    --definition-pad-to 128
 
-  STATUS=$?
-  kill "$SMI_PID"
+  STATUS=$(cat "$RUN_ROOT/updates${UPDATES}-bs2/status.txt")
   if [ "$STATUS" -ne 0 ]; then
-    echo "profile failed for updates=${UPDATES}; see $RUN/stderr.log" >&2
+    echo "profile failed for updates=${UPDATES}; see $RUN_ROOT/updates${UPDATES}-bs2/stderr.log" >&2
     break
   fi
 done
@@ -111,7 +89,7 @@ done
 
 ```bash
 for UPDATES in 1 2 3; do
-  RUN="/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates${UPDATES}"
+  RUN="/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates${UPDATES}-bs2"
   printf 'updates=%s compiles=%s final=%s\n' \
     "$UPDATES" \
     "$(grep -c '^Compiling' "$RUN/stderr.log")" \
@@ -119,54 +97,85 @@ for UPDATES in 1 2 3; do
 done
 ```
 
-Rollout phase totals:
+Full summary for one run:
 
 ```bash
-uv run --no-sync python - /tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1/stderr.log <<'PY'
-import collections
-import json
-import sys
-
-totals = collections.defaultdict(float)
-counts = collections.Counter()
-max_state = 0
-max_action = 0
-max_defs = 0
-
-with open(sys.argv[1]) as handle:
-    for line in handle:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("event") != "rollout_phase":
-            continue
-        phase = event["phase"]
-        totals[phase] += float(event["elapsed_ms"])
-        counts[phase] += 1
-        max_state = max(max_state, int(event.get("state_token_len_max") or 0))
-        max_action = max(max_action, int(event.get("action_token_len_max") or 0))
-        max_defs = max(max_defs, int(event.get("definition_count_max") or 0))
-
-for phase, elapsed_ms in sorted(totals.items(), key=lambda item: item[1], reverse=True):
-    print(f"{phase:28s} {elapsed_ms:12.3f} ms  count={counts[phase]}")
-print(f"max_state_token_len={max_state}")
-print(f"max_action_token_len={max_action}")
-print(f"max_definition_count={max_defs}")
-PY
+RUN=/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1-bs2
+uv run --no-sync python tools/summarize_profile_run.py "$RUN"
 ```
 
-`/usr/bin/time -v` summary:
+Machine-readable summary:
 
 ```bash
-rg 'Elapsed|Maximum resident set size|User time|System time|Exit status' \
-  /tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1/stderr.log
+RUN=/tmp/ccsd-profile/model-trainer-protocols-4060ti/updates1-bs2
+uv run --no-sync python tools/summarize_profile_run.py "$RUN" --json
+```
+
+## OOM And HLO Boundary Profile
+
+Use this after the completed baseline to capture the peak/failure shape. It
+skips cProfile overhead and writes HLO text into `$RUN/xla`.
+
+```bash
+cd python
+INPUT=../tmp/ccsd/working_eqn.json
+RUN_ROOT=/tmp/ccsd-profile/model-trainer-protocols-4060ti
+
+uv run --no-sync python tools/profile_ccsd_memory.py \
+  --input "$INPUT" \
+  --run-root "$RUN_ROOT" \
+  --run-name batch8-oom-xla \
+  --updates 1 \
+  --batch-size 8 \
+  --max-steps 64 \
+  --seed 42 \
+  --state-token-pad-to 3072 \
+  --action-token-pad-to 4096 \
+  --definition-pad-to 128 \
+  --no-cprofile \
+  --xla-dump
+
+RUN=$RUN_ROOT/batch8-oom-xla
+uv run --no-sync python tools/summarize_profile_run.py "$RUN"
 ```
 
 ## Environment Flags
 
-`GRISTMILL_PROFILE_ROLLOUT=1` enables rollout phase JSON lines on `stderr`.
+The profile runner sets these for the training subprocess:
+
+- `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+- `JAX_LOG_COMPILES=1`
+- `GRISTMILL_PROFILE_ROLLOUT=1`
+- `GRISTMILL_PROFILE_ROLLOUT_SYNC=1`, unless `--no-rollout-sync` is passed
 
 `GRISTMILL_PROFILE_ROLLOUT_SYNC=1` blocks JAX values inside timed phases. This
-makes phase timings more useful, but can increase total wall time. Set it to
-`0` when collecting lower-overhead compile-count-only runs.
+makes phase timings more useful, but can increase total wall time. Use
+`--no-rollout-sync` when collecting lower-overhead compile-count-only runs.
+
+`--xla-dump` appends `--xla_dump_to=$RUN/xla --xla_dump_hlo_as_text` to
+`XLA_FLAGS`.
+
+## Artifacts To Keep
+
+Keep the whole run directory. The most important files are:
+
+- `command.txt`
+- `git-sha.txt`
+- `git-status.txt`
+- `jax-env.txt`
+- `stdout.jsonl`
+- `stderr.log`
+- `profile.prof`, when cProfile is enabled
+- `nvidia-smi.csv`
+- `nvidia-before.txt`
+- `nvidia-after.txt`
+- `status.txt`
+- `xla/`, for `--xla-dump` runs
+
+Before and after a memory optimization, compare:
+
+- `peak_gpu_memory_mib` from `tools/summarize_profile_run.py`;
+- `/usr/bin/time -v` max RSS, reported as `max_rss_kbytes`;
+- JAX compile count;
+- rollout phase totals and max token dimensions;
+- OOM HLO shapes from `stderr.log` and `xla/`.
