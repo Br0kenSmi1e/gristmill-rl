@@ -1,21 +1,26 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+BatchedStateType = TypeVar("BatchedStateType")
+BatchedTransitionType = TypeVar("BatchedTransitionType")
 
 
-class ExpressionModel(Protocol):
-    @property
-    def batch_size(self) -> int:
-        ...
-
+class StepwiseModel(Protocol[BatchedStateType, BatchedTransitionType]):
     def init_params(self, rng) -> object:
         ...
 
-    def sample_with_logp_grad(
+    def sample_step(
         self,
         params,
         rng,
-        row,
-    ) -> tuple[object, object, object, Mapping[str, object]]:
+        states: BatchedStateType,
+    ) -> tuple[BatchedStateType, object, object]:
+        ...
+
+    def score_step(
+        self,
+        params,
+        transitions: BatchedTransitionType,
+    ) -> tuple[object, object]:
         ...
