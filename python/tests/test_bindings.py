@@ -6,42 +6,44 @@ import pytest
 
 from gristmill_symbolics import (
     ActionSpace,
-    ActionSpaceRow,
     GristmillSymbolicsError,
-    RewriteState,
-    RewriteStateRow,
     TensorComputation,
-    ValidatedActionRow,
+    action_space_for_def,
+    action_spaces_for_batch,
+    apply_decision,
+    apply_decisions_for_batch,
     validate_decision,
+    validate_decisions_for_batch,
 )
-
 
 ROOT = Path(__file__).resolve().parents[2]
 BASIC_FIXTURE = ROOT / "tests" / "fixtures" / "repr" / "basic.json"
 
 
-def test_module_exports_core_types():
+def test_module_exports_thin_rewrite_surface():
     import gristmill_symbolics
 
-    assert hasattr(gristmill_symbolics, "TensorComputation")
-    assert hasattr(gristmill_symbolics, "RewriteState")
-    assert hasattr(gristmill_symbolics, "ActionSpace")
-    assert hasattr(gristmill_symbolics, "RewriteStateRow")
-    assert hasattr(gristmill_symbolics, "ActionSpaceRow")
-    assert hasattr(gristmill_symbolics, "ValidatedActionRow")
-    assert hasattr(gristmill_symbolics, "GristmillSymbolicsError")
-    assert hasattr(gristmill_symbolics, "validate_decision")
-    assert not hasattr(TensorComputation, "next_" "action_space")
-    assert not hasattr(TensorComputation, "apply_decision_" "with_space")
-    assert not hasattr(RewriteState, "step_" "with_space")
+    assert gristmill_symbolics.__all__ == (
+        "ActionSpace",
+        "GristmillSymbolicsError",
+        "TensorComputation",
+        "action_space_for_def",
+        "action_spaces_for_batch",
+        "apply_decision",
+        "apply_decisions_for_batch",
+        "validate_decision",
+        "validate_decisions_for_batch",
+    )
+    assert not hasattr(gristmill_symbolics, "RewriteState")
+    assert not hasattr(gristmill_symbolics, "RewriteStateRow")
+    assert not hasattr(gristmill_symbolics, "ActionSpaceRow")
+    assert not hasattr(gristmill_symbolics, "ValidatedActionRow")
 
 
 def test_load_json_validates_and_snapshots_basic_fixture():
     comp = TensorComputation.load_json(BASIC_FIXTURE)
 
-    snapshot = comp.snapshot()
-
-    assert snapshot == {
+    assert comp.snapshot() == {
         "ranges": [{"id": 0, "size": 3}],
         "tensors": [
             {
@@ -66,9 +68,8 @@ def test_load_json_validates_and_snapshots_basic_fixture():
 
 
 def test_from_json_string_validates_and_clones():
-    text = BASIC_FIXTURE.read_text()
+    comp = TensorComputation.from_json_string(BASIC_FIXTURE.read_text())
 
-    comp = TensorComputation.from_json_string(text)
     clone = comp.clone()
 
     assert clone.snapshot() == comp.snapshot()
@@ -182,418 +183,65 @@ def first_full_decision(space):
     }
 
 
-def first_padded_choice(space_snapshot, *, left_pad=2, right_pad=2):
-    template = space_snapshot["candidate_templates"][0]
-    left_len = len(template["left_definition"]["terms"])
-    right_len = len(template["right_definition"]["terms"])
-    return {
-        "candidate_index": 0,
-        "left_mask": [True] * left_len + [False] * left_pad,
-        "left_valid_mask": [True] * left_len + [False] * left_pad,
-        "right_mask": [True] * right_len + [False] * right_pad,
-        "right_valid_mask": [True] * right_len + [False] * right_pad,
-    }
-
-
-def test_rewrite_state_from_computation_clones_input_computation():
+def test_action_space_for_def_returns_visible_factorization_templates():
     comp = TensorComputation.from_json_string(actionable_json())
-    before = comp.snapshot()
-    state = RewriteState.from_computation(comp)
-    space = state.action_space_for_def(0)
-    decision = first_full_decision(space)
 
-    validate_decision(space, decision)
-    state.apply_validated_decision(space, decision)
-
-    assert comp.snapshot() == before
-    assert state.snapshot() != before
-
-
-def test_rewrite_state_returns_none_for_basic_fixture():
-    comp = TensorComputation.load_json(BASIC_FIXTURE)
-    state = RewriteState.from_computation(comp)
-
-    assert state.definition_mask() == [False]
-    assert state.action_space_for_def(0) is None
-
-
-def test_rewrite_state_definition_mask_returns_copy():
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-    mask = state.definition_mask()
-
-    mask[0] = False
-
-    assert state.definition_mask() == [True]
-
-
-def test_rewrite_state_refines_exact_empty_mask_to_false():
-    comp = TensorComputation.from_json_string(exact_empty_json())
-    state = RewriteState.from_computation(comp)
-
-    assert state.definition_mask() == [True]
-    assert state.action_space_for_def(0) is None
-    assert state.definition_mask() == [False]
-
-
-def test_rewrite_state_row_from_states_preserves_length_masks_and_snapshots():
-    left = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
-    right = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
-
-    row = RewriteStateRow.from_states([left, right])
-
-    assert row.len() == 2
-    assert row.definition_masks() == [left.definition_mask(), right.definition_mask()]
-    assert row.snapshots() == [left.snapshot(), right.snapshot()]
-
-
-def test_rewrite_state_row_log_total_flops_matches_scalar_states():
-    left = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
-    right = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
-    row = RewriteStateRow.from_states([left, right])
-
-    values = row.log_total_flops()
-
-    assert values == pytest.approx([left.log_total_flops(), right.log_total_flops()])
-
-
-def test_row_query_action_spaces_skips_stop_and_inactive_and_snapshots_non_empty():
-    active = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
-    stop = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
-    inactive = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
-    row = RewriteStateRow.from_states([active, stop, inactive])
-
-    spaces = row.query_action_spaces_for_row([0, -1, 0], [True, True, False])
-
-    assert isinstance(spaces, ActionSpaceRow)
-    assert spaces.len() == 3
-    assert spaces.entry_kinds() == ["non_empty", "skipped", "skipped"]
-    snapshots = spaces.snapshots()
-    assert snapshots[0] is not None
-    assert snapshots[0]["def_index"] == 0
-    assert snapshots[1] is None
-    assert snapshots[2] is None
-
-
-def test_row_query_exact_empty_refines_only_owning_python_row_state():
-    exact = RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json()))
-    actionable = RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))
-    row = RewriteStateRow.from_states([exact, actionable])
-
-    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
-
-    assert spaces.entry_kinds() == ["exact_empty", "non_empty"]
-    assert spaces.snapshots()[0] is None
-    assert row.definition_masks() == [[False], [True]]
-
-
-def test_row_query_rejects_python_length_mismatches():
-    row = RewriteStateRow.from_states(
-        [
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-        ]
-    )
-
-    with pytest.raises(GristmillSymbolicsError, match="target_choices"):
-        row.query_action_spaces_for_row([0], [True, True])
-
-    with pytest.raises(GristmillSymbolicsError, match="active_mask"):
-        row.query_action_spaces_for_row([0, 0], [True])
-
-
-def test_row_validate_actions_trims_padded_masks_and_application_matches_scalar():
-    comp = TensorComputation.from_json_string(actionable_json())
-    scalar = RewriteState.from_computation(comp)
-    scalar_space = scalar.action_space_for_def(0)
-    scalar_decision = first_full_decision(scalar_space)
-    validate_decision(scalar_space, scalar_decision)
-    scalar.apply_validated_decision(scalar_space, scalar_decision)
-
-    row = RewriteStateRow.from_states([RewriteState.from_computation(comp)])
-    spaces = row.query_action_spaces_for_row([0], [True])
-    choice = first_padded_choice(spaces.snapshots()[0], left_pad=3, right_pad=4)
-
-    validated = row.validate_actions_for_row(spaces, [choice], [True])
-    applied = row.apply_validated_actions_for_row(validated)
-
-    assert isinstance(validated, ValidatedActionRow)
-    assert validated.len() == 1
-    assert validated.entry_kinds() == ["valid"]
-    assert applied == [True]
-    assert row.snapshots()[0] == scalar.snapshot()
-
-
-def test_row_validate_actions_skips_unscored_padded_entries():
-    row = RewriteStateRow.from_states(
-        [
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-            RewriteState.from_computation(TensorComputation.from_json_string(exact_empty_json())),
-        ]
-    )
-    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
-    choice = first_padded_choice(spaces.snapshots()[0])
-
-    validated = row.validate_actions_for_row(spaces, [choice, None], [True, False])
-    applied = row.apply_validated_actions_for_row(validated)
-
-    assert validated.entry_kinds() == ["valid", "skipped"]
-    assert applied == [True, False]
-
-
-def test_row_validate_actions_rejects_padded_shape_errors_before_rust_validation():
-    row = RewriteStateRow.from_states(
-        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
-    )
-    spaces = row.query_action_spaces_for_row([0], [True])
-    choice = first_padded_choice(spaces.snapshots()[0])
-    choice["left_valid_mask"] = [True]
-
-    with pytest.raises(ValueError, match="sample 0.*left"):
-        row.validate_actions_for_row(spaces, [choice], [True])
-
-    choice = first_padded_choice(spaces.snapshots()[0])
-    choice["right_valid_mask"] = [False] * len(choice["right_valid_mask"])
-
-    with pytest.raises(ValueError, match="sample 0.*right_valid_mask"):
-        row.validate_actions_for_row(spaces, [choice], [True])
-
-
-def test_row_validate_actions_invalid_choice_does_not_mutate_row():
-    row = RewriteStateRow.from_states(
-        [
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-        ]
-    )
-    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
-    bad = first_padded_choice(spaces.snapshots()[0])
-    bad["candidate_index"] = 999
-    good = first_padded_choice(spaces.snapshots()[1])
-    before = row.snapshots()
-
-    with pytest.raises(GristmillSymbolicsError, match="sample: 0"):
-        row.validate_actions_for_row(spaces, [bad, good], [True, True])
-
-    assert row.snapshots() == before
-
-
-def test_row_validate_actions_rejects_python_length_mismatches():
-    row = RewriteStateRow.from_states(
-        [
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-        ]
-    )
-    spaces = row.query_action_spaces_for_row([0, 0], [True, True])
-    choice = first_padded_choice(spaces.snapshots()[0])
-
-    with pytest.raises(ValueError, match="action_choices.*1.*action_score_mask.*2"):
-        row.validate_actions_for_row(spaces, [choice], [True, True])
-
-    with pytest.raises(ValueError, match="action_choices.*2.*action_score_mask.*1"):
-        row.validate_actions_for_row(spaces, [choice, choice], [True])
-
-    width_one = RewriteStateRow.from_states(
-        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
-    )
-    short_spaces = width_one.query_action_spaces_for_row([0], [True])
-
-    with pytest.raises(GristmillSymbolicsError, match="action_space_row"):
-        row.validate_actions_for_row(short_spaces, [choice, choice], [True, True])
-
-
-def test_row_validate_actions_rejects_bool_candidate_index():
-    row = RewriteStateRow.from_states(
-        [RewriteState.from_computation(TensorComputation.from_json_string(actionable_json()))]
-    )
-    spaces = row.query_action_spaces_for_row([0], [True])
-    choice = first_padded_choice(spaces.snapshots()[0])
-    choice["candidate_index"] = True
-
-    with pytest.raises(TypeError, match="candidate_index.*not bool"):
-        row.validate_actions_for_row(spaces, [choice], [True])
-
-
-def test_row_query_rejects_bool_target_choices():
-    row = RewriteStateRow.from_states(
-        [
-            RewriteState.from_computation(TensorComputation.from_json_string(actionable_json())),
-        ]
-    )
-
-    with pytest.raises(TypeError, match=r"target_choices\[0\].*not bool"):
-        row.query_action_spaces_for_row([True], [True])
-
-
-def test_rewrite_state_action_space_handle_and_public_snapshot():
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-
-    space = state.action_space_for_def(0)
-    snapshot = space.snapshot()
+    space = action_space_for_def(comp, 0)
 
     assert isinstance(space, ActionSpace)
     assert space.def_index == 0
-    assert space.candidate_count == len(snapshot["candidate_templates"])
     assert space.candidate_count > 0
-    assert set(snapshot) == {"def_index", "candidate_templates"}
-    assert snapshot["def_index"] == 0
-    first = snapshot["candidate_templates"][0]
-    assert set(first) == {
-        "left_definition",
-        "right_definition",
-        "rewritten_definition",
-    }
-    assert first["left_definition"]["terms"]
-    assert first["right_definition"]["terms"]
-    assert first["rewritten_definition"]["terms"]
+    candidate = space.snapshot()["candidate_templates"][0]
+    assert set(candidate) == {"left_definition", "right_definition"}
 
 
-def test_rewrite_state_cost_and_json_delegate_to_inner_computation():
+def test_action_space_for_def_returns_none_for_unfactorable_definition():
+    comp = TensorComputation.load_json(BASIC_FIXTURE)
+
+    assert action_space_for_def(comp, 0) is None
+
+
+def test_validate_and_apply_decision_call_rust_directly():
     comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-
-    value = state.log_total_flops()
-    text = state.to_json_string()
-    loaded = TensorComputation.from_json_string(text)
-
-    assert isinstance(value, float)
-    assert value == pytest.approx(comp.log_total_flops())
-    assert loaded.snapshot() == state.snapshot()
-
-
-def test_rewrite_state_apply_validated_decision_mutates_state_and_returns_none():
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-    space = state.action_space_for_def(0)
-    before = state.snapshot()
+    before = comp.snapshot()
+    space = action_space_for_def(comp, 0)
     decision = first_full_decision(space)
 
     validate_decision(space, decision)
-    result = state.apply_validated_decision(space, decision)
-    after = state.snapshot()
+    apply_decision(comp, space, decision)
 
-    assert result is None
-    assert len(after["tensors"]) == len(before["tensors"]) + 2
-    assert len(after["definitions"]) == len(before["definitions"]) + 2
+    after = comp.snapshot()
     assert after != before
-    assert len(state.definition_mask()) == len(after["definitions"])
+    assert len(after["definitions"]) == len(before["definitions"]) + 2
 
 
-def test_validate_decision_raises_and_does_not_mutate():
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-    space = state.action_space_for_def(0)
-    before = state.snapshot()
-    bad_decision = {
-        "candidate_index": 0,
-        "left_mask": [],
-        "right_mask": [True],
-    }
+def test_batch_rewrite_functions_mirror_rust_batch_api():
+    active = TensorComputation.from_json_string(actionable_json())
+    skipped = TensorComputation.from_json_string(actionable_json())
+    spaces = action_spaces_for_batch([active, skipped], [0, None])
+    decision = first_full_decision(spaces[0])
 
-    with pytest.raises(GristmillSymbolicsError):
-        validate_decision(space, bad_decision)
+    validate_decisions_for_batch(spaces, [decision, None])
+    applied = apply_decisions_for_batch([active, skipped], spaces, [decision, None])
 
-    assert state.snapshot() == before
-
-
-def test_validate_decision_rejects_malformed_decision_shape():
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-    space = state.action_space_for_def(0)
-
-    with pytest.raises(TypeError):
-        validate_decision(space, "not a dict")
-
-    with pytest.raises(ValueError):
-        validate_decision(
-            space,
-            {"candidate_index": 0, "left_mask": [True]},
-        )
-
-    with pytest.raises(TypeError):
-        validate_decision(
-            space,
-            {"candidate_index": True, "left_mask": [True], "right_mask": [True]},
-        )
-
-    with pytest.raises(ValueError):
-        validate_decision(
-            space,
-            {"candidate_index": -1, "left_mask": [True], "right_mask": [True]},
-        )
-
-    with pytest.raises(ValueError):
-        validate_decision(
-            space,
-            {"candidate_index": 2**128, "left_mask": [True], "right_mask": [True]},
-        )
-
-    with pytest.raises(TypeError):
-        validate_decision(
-            space,
-            {"candidate_index": 0, "left_mask": True, "right_mask": [True]},
-        )
-
-    with pytest.raises(TypeError):
-        validate_decision(
-            space,
-            {"candidate_index": 0, "left_mask": [1], "right_mask": [True]},
-        )
-
-
-def test_action_space_handle_is_reusable_on_multiple_states():
-    comp = TensorComputation.from_json_string(actionable_json())
-    source_state = RewriteState.from_computation(comp)
-    space = source_state.action_space_for_def(0)
-    decision = first_full_decision(space)
-    left = RewriteState.from_computation(comp)
-    right = RewriteState.from_computation(comp)
-
-    validate_decision(space, decision)
-    left.apply_validated_decision(space, decision)
-    validate_decision(space, decision)
-    right.apply_validated_decision(space, decision)
-
-    assert left.snapshot() == right.snapshot()
+    assert applied == [True, False]
+    assert len(active.snapshot()["definitions"]) == 3
+    assert len(skipped.snapshot()["definitions"]) == 1
 
 
 def test_to_json_string_round_trips_basic_fixture():
     comp = TensorComputation.load_json(BASIC_FIXTURE)
 
-    text = comp.to_json_string()
-    loaded = TensorComputation.from_json_string(text)
+    encoded = comp.to_json_string()
+    decoded = TensorComputation.from_json_string(encoded)
 
-    assert loaded.snapshot() == comp.snapshot()
+    assert decoded.snapshot() == comp.snapshot()
 
 
 def test_write_json_round_trips_basic_fixture(tmp_path):
     comp = TensorComputation.load_json(BASIC_FIXTURE)
-    output = tmp_path / "written.json"
+    path = tmp_path / "roundtrip.json"
 
-    comp.write_json(output)
-    loaded = TensorComputation.load_json(output)
+    comp.write_json(path)
 
-    assert loaded.snapshot() == comp.snapshot()
-
-
-def test_write_json_round_trips_rewritten_computation(tmp_path):
-    comp = TensorComputation.from_json_string(actionable_json())
-    state = RewriteState.from_computation(comp)
-    space = state.action_space_for_def(0)
-    assert space is not None
-    template = space.snapshot()["candidate_templates"][0]
-    decision = {
-        "candidate_index": 0,
-        "left_mask": [True] * len(template["left_definition"]["terms"]),
-        "right_mask": [True] * len(template["right_definition"]["terms"]),
-    }
-    validate_decision(space, decision)
-    state.apply_validated_decision(space, decision)
-    output = tmp_path / "rewritten.json"
-
-    state.write_json(output)
-    loaded = TensorComputation.load_json(output)
-
-    assert loaded.snapshot() == state.snapshot()
+    assert TensorComputation.load_json(path).snapshot() == comp.snapshot()
