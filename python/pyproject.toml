@@ -8,7 +8,8 @@ version = "0.1.0"
 requires-python = ">=3.11"
 description = "Python bindings for the gristmill-symbolics rewrite kernel"
 dependencies = [
-    "jax>=0.4",
+    "flax>=0.12",
+    "jax>=0.10",
     "numpy>=1.26",
     "optax>=0.2",
 ]
