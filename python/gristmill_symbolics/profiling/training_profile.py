@@ -36,6 +36,9 @@ class TrainingProfileCase:
     definition_pad_to: int
     candidate_pad_to: int
     side_term_pad_to: int
+    d_model: int
+    num_attention_layers: int
+    num_attention_heads: int
     sample_ms: int
     cprofile: bool
     xla_dump: bool
@@ -94,6 +97,12 @@ def build_train_command(case: TrainingProfileCase) -> list[str]:
             str(case.candidate_pad_to),
             "--side-term-pad-to",
             str(case.side_term_pad_to),
+            "--d-model",
+            str(case.d_model),
+            "--num-attention-layers",
+            str(case.num_attention_layers),
+            "--num-attention-heads",
+            str(case.num_attention_heads),
         ]
     )
     return command
@@ -464,6 +473,9 @@ def _build_cases(args) -> list[TrainingProfileCase]:
             definition_pad_to=args.definition_pad_to,
             candidate_pad_to=args.candidate_pad_to,
             side_term_pad_to=args.side_term_pad_to,
+            d_model=args.d_model,
+            num_attention_layers=args.num_attention_layers,
+            num_attention_heads=args.num_attention_heads,
             sample_ms=args.sample_ms,
             cprofile=args.cprofile,
             xla_dump=args.xla_dump,
@@ -491,11 +503,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-sizes", type=_int_list, default=(1, 2, 4))
     parser.add_argument("--max-steps", type=_positive_int, default=64)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--state-token-pad-to", type=_positive_int, default=4096)
-    parser.add_argument("--action-token-pad-to", type=_positive_int, default=4096)
+    parser.add_argument("--state-token-pad-to", type=_positive_int, default=5000)
+    parser.add_argument("--action-token-pad-to", type=_positive_int, default=5000)
     parser.add_argument("--definition-pad-to", type=_positive_int, default=128)
     parser.add_argument("--candidate-pad-to", type=_positive_int, default=2048)
     parser.add_argument("--side-term-pad-to", type=_positive_int, default=256)
+    parser.add_argument("--d-model", type=_positive_int, default=32)
+    parser.add_argument("--num-attention-layers", type=_positive_int, default=1)
+    parser.add_argument("--num-attention-heads", type=_positive_int, default=4)
     parser.add_argument("--sample-ms", type=_positive_int, default=250)
     parser.add_argument("--cprofile", action="store_true")
     parser.add_argument("--xla-dump", action="store_true")

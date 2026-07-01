@@ -46,6 +46,10 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
             "8",
             "--side-term-pad-to",
             "8",
+            "--d-model",
+            "8",
+            "--num-attention-heads",
+            "1",
             "--checkpoint-out",
             str(checkpoint_path),
         ]
@@ -105,6 +109,9 @@ def test_train_cli_wires_static_pads_to_model_checkpoint(tmp_path, capsys):
     assert checkpoint.model.definition_pad_to == 4
     assert checkpoint.model.candidate_pad_to == 8
     assert checkpoint.model.side_term_pad_to == 8
+    assert checkpoint.model.d_model == 32
+    assert checkpoint.model.num_attention_layers == 1
+    assert checkpoint.model.num_attention_heads == 4
 
 
 def test_train_cli_can_continue_from_checkpoint_using_saved_objects(
@@ -136,6 +143,10 @@ def test_train_cli_can_continue_from_checkpoint_using_saved_objects(
             "8",
             "--side-term-pad-to",
             "8",
+            "--d-model",
+            "8",
+            "--num-attention-heads",
+            "1",
             "--learning-rate",
             "0.0025",
             "--checkpoint-out",
@@ -198,6 +209,35 @@ def test_train_cli_requires_static_pads_for_fresh_run(tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main(["--input", str(input_path)])
+
+    assert exc_info.value.code == 2
+
+
+def test_train_cli_rejects_cudnn_incompatible_head_dim(tmp_path):
+    input_path = tmp_path / "actionable.json"
+    input_path.write_text(actionable_json())
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "--input",
+                str(input_path),
+                "--state-token-pad-to",
+                "256",
+                "--action-token-pad-to",
+                "256",
+                "--definition-pad-to",
+                "4",
+                "--candidate-pad-to",
+                "8",
+                "--side-term-pad-to",
+                "8",
+                "--d-model",
+                "8",
+                "--num-attention-heads",
+                "4",
+            ]
+        )
 
     assert exc_info.value.code == 2
 

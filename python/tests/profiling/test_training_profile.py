@@ -18,11 +18,14 @@ def _case(tmp_path: Path, *, cprofile: bool = False) -> TrainingProfileCase:
         batch_size=4,
         max_steps=64,
         seed=7,
-        state_token_pad_to=4096,
-        action_token_pad_to=4096,
+        state_token_pad_to=5000,
+        action_token_pad_to=5000,
         definition_pad_to=128,
         candidate_pad_to=2048,
         side_term_pad_to=256,
+        d_model=32,
+        num_attention_layers=1,
+        num_attention_heads=4,
         sample_ms=250,
         cprofile=cprofile,
         xla_dump=False,
@@ -40,8 +43,12 @@ def test_build_train_command_uses_static_padding_flags(tmp_path):
     assert "--updates" in command
     assert command[command.index("--updates") + 1] == "2"
     assert command[command.index("--batch-size") + 1] == "4"
+    assert command[command.index("--state-token-pad-to") + 1] == "5000"
+    assert command[command.index("--action-token-pad-to") + 1] == "5000"
     assert command[command.index("--candidate-pad-to") + 1] == "2048"
     assert command[command.index("--side-term-pad-to") + 1] == "256"
+    assert command[command.index("--d-model") + 1] == "32"
+    assert command[command.index("--num-attention-heads") + 1] == "4"
 
 
 def test_build_train_command_writes_cprofile_to_run_dir(tmp_path):

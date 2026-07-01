@@ -84,6 +84,10 @@ jax.nn.dot_product_attention(..., implementation="cudnn")
 when the JAX backend is GPU and `prefer_cudnn=True`. The encoder runs attention
 in `bfloat16` by default while parameters remain `float32`.
 
+The profiling defaults use `d_model=32` and `num_attention_heads=4`, so the
+attention head dimension is `8`. cuDNN requires the head dimension to be no
+larger than 128 and a multiple of 8.
+
 Verify the cuDNN path once with an XLA dump:
 
 ```bash
@@ -154,15 +158,19 @@ and `nvidia-smi.csv` files still capture the failure point.
 The default static pads are:
 
 ```text
-state_token_pad_to=4096
-action_token_pad_to=4096
+state_token_pad_to=5000
+action_token_pad_to=5000
 definition_pad_to=128
 candidate_pad_to=2048
 side_term_pad_to=256
+d_model=32
+num_attention_layers=1
+num_attention_heads=4
 ```
 
 Override them only when the CCSD input exceeds a pad or when testing a specific
-shape hypothesis.
+shape hypothesis. If you change the model width or head count, keep
+`d_model / num_attention_heads` no larger than 128 and divisible by 8.
 
 ## Output Layout
 

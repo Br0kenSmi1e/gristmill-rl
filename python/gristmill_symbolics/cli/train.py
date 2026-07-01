@@ -40,10 +40,24 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--definition-pad-to", type=_positive_int)
     parser.add_argument("--candidate-pad-to", type=_positive_int)
     parser.add_argument("--side-term-pad-to", type=_positive_int)
+    parser.add_argument("--d-model", type=_positive_int, default=32)
+    parser.add_argument("--num-attention-layers", type=_positive_int, default=1)
+    parser.add_argument("--num-attention-heads", type=_positive_int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--checkpoint-in")
     parser.add_argument("--checkpoint-out")
     return parser
+
+
+def _validate_attention_shape(args, parser: argparse.ArgumentParser) -> None:
+    if args.d_model % args.num_attention_heads != 0:
+        parser.error("--d-model must be divisible by --num-attention-heads")
+    head_dim = args.d_model // args.num_attention_heads
+    if head_dim > 128 or head_dim % 8 != 0:
+        parser.error(
+            "cuDNN attention requires d_model / num_attention_heads "
+            "to be <= 128 and a multiple of 8"
+        )
 
 
 def main(argv=None) -> int:
@@ -67,6 +81,7 @@ def main(argv=None) -> int:
                 "fresh training requires static pad flags: "
                 + ", ".join(missing_pad_flags)
             )
+        _validate_attention_shape(args, parser)
 
         model = TransformerActionSelectorModel(
             state_token_pad_to=args.state_token_pad_to,
@@ -74,7 +89,9 @@ def main(argv=None) -> int:
             definition_pad_to=args.definition_pad_to,
             candidate_pad_to=args.candidate_pad_to,
             side_term_pad_to=args.side_term_pad_to,
-            d_model=8,
+            d_model=args.d_model,
+            num_attention_layers=args.num_attention_layers,
+            num_attention_heads=args.num_attention_heads,
         )
         trainer = ReinforceTrainer(
             batch_size=args.batch_size,
