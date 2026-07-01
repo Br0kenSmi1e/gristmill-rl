@@ -15,8 +15,14 @@ from tests.test_bindings import actionable_json
 
 def _model(**overrides):
     values = {
-        "state_token_pad_to": 512,
+        "state_token_pad_to": 256,
         "action_token_pad_to": 512,
+        "definition_pad_to": 8,
+        "candidate_pad_to": 16,
+        "side_term_pad_to": 16,
+        "d_model": 8,
+        "num_attention_heads": 1,
+        "id_vocab_size": 32,
     }
     values.update(overrides)
     return TransformerActionSelectorModel(**values)
@@ -31,7 +37,13 @@ def test_init_params_shapes_and_network_tables():
     params = model.init_params(jax.random.PRNGKey(0))
 
     assert params["embedder"]["token_kind_embedding"].shape[1] == 16
-    assert set(params) == {"embedder", "encoder", "logit_decoder"}
+    assert set(params) == {
+        "embedder",
+        "encoder",
+        "target_decoder",
+        "candidate_decoder",
+        "mask_decoder",
+    }
     assert "symmetry_action_embedding" in params["embedder"]
     assert "perm_value_embedding" in params["embedder"]
 
@@ -98,7 +110,8 @@ def test_sentinel_and_pad_embedding_rows_have_zero_gradients():
     params = model.init_params(jax.random.PRNGKey(4))
     tokens = {
         "token_kind": jnp.array(
-            [int(TOKEN_KIND.PAD), int(TOKEN_KIND.RANGE)], dtype=jnp.int32
+            [int(TOKEN_KIND.PAD), int(TOKEN_KIND.RANGE)],
+            dtype=jnp.int32,
         ),
         "segment": jnp.array([-1, 0], dtype=jnp.int32),
         "def_index": jnp.array([-1, 0], dtype=jnp.int32),
@@ -156,18 +169,34 @@ def test_negative_coefficient_numerators_contribute_to_embedding():
     assert not jnp.allclose(negative_embedded, zero_embedded)
 
 
-def test_decode_logits_uses_vectors_and_condition_vector():
-    model = _model(d_model=2, num_attention_heads=1)
+def test_logit_decoders_pool_masked_tokens_to_fixed_size_logits():
+    model = _model(d_model=2, definition_pad_to=4, candidate_pad_to=3)
     params = model.init_params(jax.random.PRNGKey(6))
-    rows = jnp.asarray([[2.0, 3.0], [5.0, 7.0]], dtype=jnp.float32)
-    condition = jnp.asarray([11.0, 13.0], dtype=jnp.float32)
+    encoded = jnp.asarray(
+        [[2.0, 3.0], [100.0, 100.0], [5.0, 7.0]],
+        dtype=jnp.float32,
+    )
+    state_mask = jnp.asarray([True, False, True])
+    first_only = jnp.asarray([True, False, False])
 
-    logits = model.logit_decoder.apply(
-        {"params": params["logit_decoder"]},
-        rows,
-        condition,
+    target = model.target_decoder.apply(
+        {"params": params["target_decoder"]},
+        encoded,
+        state_mask,
+    )
+    candidate = model.candidate_decoder.apply(
+        {"params": params["candidate_decoder"]},
+        encoded,
+        state_mask,
+    )
+    changed = model.target_decoder.apply(
+        {"params": params["target_decoder"]},
+        encoded,
+        first_only,
     )
 
-    assert logits.shape == (2,)
-    assert jnp.all(jnp.isfinite(logits))
-    assert not jnp.allclose(logits[0], logits[1])
+    assert target.shape == (5,)
+    assert candidate.shape == (3,)
+    assert jnp.all(jnp.isfinite(target))
+    assert jnp.all(jnp.isfinite(candidate))
+    assert not jnp.allclose(target, changed)
