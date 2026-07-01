@@ -13,7 +13,7 @@ from gristmill_symbolics.model.transformer_action_selector import (
 )
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
 
-CHECKPOINT_SCHEMA_VERSION = 3
+CHECKPOINT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -65,8 +65,6 @@ def save_checkpoint(
 ) -> None:
     model_payload = _model_payload(model)
     trainer_payload = _trainer_payload(trainer)
-    if model.batch_size != trainer.batch_size:
-        raise TrainingError("model batch_size must match trainer batch_size")
     payload = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "model": model_payload,
@@ -98,8 +96,6 @@ def load_checkpoint(path) -> CheckpointData:
     try:
         model = _load_model(payload["model"])
         trainer = _load_trainer(payload["trainer"])
-        if model.batch_size != trainer.batch_size:
-            raise TrainingError("model batch_size must match trainer batch_size")
         root_key = jnp.asarray(payload["root_key"], dtype=jnp.uint32)
         if root_key.shape != (2,):
             raise TrainingError("root_key must have shape (2,)")

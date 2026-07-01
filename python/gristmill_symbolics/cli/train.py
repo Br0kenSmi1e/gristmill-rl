@@ -5,8 +5,9 @@ from dataclasses import asdict
 import json
 from pathlib import Path
 
-from gristmill_symbolics import RewriteState, TensorComputation
+from gristmill_symbolics import TensorComputation
 from gristmill_symbolics.model.transformer_action_selector import (
+    SelectorState,
     TransformerActionSelectorModel,
 )
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
@@ -31,12 +32,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--input", required=True)
     parser.add_argument("--updates", type=_positive_int, default=1)
-    parser.add_argument("--batch-size", type=int, default=1)
-    parser.add_argument("--max-steps", type=int, default=1)
+    parser.add_argument("--batch-size", type=_positive_int, default=1)
+    parser.add_argument("--max-steps", type=_positive_int, default=1)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--state-token-pad-to", type=_positive_int)
     parser.add_argument("--action-token-pad-to", type=_positive_int)
     parser.add_argument("--definition-pad-to", type=_positive_int)
+    parser.add_argument("--candidate-pad-to", type=_positive_int)
+    parser.add_argument("--side-term-pad-to", type=_positive_int)
     parser.add_argument("--learning-rate", type=float, default=1.0e-3)
     parser.add_argument("--checkpoint-in")
     parser.add_argument("--checkpoint-out")
@@ -54,6 +57,8 @@ def main(argv=None) -> int:
                 ("--state-token-pad-to", args.state_token_pad_to),
                 ("--action-token-pad-to", args.action_token_pad_to),
                 ("--definition-pad-to", args.definition_pad_to),
+                ("--candidate-pad-to", args.candidate_pad_to),
+                ("--side-term-pad-to", args.side_term_pad_to),
             ]
             if value is None
         ]
@@ -64,15 +69,16 @@ def main(argv=None) -> int:
             )
 
         model = TransformerActionSelectorModel(
-            batch_size=args.batch_size,
-            max_steps=args.max_steps,
             state_token_pad_to=args.state_token_pad_to,
             action_token_pad_to=args.action_token_pad_to,
             definition_pad_to=args.definition_pad_to,
+            candidate_pad_to=args.candidate_pad_to,
+            side_term_pad_to=args.side_term_pad_to,
             d_model=8,
         )
         trainer = ReinforceTrainer(
             batch_size=args.batch_size,
+            max_steps=args.max_steps,
             learning_rate=args.learning_rate,
         )
         train_state = init_train_state(
@@ -92,7 +98,7 @@ def main(argv=None) -> int:
     for _ in range(args.updates):
         comp = TensorComputation.load_json(input_path)
         initial_states = [
-            RewriteState.from_computation(comp)
+            SelectorState(comp=comp.clone())
             for _ in range(trainer.batch_size)
         ]
         train_state, metrics = advance_train_state(

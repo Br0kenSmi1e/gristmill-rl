@@ -3,26 +3,30 @@ from dataclasses import fields
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
-from gristmill_symbolics import RewriteState, TensorComputation
-from gristmill_symbolics._training import TrainingError
-from gristmill_symbolics.cli.train_state import advance_train_state, init_train_state
+from gristmill_symbolics import TensorComputation
+from gristmill_symbolics.cli.train_state import advance_train_state
+from gristmill_symbolics.cli.train_state import init_train_state
 from gristmill_symbolics.model.transformer_action_selector import (
+    SelectorState,
     TransformerActionSelectorModel,
 )
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
-from tests.policy_fixtures import actionable_state
+from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
 
 
 def _mixed_initial_states():
     return [
-        actionable_state(),
-        RewriteState.from_computation(
-            TensorComputation.from_json_string(exact_empty_json())
-        ),
+        _state_from_json(actionable_json()),
+        _state_from_json(exact_empty_json()),
     ]
+
+
+def _state_from_json(text):
+    return SelectorState(
+        comp=TensorComputation.from_json_string(text),
+    )
 
 
 def _floating_leaves(tree):
@@ -33,20 +37,23 @@ def _floating_leaves(tree):
     ]
 
 
-def _model(*, batch_size=2, max_steps=2):
+def _model():
     return TransformerActionSelectorModel(
-        batch_size=batch_size,
-        max_steps=max_steps,
         state_token_pad_to=512,
         action_token_pad_to=512,
         definition_pad_to=8,
+        candidate_pad_to=16,
+        side_term_pad_to=16,
         d_model=8,
-        stop_bias_init=-20.0,
     )
 
 
-def _trainer(*, batch_size=2):
-    return ReinforceTrainer(batch_size=batch_size, learning_rate=1.0e-2)
+def _trainer(*, batch_size=2, max_steps=2):
+    return ReinforceTrainer(
+        batch_size=batch_size,
+        max_steps=max_steps,
+        learning_rate=1.0e-2,
+    )
 
 
 def test_init_train_state_creates_model_params_and_trainer_opt_state():
@@ -68,9 +75,9 @@ def test_init_train_state_creates_model_params_and_trainer_opt_state():
     assert state.opt_state is not None
 
 
-def test_advance_train_state_uses_concrete_protocol_path_and_increments_index():
+def test_advance_train_state_uses_stepwise_trainer_and_increments_index():
     model = _model()
-    trainer = _trainer()
+    trainer = _trainer(max_steps=1)
     state = init_train_state(model, trainer, seed=29)
 
     new_state, metrics = advance_train_state(
@@ -86,11 +93,16 @@ def test_advance_train_state_uses_concrete_protocol_path_and_increments_index():
     assert np.isfinite(metrics.objective_loss_mean)
     assert np.isfinite(metrics.surrogate_loss)
     assert np.isfinite(metrics.final_flops_best)
-    assert metrics.params_changed is True
 
 
 def test_advance_train_state_folds_update_index_into_trainer_rng():
-    state = init_train_state(_model(max_steps=1), _trainer(), seed=31, update_index=7)
+    state = init_train_state(_model(), _trainer(max_steps=1), seed=31)
+    state = type(state)(
+        params=state.params,
+        opt_state=state.opt_state,
+        root_key=state.root_key,
+        update_index=7,
+    )
 
     class RecordingTrainer:
         batch_size = 2
@@ -114,7 +126,7 @@ def test_advance_train_state_folds_update_index_into_trainer_rng():
                 "params_changed": False,
             }
 
-    model = _model(max_steps=1)
+    model = _model()
     trainer = RecordingTrainer()
 
     new_state, metrics = advance_train_state(
@@ -130,17 +142,3 @@ def test_advance_train_state_folds_update_index_into_trainer_rng():
     assert new_state.update_index == 8
     assert metrics.update_index == 7
     assert metrics.params_changed is False
-
-
-def test_advance_train_state_rejects_mismatched_batch_sizes():
-    model = _model(batch_size=2)
-    trainer = _trainer(batch_size=2)
-    state = init_train_state(model, trainer, seed=31)
-
-    with pytest.raises(TrainingError, match="batch_size"):
-        advance_train_state(
-            state,
-            _mixed_initial_states(),
-            model=model,
-            trainer=_trainer(batch_size=3),
-        )

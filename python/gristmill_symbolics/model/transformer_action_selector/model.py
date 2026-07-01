@@ -67,6 +67,10 @@ class TransformerActionSelectorModel(
         self.candidate_pad_to = candidate_pad_to
         self.side_term_pad_to = side_term_pad_to
         self.d_model = d_model
+        self.num_attention_layers = num_attention_layers
+        self.num_attention_heads = num_attention_heads
+        self.id_vocab_size = id_vocab_size
+        self.init_scale = init_scale
         self.embedder = TokenEmbedder(
             d_model=d_model,
             id_vocab_size=id_vocab_size,
@@ -119,6 +123,20 @@ class TransformerActionSelectorModel(
                 in_axes=(None, 0, 0, 0, 0, 0, 0),
             )
         )
+
+    def constructor_kwargs(self) -> dict[str, object]:
+        return {
+            "state_token_pad_to": self.state_token_pad_to,
+            "action_token_pad_to": self.action_token_pad_to,
+            "definition_pad_to": self.definition_pad_to,
+            "candidate_pad_to": self.candidate_pad_to,
+            "side_term_pad_to": self.side_term_pad_to,
+            "d_model": self.d_model,
+            "num_attention_layers": self.num_attention_layers,
+            "num_attention_heads": self.num_attention_heads,
+            "id_vocab_size": self.id_vocab_size,
+            "init_scale": self.init_scale,
+        }
 
     def init_params(self, rng):
         embed_key, encoder_key, target_key, cand_key, mask_key = (

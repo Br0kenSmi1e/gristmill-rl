@@ -42,6 +42,10 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
             "256",
             "--definition-pad-to",
             "4",
+            "--candidate-pad-to",
+            "8",
+            "--side-term-pad-to",
+            "8",
             "--checkpoint-out",
             str(checkpoint_path),
         ]
@@ -56,9 +60,8 @@ def test_train_cli_completes_one_update_and_writes_checkpoint(tmp_path, capsys):
     assert checkpoint_path.exists()
     checkpoint = load_checkpoint(checkpoint_path)
     assert checkpoint.train_state.update_index == 1
-    assert checkpoint.model.batch_size == 2
-    assert checkpoint.model.max_steps == 1
     assert checkpoint.trainer.batch_size == 2
+    assert checkpoint.trainer.max_steps == 1
 
 
 def test_train_cli_wires_static_pads_to_model_checkpoint(tmp_path, capsys):
@@ -84,6 +87,10 @@ def test_train_cli_wires_static_pads_to_model_checkpoint(tmp_path, capsys):
             "256",
             "--definition-pad-to",
             "4",
+            "--candidate-pad-to",
+            "8",
+            "--side-term-pad-to",
+            "8",
             "--checkpoint-out",
             str(checkpoint_path),
         ]
@@ -96,6 +103,8 @@ def test_train_cli_wires_static_pads_to_model_checkpoint(tmp_path, capsys):
     assert checkpoint.model.state_token_pad_to == 256
     assert checkpoint.model.action_token_pad_to == 256
     assert checkpoint.model.definition_pad_to == 4
+    assert checkpoint.model.candidate_pad_to == 8
+    assert checkpoint.model.side_term_pad_to == 8
 
 
 def test_train_cli_can_continue_from_checkpoint_using_saved_objects(
@@ -123,6 +132,10 @@ def test_train_cli_can_continue_from_checkpoint_using_saved_objects(
             "256",
             "--definition-pad-to",
             "4",
+            "--candidate-pad-to",
+            "8",
+            "--side-term-pad-to",
+            "8",
             "--learning-rate",
             "0.0025",
             "--checkpoint-out",
@@ -156,9 +169,8 @@ def test_train_cli_can_continue_from_checkpoint_using_saved_objects(
     assert line["update_index"] == 1
     assert line["batch_size"] == 2
     assert checkpoint.train_state.update_index == 2
-    assert checkpoint.model.batch_size == 2
-    assert checkpoint.model.max_steps == 1
     assert checkpoint.trainer.batch_size == 2
+    assert checkpoint.trainer.max_steps == 1
     assert checkpoint.trainer.constructor_kwargs()["learning_rate"] == 0.0025
 
 
@@ -196,6 +208,8 @@ def test_train_cli_requires_static_pads_for_fresh_run(tmp_path):
         ("--state-token-pad-to", "0"),
         ("--action-token-pad-to", "-1"),
         ("--definition-pad-to", "0"),
+        ("--candidate-pad-to", "0"),
+        ("--side-term-pad-to", "0"),
     ],
 )
 def test_train_cli_rejects_non_positive_static_pad_flags(tmp_path, flag, value):

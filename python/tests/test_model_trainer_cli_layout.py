@@ -55,7 +55,8 @@ def test_no_public_config_dataclasses_are_exported():
     )
     trainer_pkg = importlib.import_module("gristmill_symbolics.trainer.reinforce")
 
-    assert model_pkg.__all__ == ("TransformerActionSelectorModel",)
+    assert "TransformerActionSelectorModel" in model_pkg.__all__
+    assert "SelectorState" in model_pkg.__all__
     assert trainer_pkg.__all__ == ("ReinforceTrainer",)
 
     forbidden = {

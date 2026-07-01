@@ -20,7 +20,7 @@ def test_cli_package_is_orchestration_marker_not_training_api_export():
 
 
 def test_cli_modules_expose_current_checkpoint_and_train_state_surface():
-    assert checkpoint.CHECKPOINT_SCHEMA_VERSION == 3
+    assert checkpoint.CHECKPOINT_SCHEMA_VERSION == 4
     assert hasattr(checkpoint, "save_checkpoint")
     assert hasattr(checkpoint, "load_checkpoint")
     assert hasattr(train, "main")

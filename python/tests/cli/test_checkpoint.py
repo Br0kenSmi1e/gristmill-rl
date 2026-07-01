@@ -33,22 +33,22 @@ def _assert_pytrees_equal(left, right):
 
 def _model():
     return TransformerActionSelectorModel(
-        batch_size=2,
-        max_steps=3,
         state_token_pad_to=256,
         action_token_pad_to=256,
         definition_pad_to=8,
+        candidate_pad_to=12,
+        side_term_pad_to=10,
         d_model=8,
         num_attention_layers=2,
         id_vocab_size=64,
         init_scale=0.03,
-        stop_bias_init=-7.0,
     )
 
 
 def _trainer():
     return ReinforceTrainer(
         batch_size=2,
+        max_steps=3,
         learning_rate=1.0e-2,
         b1=0.8,
         b2=0.95,
@@ -97,7 +97,7 @@ def test_checkpoint_round_trips_objects_state_and_metrics(tmp_path):
 
     with path.open("rb") as handle:
         payload = pickle.load(handle)
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == CHECKPOINT_SCHEMA_VERSION
     assert payload["model"] == {
         "kind": "transformer_action_selector",
         "kwargs": model.constructor_kwargs(),
@@ -162,7 +162,7 @@ def test_checkpoint_rejects_root_key_with_invalid_shape(tmp_path):
         load_checkpoint(path)
 
 
-def test_save_checkpoint_rejects_unsupported_model_without_batch_size(tmp_path):
+def test_save_checkpoint_rejects_unsupported_model(tmp_path):
     state = init_train_state(_model(), _trainer(), seed=17)
 
     with pytest.raises(TrainingError, match="unsupported model type"):
