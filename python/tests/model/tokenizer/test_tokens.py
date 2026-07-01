@@ -1,4 +1,6 @@
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from gristmill_symbolics.model.tokenizer import (
@@ -48,6 +50,15 @@ def test_make_token_arrays_uses_int32_leaves_and_bool_mask():
     assert all(values.dtype == jnp.int32 for values in tokens.values())
     assert tokens["position"].tolist() == [0, 1]
     assert tokens["tensor_id"].tolist() == [SENTINEL, 7]
+
+
+def test_make_token_arrays_keeps_row_tokenization_host_side():
+    rows = [{"token_kind": TOKEN_KIND.RANGE, "range_id": 0}]
+
+    tokens, mask = make_token_arrays(rows)
+
+    assert isinstance(mask, np.ndarray)
+    assert all(isinstance(values, np.ndarray) for values in tokens.values())
 
 
 def test_padding_preserves_real_tokens_and_uses_safe_values():
@@ -149,6 +160,8 @@ def test_stack_token_arrays_adds_batch_axis_and_pads_to_width():
 
     assert stacked_mask.shape == (2, 2)
     assert stacked["token_kind"].shape == (2, 2)
+    assert isinstance(stacked_mask, jax.Array)
+    assert all(isinstance(values, jax.Array) for values in stacked.values())
     assert stacked_mask.tolist() == [[True, False], [True, True]]
 
 
