@@ -1,5 +1,5 @@
-"""Expression model protocols and implementations."""
+"""Stepwise model protocols and implementations."""
 
-from .protocols import ExpressionModel
+from .protocols import StepwiseModel
 
-__all__ = ("ExpressionModel",)
+__all__ = ("StepwiseModel",)
