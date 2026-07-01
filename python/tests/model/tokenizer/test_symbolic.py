@@ -1,4 +1,4 @@
-import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from gristmill_symbolics.model.tokenizer import (
@@ -73,8 +73,8 @@ def test_computation_tokenization_round_trips_symmetry_snapshot():
 
     tokens, mask = tokenize_computation_snapshot(snapshot)
 
-    assert all(leaf.dtype == jnp.int32 for leaf in tokens.values())
-    assert mask.dtype == jnp.bool_
+    assert all(leaf.dtype == np.int32 for leaf in tokens.values())
+    assert mask.dtype == np.bool_
     assert mask.all()
     assert decode_computation_snapshot(tokens, mask) == snapshot
 
@@ -117,7 +117,7 @@ def test_decode_rejects_mismatched_tensor_end_scope():
     tokens, mask = tokenize_computation_snapshot(_computation_snapshot())
     position = tokens["token_kind"].tolist().index(TOKEN_KIND.TENSOR_END)
     tokens = dict(tokens)
-    tokens["tensor_id"] = tokens["tensor_id"].at[position].set(99)
+    tokens["tensor_id"] = _set_value(tokens["tensor_id"], position, 99)
 
     with pytest.raises(ValueError, match="tensor_id"):
         decode_computation_snapshot(tokens, mask)
@@ -126,7 +126,7 @@ def test_decode_rejects_mismatched_tensor_end_scope():
 def test_decode_rejects_mismatched_action_space_end_scope():
     tokens, mask = tokenize_action_space_snapshot(_action_space_snapshot())
     tokens = dict(tokens)
-    tokens["def_index"] = tokens["def_index"].at[-1].set(99)
+    tokens["def_index"] = _set_value(tokens["def_index"], -1, 99)
 
     with pytest.raises(ValueError, match="def_index"):
         decode_action_space_snapshot(tokens, mask)
@@ -171,7 +171,7 @@ def test_decode_rejects_wrong_candidate_index():
 def test_decode_rejects_wrong_segment():
     tokens, mask = tokenize_computation_snapshot(_computation_snapshot())
     tokens = dict(tokens)
-    tokens["segment"] = tokens["segment"].at[0].set(3)
+    tokens["segment"] = _set_value(tokens["segment"], 0, 3)
 
     with pytest.raises(ValueError, match="segment"):
         decode_computation_snapshot(tokens, mask)
@@ -180,7 +180,7 @@ def test_decode_rejects_wrong_segment():
 def test_decode_rejects_wrong_position():
     tokens, mask = tokenize_computation_snapshot(_computation_snapshot())
     tokens = dict(tokens)
-    tokens["position"] = tokens["position"].at[0].set(99)
+    tokens["position"] = _set_value(tokens["position"], 0, 99)
 
     with pytest.raises(ValueError, match="position"):
         decode_computation_snapshot(tokens, mask)
@@ -189,7 +189,11 @@ def test_decode_rejects_wrong_position():
 def test_decode_rejects_irrelevant_fields():
     tokens, mask = tokenize_computation_snapshot(_computation_snapshot())
     tokens = dict(tokens)
-    tokens["candidate_index"] = tokens["candidate_index"].at[0].set(123)
+    tokens["candidate_index"] = _set_value(
+        tokens["candidate_index"],
+        0,
+        123,
+    )
 
     with pytest.raises(ValueError, match="candidate_index"):
         decode_computation_snapshot(tokens, mask)
@@ -199,10 +203,10 @@ def test_decode_rejects_non_pad_masked_out_rows():
     snapshot = _computation_snapshot()
     tokens, mask = tokenize_computation_snapshot(snapshot)
     tokens = {
-        field: values.at[-1].set(values[-2])
+        field: _set_value(values, -1, values[-2])
         for field, values in tokens.items()
     }
-    mask = mask.at[-1].set(False)
+    mask = _set_value(mask, -1, False)
 
     with pytest.raises(ValueError, match="PAD"):
         decode_computation_snapshot(tokens, mask)
@@ -212,9 +216,13 @@ def test_decode_rejects_non_empty_pad_rows():
     snapshot = _computation_snapshot()
     tokens, mask = tokenize_computation_snapshot(snapshot)
     tokens = dict(tokens)
-    tokens["token_kind"] = tokens["token_kind"].at[-1].set(TOKEN_KIND.PAD)
-    tokens["range_id"] = tokens["range_id"].at[-1].set(7)
-    mask = mask.at[-1].set(False)
+    tokens["token_kind"] = _set_value(
+        tokens["token_kind"],
+        -1,
+        TOKEN_KIND.PAD,
+    )
+    tokens["range_id"] = _set_value(tokens["range_id"], -1, 7)
+    mask = _set_value(mask, -1, False)
 
     with pytest.raises(ValueError, match="PAD"):
         decode_computation_snapshot(tokens, mask)
@@ -223,11 +231,19 @@ def test_decode_rejects_non_empty_pad_rows():
 def test_decode_rejects_unknown_token_kind():
     tokens, mask = tokenize_computation_snapshot(_computation_snapshot())
     tokens = dict(tokens)
-    tokens["token_kind"] = tokens["token_kind"].at[0].set(999)
+    tokens["token_kind"] = _set_value(tokens["token_kind"], 0, 999)
 
     with pytest.raises(ValueError, match="unknown token kind"):
         decode_computation_snapshot(tokens, mask)
 
 
 def _replace_value(values, old: int, new: int):
-    return jnp.where(values == old, jnp.asarray(new, values.dtype), values)
+    out = np.asarray(values).copy()
+    out[out == old] = int(new)
+    return out
+
+
+def _set_value(values, index: int, new):
+    out = np.asarray(values).copy()
+    out[index] = int(new)
+    return out
