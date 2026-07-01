@@ -146,10 +146,7 @@ class TransformerEncoder(nn.Module):
         return out
 
     def _self_attention(self, x, mask, index: int):
-        single = x.ndim == 2
-        if single:
-            x = x[None]
-            mask = mask[None]
+        attention_mask = self._flax_attention_mask(mask)
         attended = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.d_model,
@@ -161,15 +158,13 @@ class TransformerEncoder(nn.Module):
             param_dtype=jnp.float32,
             kernel_init=nn.initializers.normal(self.init_scale),
             out_kernel_init=nn.initializers.normal(self.init_scale),
-            attention_fn=self._dot_product_attention,
+            attention_fn=self._attention_fn(mask),
             name=f"attention_{index}",
         )(
             x,
-            mask=self._attention_mask(mask),
+            mask=attention_mask,
             deterministic=True,
         )
-        if single:
-            return attended[0]
         return attended
 
     def _mlp(self, x, index: int):
@@ -192,6 +187,20 @@ class TransformerEncoder(nn.Module):
     def _apply_mask(self, values, mask):
         return jnp.where(mask[..., None], values, 0.0)
 
+    def _attention_fn(self, token_mask):
+        def attention(query, key, value, bias=None, mask=None, **kwargs):
+            return self._dot_product_attention(
+                query,
+                key,
+                value,
+                bias=bias,
+                mask=mask,
+                token_mask=token_mask,
+                **kwargs,
+            )
+
+        return attention
+
     def _dot_product_attention(
         self,
         query,
@@ -199,19 +208,39 @@ class TransformerEncoder(nn.Module):
         value,
         bias=None,
         mask=None,
+        token_mask=None,
         **_,
     ):
+        implementation = self._attention_implementation()
+        if implementation == "cudnn":
+            lengths = self._sequence_lengths(token_mask)
+            return jax.nn.dot_product_attention(
+                query,
+                key,
+                value,
+                bias=None,
+                mask=None,
+                query_seq_lengths=lengths,
+                key_value_seq_lengths=lengths,
+                implementation=implementation,
+            )
         return jax.nn.dot_product_attention(
             query,
             key,
             value,
             bias=bias,
             mask=mask,
-            implementation=self._attention_implementation(),
+            implementation=implementation,
         )
 
-    def _attention_mask(self, mask):
+    def _flax_attention_mask(self, mask):
+        if self._attention_implementation() == "cudnn":
+            return None
         return nn.make_attention_mask(mask, mask, dtype=jnp.bool_)
+
+    def _sequence_lengths(self, mask):
+        lengths = jnp.sum(mask, axis=-1, dtype=jnp.int32)
+        return jnp.atleast_1d(lengths)
 
     def _attention_implementation(self):
         if self.prefer_cudnn and jax.default_backend() == "gpu":

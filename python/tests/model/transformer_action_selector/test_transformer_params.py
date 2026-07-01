@@ -6,6 +6,9 @@ from gristmill_symbolics import TensorComputation
 from gristmill_symbolics.model.transformer_action_selector import (
     TransformerActionSelectorModel,
 )
+from gristmill_symbolics.model.transformer_action_selector.nn import (
+    TransformerEncoder,
+)
 from gristmill_symbolics.model.tokenizer import (
     TOKEN_KIND,
     tokenize_computation_snapshot,
@@ -30,6 +33,34 @@ def _model(**overrides):
 
 def _actionable_state_snapshot():
     return TensorComputation.from_json_string(actionable_json()).snapshot()
+
+
+class CudnnProbeEncoder(TransformerEncoder):
+    def _attention_implementation(self):
+        return "cudnn"
+
+    def _dot_product_attention(
+        self,
+        query,
+        key,
+        value,
+        bias=None,
+        mask=None,
+        token_mask=None,
+        **_,
+    ):
+        del key, value, bias
+        self.sow(
+            "intermediates",
+            "flax_mask_is_none",
+            jnp.asarray(mask is None),
+        )
+        self.sow(
+            "intermediates",
+            "lengths",
+            self._sequence_lengths(token_mask),
+        )
+        return jnp.zeros_like(query)
 
 
 def test_init_params_shapes_and_network_tables():
@@ -74,6 +105,26 @@ def test_embed_tokens_and_encoder_return_dense_token_vectors():
     assert embedded.shape == (mask.shape[0], 16)
     assert encoded.shape == (mask.shape[0], 16)
     assert jnp.isfinite(encoded).all()
+
+
+def test_cudnn_encoder_path_uses_padding_lengths_not_dense_mask():
+    encoder = CudnnProbeEncoder(d_model=32, num_layers=1, num_heads=4)
+    vectors = jnp.ones((5, 32), dtype=jnp.bfloat16)
+    mask = jnp.asarray([True, True, True, False, False])
+    variables = encoder.init(jax.random.PRNGKey(11), vectors, mask)
+
+    _, state = encoder.apply(
+        variables,
+        vectors,
+        mask,
+        mutable=["intermediates"],
+    )
+
+    assert bool(state["intermediates"]["flax_mask_is_none"][0])
+    assert jnp.array_equal(
+        state["intermediates"]["lengths"][0],
+        jnp.asarray([3], dtype=jnp.int32),
+    )
 
 
 def test_sentinel_only_tokens_embed_to_zero_before_attention():
