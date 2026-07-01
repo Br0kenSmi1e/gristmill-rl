@@ -541,7 +541,10 @@ class TransformerActionSelectorModel(
             state_tokens,
             state_mask,
         )
-        return _score_categorical(logits, structural & target_mask, target)
+        active = jnp.any(target_mask)
+        valid = _valid_when_active(structural & target_mask, active)
+        score = _score_categorical(logits, valid, target)
+        return jnp.where(active, score, 0.0)
 
     def _sample_decision_from_tokens(
         self,
@@ -652,10 +655,11 @@ class TransformerActionSelectorModel(
             action_tokens,
             action_mask,
         )
+        candidate_valid = _valid_when_active(candidate_mask, active)
         candidate = decision["candidate_index"]
         candidate_logp = _score_categorical(
             candidate_logits,
-            candidate_mask & active,
+            candidate_valid,
             candidate,
         )
 
@@ -853,7 +857,7 @@ def _updated_target_mask(
 ):
     out = [bool(value) for value in mask]
     if target <= 0:
-        return out
+        return [False] * len(out)
     if no_action_space:
         out[target] = False
         return out
@@ -921,6 +925,11 @@ def _valid_with_fallback(valid):
     has_valid = jnp.any(valid)
     fallback = jnp.arange(valid.shape[0]) == 0
     return jnp.where(has_valid, valid, fallback), has_valid
+
+
+def _valid_when_active(valid, active):
+    fallback = jnp.arange(valid.shape[0]) == 0
+    return jnp.where(active, valid, fallback)
 
 
 def _last_valid_mask(valid):

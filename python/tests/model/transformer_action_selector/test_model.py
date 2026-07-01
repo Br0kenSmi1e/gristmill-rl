@@ -165,7 +165,7 @@ def test_sample_step_returns_next_selector_states_and_grads():
     _assert_batched_grad_tree(grad, params, batch_size=2)
 
 
-def test_sample_step_stop_target_leaves_comp_and_mask_unchanged():
+def test_sample_step_stop_target_sets_terminal_mask():
     model = _model()
     params = _force_target_slot(model.init_params(jax.random.PRNGKey(41)), 0)
     comp = _actionable_comp()
@@ -184,13 +184,35 @@ def test_sample_step_stop_target_leaves_comp_and_mask_unchanged():
 
     assert next_states[0].comp.snapshot() == before
     assert jax.device_get(next_states[0].target_mask).tolist() == (
-        jax.device_get(target_mask).tolist()
+        [False] * len(target_mask)
     )
     assert jnp.all(jnp.isfinite(logp))
     _assert_batched_grad_tree(grad, params, batch_size=1)
 
 
-def test_sample_step_respects_disabled_target_mask_slot():
+def test_sample_step_terminal_mask_contributes_zero_logp_and_grad():
+    model = _model()
+    params = model.init_params(jax.random.PRNGKey(43))
+    comp = _actionable_comp()
+    before = comp.snapshot()
+    target_mask = jnp.zeros((1 + model.definition_pad_to,), dtype=jnp.bool_)
+
+    next_states, logp, grad = model.sample_step(
+        params,
+        jax.random.PRNGKey(44),
+        [SelectorState(comp=comp, target_mask=target_mask)],
+    )
+
+    assert next_states[0].comp.snapshot() == before
+    assert jax.device_get(next_states[0].target_mask).tolist() == (
+        [False] * len(target_mask)
+    )
+    assert jnp.allclose(logp, jnp.zeros((1,), dtype=logp.dtype))
+    for leaf in jax.tree_util.tree_leaves(grad):
+        assert jnp.allclose(leaf, jnp.zeros_like(leaf))
+
+
+def test_sample_step_disabled_target_slot_falls_back_to_terminal_stop():
     model = _model()
     params = _force_target_slot(model.init_params(jax.random.PRNGKey(51)), 1)
     comp = _actionable_comp()
@@ -209,7 +231,7 @@ def test_sample_step_respects_disabled_target_mask_slot():
 
     assert next_states[0].comp.snapshot() == before
     assert jax.device_get(next_states[0].target_mask).tolist() == (
-        jax.device_get(target_mask).tolist()
+        [False] * len(target_mask)
     )
     assert jnp.all(jnp.isfinite(logp))
 
