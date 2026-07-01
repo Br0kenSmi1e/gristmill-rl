@@ -228,40 +228,31 @@ class TransformerEncoder(nn.Module):
 
 class LogitDecoder(nn.Module):
     d_model: int
+    output_size: int
     init_scale: float = 0.02
     dtype: Any = jnp.bfloat16
 
     @nn.compact
-    def __call__(self, vectors, condition_vector):
-        condition = self._broadcast_condition(condition_vector, vectors)
-        inputs = jnp.concatenate([vectors, condition], axis=-1)
+    def __call__(self, encoded_tokens, token_mask):
+        context = self._masked_mean(encoded_tokens, token_mask)
         hidden = nn.Dense(
             2 * self.d_model,
             dtype=self.dtype,
             param_dtype=jnp.float32,
             kernel_init=nn.initializers.normal(self.init_scale),
             name="hidden",
-        )(inputs)
+        )(context)
         hidden = nn.gelu(hidden)
-        logits = nn.Dense(
-            1,
+        return nn.Dense(
+            self.output_size,
             dtype=jnp.float32,
             param_dtype=jnp.float32,
             kernel_init=nn.initializers.normal(self.init_scale),
-            name="logit",
+            name="logits",
         )(hidden)
-        return jnp.squeeze(logits, axis=-1)
 
-    def _broadcast_condition(self, condition_vector, vectors):
-        vector_shape = vectors.shape[:-1]
-        if condition_vector.shape[:-1] == vector_shape:
-            return condition_vector
-        if condition_vector.ndim == 1:
-            return jnp.broadcast_to(
-                condition_vector,
-                (*vector_shape, condition_vector.shape[-1]),
-            )
-        return jnp.broadcast_to(
-            condition_vector[..., None, :],
-            (*vector_shape, condition_vector.shape[-1]),
-        )
+    def _masked_mean(self, encoded_tokens, token_mask):
+        weights = token_mask.astype(encoded_tokens.dtype)
+        total = jnp.sum(encoded_tokens * weights[..., None], axis=-2)
+        count = jnp.sum(weights, axis=-1, keepdims=True)
+        return total / jnp.maximum(count, 1.0)
