@@ -12,7 +12,7 @@ from gristmill_symbolics import action_spaces_for_batch
 from gristmill_symbolics import apply_decisions_for_batch
 from gristmill_symbolics import validate_decisions_for_batch
 from gristmill_symbolics.model.protocols import StepwiseModel
-from gristmill_symbolics.model.tokenizer import SIDE
+from gristmill_symbolics.model.tokenizer import SEGMENT, SIDE
 from gristmill_symbolics.model.tokenizer import TOKEN_FIELDS, TOKEN_KIND
 from gristmill_symbolics.model.tokenizer import stack_token_arrays
 from gristmill_symbolics.model.tokenizer import tokenize_action_space_snapshot
@@ -575,7 +575,7 @@ class TransformerActionSelectorModel(
         active,
     ):
         cand_rng, left_rng, right_rng = jax.random.split(rng, 3)
-        encoded, token_mask = self._encode_state_action_tokens(
+        encoded, token_mask, tokens = self._encode_state_action_tokens(
             params,
             state_tokens,
             state_mask,
@@ -599,9 +599,8 @@ class TransformerActionSelectorModel(
         )
 
         left_context = self._chosen_candidate_context_mask(
-            state_mask,
-            action_tokens,
-            action_mask,
+            tokens,
+            token_mask,
             candidate,
         )
         mask_logits = self._mask_logits_from_encoded(
@@ -618,9 +617,8 @@ class TransformerActionSelectorModel(
         left_mask = _sample_nonempty_mask(left_rng, mask_logits, left_valid)
 
         right_context = self._chosen_left_context_mask(
-            state_mask,
-            action_tokens,
-            action_mask,
+            tokens,
+            token_mask,
             candidate,
             left_mask,
         )
@@ -656,7 +654,7 @@ class TransformerActionSelectorModel(
         decision,
         active,
     ):
-        encoded, token_mask = self._encode_state_action_tokens(
+        encoded, token_mask, tokens = self._encode_state_action_tokens(
             params,
             state_tokens,
             state_mask,
@@ -682,9 +680,8 @@ class TransformerActionSelectorModel(
         )
 
         left_context = self._chosen_candidate_context_mask(
-            state_mask,
-            action_tokens,
-            action_mask,
+            tokens,
+            token_mask,
             candidate,
         )
         mask_logits = self._mask_logits_from_encoded(
@@ -704,9 +701,8 @@ class TransformerActionSelectorModel(
             decision["left_mask"],
         )
         right_context = self._chosen_left_context_mask(
-            state_mask,
-            action_tokens,
-            action_mask,
+            tokens,
+            token_mask,
             candidate,
             decision["left_mask"],
         )
@@ -739,40 +735,46 @@ class TransformerActionSelectorModel(
     ):
         tokens = _concat_token_arrays(state_tokens, action_tokens)
         token_mask = jnp.concatenate([state_mask, action_mask], axis=0)
-        return self._encode_tokens(params, tokens, token_mask), token_mask
+        tokens, token_mask = _compact_token_arrays(tokens, token_mask)
+        return self._encode_tokens(params, tokens, token_mask), token_mask, tokens
 
     def _chosen_candidate_context_mask(
         self,
-        state_mask,
-        action_tokens,
-        action_mask,
+        tokens,
+        token_mask,
         candidate,
     ):
-        chosen = (
-            action_mask
-            & (action_tokens["candidate_index"] == candidate)
+        is_state = token_mask & (
+            tokens["segment"] != int(SEGMENT.ACTION_SPACE)
         )
-        return _concat_masks(state_mask, chosen)
+        chosen = (
+            token_mask
+            & (tokens["segment"] == int(SEGMENT.ACTION_SPACE))
+            & (tokens["candidate_index"] == candidate)
+        )
+        return is_state | chosen
 
     def _chosen_left_context_mask(
         self,
-        state_mask,
-        action_tokens,
-        action_mask,
+        tokens,
+        token_mask,
         candidate,
         left_mask,
     ):
+        is_state = token_mask & (
+            tokens["segment"] != int(SEGMENT.ACTION_SPACE)
+        )
         left_term_content = (
-            action_mask
-            & (action_tokens["candidate_index"] == candidate)
-            & (action_tokens["side"] == int(SIDE.LEFT))
-            & (action_tokens["term_index"] >= 0)
+            token_mask
+            & (tokens["candidate_index"] == candidate)
+            & (tokens["side"] == int(SIDE.LEFT))
+            & (tokens["term_index"] >= 0)
         )
         selected = _selected_slots(
-            action_tokens["term_index"],
+            tokens["term_index"],
             left_mask,
         )
-        return _concat_masks(state_mask, left_term_content & selected)
+        return is_state | (left_term_content & selected)
 
     def _target_mask_from_state_tokens(self, state_tokens, state_mask):
         is_def = state_mask & (
@@ -822,8 +824,16 @@ def _concat_token_arrays(left, right):
     }
 
 
-def _concat_masks(left, right):
-    return jnp.concatenate([left, right], axis=0)
+def _compact_token_arrays(tokens, mask):
+    length = int(mask.shape[0])
+    indices = jnp.nonzero(mask, size=length, fill_value=0)[0]
+    compacted = {
+        field: jnp.take(values, indices, axis=0)
+        for field, values in tokens.items()
+    }
+    count = jnp.sum(mask, dtype=jnp.int32)
+    compact_mask = jnp.arange(length, dtype=jnp.int32) < count
+    return compacted, compact_mask
 
 
 def _dummy_action_space_snapshot():
