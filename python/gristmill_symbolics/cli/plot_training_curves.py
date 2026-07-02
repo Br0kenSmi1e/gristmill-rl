@@ -124,9 +124,9 @@ def _plot_objective(axis, x, objective, objective_error) -> None:
         linewidth=1.4,
         capsize=2.0,
     )
-    axis.set_title("Objective Loss")
+    axis.set_title("Loss")
     axis.set_xlabel("Update")
-    axis.set_ylabel("objective_loss_mean")
+    axis.set_ylabel("loss")
     axis.grid(True, alpha=0.3)
 
 
@@ -139,9 +139,9 @@ def _plot_final_flops(axis, x, final_flops) -> None:
         linewidth=1.2,
         label="gristmill optimized",
     )
-    axis.set_title("Best Final FLOPs")
+    axis.set_title("Best Final Cost")
     axis.set_xlabel("Update")
-    axis.set_ylabel("final_flops_best")
+    axis.set_ylabel("log flops")
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best", fontsize="small")
 

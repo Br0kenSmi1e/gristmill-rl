@@ -5,6 +5,7 @@ import pytest
 from gristmill_symbolics.cli.plot_training_curves import (
     GRISTMILL_OPTIMIZED_LOG_FLOPS,
     _plot_final_flops,
+    _plot_objective,
     load_metrics,
     main,
     objective_errorbar,
@@ -75,6 +76,21 @@ def test_plot_training_curves_cli_writes_png(tmp_path):
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
+def test_loss_plot_uses_short_title_and_axis_label():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
+    figure, axis = plt.subplots()
+    try:
+        _plot_objective(axis, [0, 1], [2.0, 1.0], [0.1, 0.2])
+        assert axis.get_title() == "Loss"
+        assert axis.get_ylabel() == "loss"
+    finally:
+        plt.close(figure)
+
+
 def test_final_flops_plot_includes_gristmill_optimized_baseline():
     import matplotlib
 
@@ -85,6 +101,8 @@ def test_final_flops_plot_includes_gristmill_optimized_baseline():
     try:
         _plot_final_flops(axis, [0, 1], [60.0, 55.0])
         y_values = [line.get_ydata()[0] for line in axis.lines]
+        assert axis.get_title() == "Best Final Cost"
+        assert axis.get_ylabel() == "log flops"
     finally:
         plt.close(figure)
 
