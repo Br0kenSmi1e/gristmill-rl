@@ -6,9 +6,6 @@ from typing import Sequence
 import jax
 import numpy as np
 
-from gristmill_symbolics._training import TrainingError
-from gristmill_symbolics import RewriteState
-
 
 @dataclass(frozen=True)
 class TrainState:
@@ -37,7 +34,6 @@ def init_train_state(
     seed: int,
     update_index: int = 0,
 ) -> TrainState:
-    _validate_matching_batch_sizes(model, trainer)
     root_key = jax.random.PRNGKey(int(seed))
     params_key = jax.random.fold_in(root_key, np.uint32(0xFFFFFFFF))
     params = model.init_params(params_key)
@@ -51,12 +47,11 @@ def init_train_state(
 
 def advance_train_state(
     state: TrainState,
-    initial_states: Sequence[RewriteState],
+    initial_states: Sequence[object],
     *,
     model,
     trainer,
 ):
-    _validate_matching_batch_sizes(model, trainer)
     rng = jax.random.fold_in(state.root_key, int(state.update_index))
     new_params, new_opt_state, trainer_metrics = trainer.update(
         state.params,
@@ -84,8 +79,3 @@ def advance_train_state(
         ),
         metrics,
     )
-
-
-def _validate_matching_batch_sizes(model, trainer) -> None:
-    if model.batch_size != trainer.batch_size:
-        raise TrainingError("model batch_size must match trainer batch_size")

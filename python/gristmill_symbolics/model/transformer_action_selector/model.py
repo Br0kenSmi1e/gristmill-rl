@@ -1,342 +1,1017 @@
 from __future__ import annotations
 
-import math
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
-from gristmill_symbolics._training import TrainingError
+from gristmill_symbolics import ActionSpace
+from gristmill_symbolics import TensorComputation
+from gristmill_symbolics import action_spaces_for_batch
+from gristmill_symbolics import apply_decisions_for_batch
+from gristmill_symbolics import validate_decisions_for_batch
+from gristmill_symbolics.model.protocols import StepwiseModel
+from gristmill_symbolics.model.tokenizer import SEGMENT, SIDE
+from gristmill_symbolics.model.tokenizer import TOKEN_FIELDS, TOKEN_KIND
+from gristmill_symbolics.model.tokenizer import stack_token_arrays
+from gristmill_symbolics.model.tokenizer import tokenize_action_space_snapshot
+from gristmill_symbolics.model.tokenizer import tokenize_computation_snapshot
 
-from .constants import SENTINEL, TOKEN_KIND
-from .types import TokenTree, _PolicySettings
-
-_ID_FIELDS = (
-    "def_index",
-    "term_index",
-    "factor_index",
-    "tensor_id",
-    "range_id",
-    "index_id",
-    "candidate_index",
-)
-_FIELD_EMBEDDING_KEY_COUNT = 3 + len(_ID_FIELDS)
-_FIXED_PARAM_KEY_COUNT = _FIELD_EMBEDDING_KEY_COUNT + 1 + 2 + 4
-_ATTENTION_KEYS_PER_LAYER = 6
+from .nn import LogitDecoder, TokenEmbedder, TransformerEncoder
 
 
-def _positive_int(name: str, value: int) -> int:
-    if type(value) is not int:
-        raise TrainingError(f"{name} must be an int")
-    if value <= 0:
-        raise TrainingError(f"{name} must be positive")
-    return value
+@dataclass(frozen=True)
+class SelectorState:
+    comp: TensorComputation
+    target_mask: jax.Array | None = None
 
 
-def _finite_float(name: str, value: float) -> float:
-    if isinstance(value, bool) or isinstance(value, np.bool_):
-        raise TrainingError(f"{name} must be a finite float")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise TrainingError(f"{name} must be a finite float") from exc
-    if not math.isfinite(parsed):
-        raise TrainingError(f"{name} must be a finite float")
-    return parsed
+@dataclass(frozen=True)
+class SelectorChoice:
+    action_space: ActionSpace
+    decision: dict[str, object]
+    logp: float
 
 
-def _normal(key, shape, scale):
-    return jax.random.normal(key, shape, dtype=jnp.float32) * scale
+@dataclass(frozen=True)
+class SelectorTransitions:
+    state: TensorComputation
+    choices: Sequence[SelectorChoice]
 
 
-def _split(key, count):
-    return iter(jax.random.split(key, count))
+BatchedState = Sequence[SelectorState]
+BatchedTransitions = Sequence[SelectorTransitions]
 
 
-def _init_policy_params(settings: _PolicySettings, rng) -> dict[str, object]:
-    key_count = _FIXED_PARAM_KEY_COUNT + (
-        _ATTENTION_KEYS_PER_LAYER * settings.num_attention_layers
-    )
-    keys = _split(rng, key_count)
-    d = settings.d_model
-    params: dict[str, object] = {
-        "field_embeddings": {
-            "token_kind": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(next(keys), (int(max(TOKEN_KIND)), d), settings.init_scale),
-                ]
-            ),
-            "segment": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(next(keys), (4, d), settings.init_scale),
-                ]
-            ),
-            "side": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(next(keys), (3, d), settings.init_scale),
-                ]
-            ),
-            "def_index": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "term_index": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "factor_index": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "tensor_id": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "range_id": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "index_id": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-            "candidate_index": jnp.vstack(
-                [
-                    jnp.zeros((1, d), dtype=jnp.float32),
-                    _normal(
-                        next(keys), (settings.id_vocab_size, d), settings.init_scale
-                    ),
-                ]
-            ),
-        },
-        "numeric_projection": _normal(next(keys), (3, d), settings.init_scale),
-        "attention": [
-            {
-                "wq": _normal(next(keys), (d, d), settings.init_scale),
-                "wk": _normal(next(keys), (d, d), settings.init_scale),
-                "wv": _normal(next(keys), (d, d), settings.init_scale),
-                "wo": _normal(next(keys), (d, d), settings.init_scale),
-                "w1": _normal(next(keys), (d, 2 * d), settings.init_scale),
-                "b1": jnp.zeros((2 * d,), dtype=jnp.float32),
-                "w2": _normal(next(keys), (2 * d, d), settings.init_scale),
-                "b2": jnp.zeros((d,), dtype=jnp.float32),
-            }
-            for _ in range(settings.num_attention_layers)
-        ],
-        "target": {
-            "stop_w": _normal(next(keys), (d,), settings.init_scale),
-            "def_w": _normal(next(keys), (d,), settings.init_scale),
-            "stop_bias": jnp.asarray(settings.stop_bias_init, dtype=jnp.float32),
-            "def_bias": jnp.asarray(0.0, dtype=jnp.float32),
-        },
-        "action": {
-            "candidate_w": _normal(next(keys), (d,), settings.init_scale),
-            "candidate_bias": jnp.asarray(0.0, dtype=jnp.float32),
-            "left_w": _normal(next(keys), (d,), settings.init_scale),
-            "left_bias": jnp.asarray(0.0, dtype=jnp.float32),
-            "right_w": _normal(next(keys), (d,), settings.init_scale),
-            "right_bias": jnp.asarray(0.0, dtype=jnp.float32),
-            "left_context_w": _normal(next(keys), (d,), settings.init_scale),
-        },
-    }
-    return params
-
-
-def _token_kind_index(values, table):
-    return jnp.where(values <= 0, 0, jnp.minimum(values, table.shape[0] - 1))
-
-
-def _embedding_index(values, table):
-    size = table.shape[0] - 1
-    return jnp.where(values < 0, 0, (values % size) + 1)
-
-
-def _masked_embedding(table, index):
-    gathered = table[index]
-    return gathered * (index != 0).astype(gathered.dtype)[:, None]
-
-
-def _field(tokens: TokenTree, name: str, length: int):
-    return tokens.get(name, jnp.full((length,), SENTINEL, dtype=jnp.int32))
-
-
-def embed_tokens(params, tokens: TokenTree):
-    tables = params["field_embeddings"]
-    d = tables["token_kind"].shape[1]
-    length = tokens["token_kind"].shape[0]
-    out = jnp.zeros((length, d), dtype=jnp.float32)
-    if "token_kind" in tokens:
-        index = _token_kind_index(tokens["token_kind"], tables["token_kind"])
-        out = out + _masked_embedding(tables["token_kind"], index)
-    for field in ("segment", "side"):
-        if field in tokens:
-            index = _embedding_index(tokens[field], tables[field])
-            out = out + _masked_embedding(tables[field], index)
-    for field in _ID_FIELDS:
-        if field in tokens:
-            index = _embedding_index(tokens[field], tables[field])
-            out = out + _masked_embedding(tables[field], index)
-    coeff_num = _field(tokens, "coeff_num", length)
-    coeff_den = _field(tokens, "coeff_den", length)
-    position = _field(tokens, "position", length)
-    coeff_present = coeff_den >= 0
-    numeric = jnp.stack(
-        [
-            jnp.where(coeff_present, coeff_num.astype(jnp.float32), 0.0),
-            jnp.where(coeff_present, coeff_den.astype(jnp.float32), 0.0),
-            jnp.where(position < 0, 0.0, position.astype(jnp.float32)),
-        ],
-        axis=-1,
-    )
-    return out + numeric @ params["numeric_projection"]
-
-
-def _layer_norm(x, eps=1e-5):
-    mean = jnp.mean(x, axis=-1, keepdims=True)
-    var = jnp.mean((x - mean) ** 2, axis=-1, keepdims=True)
-    return (x - mean) / jnp.sqrt(var + eps)
-
-
-def _attention_block(layer, x, mask):
-    q = x @ layer["wq"]
-    k = x @ layer["wk"]
-    v = x @ layer["wv"]
-    scale = 1.0 / math.sqrt(x.shape[-1])
-    scores = (q @ k.T) * scale
-    scores = jnp.where(mask[None, :], scores, -1.0e30)
-    weights = jax.nn.softmax(scores, axis=-1)
-    attended = weights @ v
-    x = _layer_norm(x + attended @ layer["wo"])
-    hidden = jax.nn.gelu(x @ layer["w1"] + layer["b1"])
-    return _layer_norm(x + hidden @ layer["w2"] + layer["b2"])
-
-
-def encode_tokens(params, embedded, mask):
-    x = jnp.where(mask[:, None], embedded, 0.0)
-    for layer in params["attention"]:
-        x = _attention_block(layer, x, mask)
-        x = jnp.where(mask[:, None], x, 0.0)
-    return x
-
-
-def masked_mean(values, mask):
-    weights = mask.astype(jnp.float32)
-    denom = jnp.maximum(jnp.sum(weights), 1.0)
-    return jnp.sum(values * weights[:, None], axis=0) / denom
-
-
-def pool_by_index(values, item_index, mask, requested_indices):
-    def one(index):
-        item_mask = mask & (item_index == index)
-        return masked_mean(values, item_mask)
-
-    return jax.vmap(one)(requested_indices)
-
-
-class TransformerActionSelectorModel:
+class TransformerActionSelectorModel(
+    StepwiseModel[BatchedState, BatchedTransitions]
+):
     def __init__(
         self,
         *,
-        batch_size: int,
-        max_steps: int,
         state_token_pad_to: int,
         action_token_pad_to: int,
         definition_pad_to: int,
+        candidate_pad_to: int,
+        side_term_pad_to: int,
         d_model: int = 32,
         num_attention_layers: int = 1,
+        num_attention_heads: int = 4,
         id_vocab_size: int = 128,
         init_scale: float = 0.02,
-        stop_bias_init: float = -20.0,
     ):
-        self._batch_size = _positive_int("batch_size", batch_size)
-        self._max_steps = _positive_int("max_steps", max_steps)
-        self._state_token_pad_to = _positive_int(
-            "state_token_pad_to", state_token_pad_to
+        self.state_token_pad_to = state_token_pad_to
+        self.action_token_pad_to = action_token_pad_to
+        self.definition_pad_to = definition_pad_to
+        self.candidate_pad_to = candidate_pad_to
+        self.side_term_pad_to = side_term_pad_to
+        self.d_model = d_model
+        self.num_attention_layers = num_attention_layers
+        self.num_attention_heads = num_attention_heads
+        self.id_vocab_size = id_vocab_size
+        self.init_scale = init_scale
+        self.embedder = TokenEmbedder(
+            d_model=d_model,
+            id_vocab_size=id_vocab_size,
+            init_scale=init_scale,
         )
-        self._action_token_pad_to = _positive_int(
-            "action_token_pad_to", action_token_pad_to
+        self.encoder = TransformerEncoder(
+            d_model=d_model,
+            num_layers=num_attention_layers,
+            num_heads=num_attention_heads,
+            init_scale=init_scale,
         )
-        self._definition_pad_to = _positive_int(
-            "definition_pad_to", definition_pad_to
+        self.target_decoder = LogitDecoder(
+            d_model=d_model,
+            output_size=1 + definition_pad_to,
+            init_scale=init_scale,
         )
-        self._settings = _PolicySettings(
-            d_model=_positive_int("d_model", d_model),
-            num_attention_layers=_positive_int(
-                "num_attention_layers", num_attention_layers
-            ),
-            id_vocab_size=_positive_int("id_vocab_size", id_vocab_size),
-            init_scale=_finite_float("init_scale", init_scale),
-            stop_bias_init=_finite_float("stop_bias_init", stop_bias_init),
+        self.candidate_decoder = LogitDecoder(
+            d_model=d_model,
+            output_size=candidate_pad_to,
+            init_scale=init_scale,
         )
-
-    @property
-    def batch_size(self) -> int:
-        return self._batch_size
-
-    @property
-    def max_steps(self) -> int:
-        return self._max_steps
-
-    @property
-    def state_token_pad_to(self) -> int:
-        return self._state_token_pad_to
-
-    @property
-    def action_token_pad_to(self) -> int:
-        return self._action_token_pad_to
-
-    @property
-    def definition_pad_to(self) -> int:
-        return self._definition_pad_to
+        self.mask_decoder = LogitDecoder(
+            d_model=d_model,
+            output_size=side_term_pad_to,
+            init_scale=init_scale,
+        )
+        self._sample_target_batch = jax.jit(
+            jax.vmap(
+                self._sample_target_from_state_tokens,
+                in_axes=(None, 0, 0, 0, 0),
+            )
+        )
+        self._score_target_batch = jax.jit(
+            jax.vmap(
+                jax.value_and_grad(
+                    self._score_target_from_state_tokens,
+                ),
+                in_axes=(None, 0, 0, 0, 0),
+            )
+        )
+        self._sample_decision_batch = jax.jit(
+            jax.vmap(
+                self._sample_decision_from_tokens,
+                in_axes=(None, 0, 0, 0, 0, 0, 0),
+            )
+        )
+        self._score_decision_batch = jax.jit(
+            jax.vmap(
+                jax.value_and_grad(self._score_decision_from_tokens),
+                in_axes=(None, 0, 0, 0, 0, 0, 0),
+            )
+        )
 
     def constructor_kwargs(self) -> dict[str, object]:
         return {
-            "batch_size": self._batch_size,
-            "max_steps": self._max_steps,
-            "state_token_pad_to": self._state_token_pad_to,
-            "action_token_pad_to": self._action_token_pad_to,
-            "definition_pad_to": self._definition_pad_to,
-            "d_model": self._settings.d_model,
-            "num_attention_layers": self._settings.num_attention_layers,
-            "id_vocab_size": self._settings.id_vocab_size,
-            "init_scale": self._settings.init_scale,
-            "stop_bias_init": self._settings.stop_bias_init,
+            "state_token_pad_to": self.state_token_pad_to,
+            "action_token_pad_to": self.action_token_pad_to,
+            "definition_pad_to": self.definition_pad_to,
+            "candidate_pad_to": self.candidate_pad_to,
+            "side_term_pad_to": self.side_term_pad_to,
+            "d_model": self.d_model,
+            "num_attention_layers": self.num_attention_layers,
+            "num_attention_heads": self.num_attention_heads,
+            "id_vocab_size": self.id_vocab_size,
+            "init_scale": self.init_scale,
         }
 
     def init_params(self, rng):
-        return _init_policy_params(self._settings, rng)
-
-    def sample_with_logp_grad(self, params, rng, row):
-        from .rollout import _sample_static_model_rollout
-
-        result = _sample_static_model_rollout(params, rng, row, self)
-        return result.out_row, result.logp, result.grad_logp, {
-            "stopped": result.stopped,
+        embed_key, encoder_key, target_key, cand_key, mask_key = (
+            jax.random.split(rng, 5)
+        )
+        example_tokens = {
+            field: jnp.zeros((1,), dtype=jnp.int32)
+            for field in TOKEN_FIELDS
         }
+        example_mask = jnp.ones((1,), dtype=jnp.bool_)
+        example_vectors = jnp.zeros((1, self.d_model), dtype=jnp.bfloat16)
+        return {
+            "embedder": self.embedder.init(
+                embed_key,
+                example_tokens,
+            )["params"],
+            "encoder": self.encoder.init(
+                encoder_key,
+                example_vectors,
+                example_mask,
+            )["params"],
+            "target_decoder": self.target_decoder.init(
+                target_key,
+                example_vectors,
+                example_mask,
+            )["params"],
+            "candidate_decoder": self.candidate_decoder.init(
+                cand_key,
+                example_vectors,
+                example_mask,
+            )["params"],
+            "mask_decoder": self.mask_decoder.init(
+                mask_key,
+                example_vectors,
+                example_mask,
+            )["params"],
+        }
+
+    def sample_step(self, params, rng, states):
+        if not states:
+            raise ValueError("sample_step requires at least one state")
+
+        batch = self._sample_transition_batch(params, rng, states)
+        next_comps, applied = self._apply_sampled_decisions(batch)
+        logp, grad_logp = self._score_sampled_transition(params, batch)
+        next_masks = self._updated_target_masks(
+            batch["target_mask"],
+            batch["targets"],
+            batch["spaces"],
+            applied,
+        )
+        next_states = [
+            SelectorState(comp=comp, target_mask=mask)
+            for comp, mask in zip(next_comps, next_masks)
+        ]
+        return next_states, logp, grad_logp
+
+    def score_step(self, params, transitions):
+        batch = self._flatten_transitions(transitions)
+        state_tokens, state_mask = self._computation_token_batch(
+            batch["comps"],
+        )
+        action_tokens, action_mask = self._action_space_token_batch(
+            batch["spaces"],
+        )
+        target_logp, target_grad = self._score_target_batch(
+            params,
+            state_tokens,
+            state_mask,
+            batch["target_mask"],
+            batch["targets"],
+        )
+        decision_logp, decision_grad = self._score_decision_batch(
+            params,
+            state_tokens,
+            state_mask,
+            action_tokens,
+            action_mask,
+            batch["decisions"],
+            batch["active"],
+        )
+        return (
+            target_logp + decision_logp,
+            _tree_add(target_grad, decision_grad),
+        )
+
+    def _sample_transition_batch(self, params, rng, states):
+        comps = [state.comp for state in states]
+        state_tokens, state_mask = self._computation_token_batch(comps)
+        target_mask = self._target_mask_from_states(states)
+        target_rng, decision_rng = jax.random.split(rng)
+        targets = self._sample_targets(
+            params,
+            target_rng,
+            state_tokens,
+            state_mask,
+            target_mask,
+            len(states),
+        )
+        spaces = _query_action_spaces(comps, targets)
+        active = _active_action_mask(targets, spaces)
+        action_tokens, action_mask = self._optional_space_tokens(spaces)
+        decisions = self._sample_decisions(
+            params,
+            decision_rng,
+            state_tokens,
+            state_mask,
+            action_tokens,
+            action_mask,
+            active,
+            len(states),
+        )
+        return {
+            "comps": comps,
+            "state_tokens": state_tokens,
+            "state_mask": state_mask,
+            "target_mask": target_mask,
+            "targets": targets,
+            "spaces": spaces,
+            "active": active,
+            "action_tokens": action_tokens,
+            "action_mask": action_mask,
+            "decisions": decisions,
+        }
+
+    def _sample_targets(
+        self,
+        params,
+        rng,
+        state_tokens,
+        state_mask,
+        target_mask,
+        batch_size,
+    ):
+        return self._sample_target_batch(
+            params,
+            jax.random.split(rng, batch_size),
+            state_tokens,
+            state_mask,
+            target_mask,
+        )
+
+    def _sample_decisions(
+        self,
+        params,
+        rng,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        active,
+        batch_size,
+    ):
+        return self._sample_decision_batch(
+            params,
+            jax.random.split(rng, batch_size),
+            state_tokens,
+            state_mask,
+            action_tokens,
+            action_mask,
+            jnp.asarray(active, dtype=jnp.bool_),
+        )
+
+    def _apply_sampled_decisions(self, batch):
+        python_decisions = self._decision_batch_to_python(
+            batch["spaces"],
+            batch["decisions"],
+            batch["active"],
+        )
+        validate_decisions_for_batch(batch["spaces"], python_decisions)
+        next_comps = [comp.clone() for comp in batch["comps"]]
+        applied = apply_decisions_for_batch(
+            next_comps,
+            batch["spaces"],
+            python_decisions,
+        )
+        return next_comps, applied
+
+    def _score_sampled_transition(self, params, batch):
+        target_logp, target_grad = self._score_target_batch(
+            params,
+            batch["state_tokens"],
+            batch["state_mask"],
+            batch["target_mask"],
+            batch["targets"],
+        )
+        decision_logp, decision_grad = self._score_decision_batch(
+            params,
+            batch["state_tokens"],
+            batch["state_mask"],
+            batch["action_tokens"],
+            batch["action_mask"],
+            batch["decisions"],
+            jnp.asarray(batch["active"], dtype=jnp.bool_),
+        )
+        return (
+            target_logp + decision_logp,
+            _tree_add(target_grad, decision_grad),
+        )
+
+    def _computation_token_batch(
+        self,
+        comps: Sequence[TensorComputation],
+    ):
+        items = [
+            tokenize_computation_snapshot(comp.snapshot())
+            for comp in comps
+        ]
+        return stack_token_arrays(items, pad_to=self.state_token_pad_to)
+
+    def _action_space_token_batch(
+        self,
+        spaces: Sequence[ActionSpace],
+    ):
+        snapshots = [space.snapshot() for space in spaces]
+        return self._action_space_snapshot_token_batch(snapshots)
+
+    def _optional_action_space_token_batch(
+        self,
+        spaces: Sequence[ActionSpace | None],
+    ):
+        snapshots = [
+            _action_space_snapshot_or_dummy(space)
+            for space in spaces
+        ]
+        return self._action_space_snapshot_token_batch(snapshots)
+
+    def _optional_space_tokens(self, spaces):
+        return self._optional_action_space_token_batch(spaces)
+
+    def _action_space_snapshot_token_batch(self, snapshots: Sequence[dict]):
+        items = [
+            tokenize_action_space_snapshot(snapshot)
+            for snapshot in snapshots
+        ]
+        return stack_token_arrays(items, pad_to=self.action_token_pad_to)
+
+    def _target_mask_from_states(self, states: BatchedState):
+        rows = [
+            _normalized_target_mask(state.target_mask, self.definition_pad_to)
+            for state in states
+        ]
+        return jnp.asarray(rows, dtype=jnp.bool_)
+
+    def _updated_target_masks(
+        self,
+        target_mask,
+        targets,
+        spaces,
+        applied,
+    ):
+        rows = []
+        target_rows = jax.device_get(target_mask).tolist()
+        target_slots = jax.device_get(targets).tolist()
+        for row, target, space, did_apply in zip(
+            target_rows,
+            target_slots,
+            spaces,
+            applied,
+        ):
+            rows.append(
+                _updated_target_mask(
+                    row,
+                    int(target),
+                    space is None,
+                    bool(did_apply),
+                    self.definition_pad_to,
+                )
+            )
+        return jnp.asarray(rows, dtype=jnp.bool_)
+
+    def _decision_batch_to_python(self, spaces, decisions, active):
+        candidates = jax.device_get(decisions["candidate_index"]).tolist()
+        left = jax.device_get(decisions["left_mask"]).tolist()
+        right = jax.device_get(decisions["right_mask"]).tolist()
+        out = []
+        for sample, space in enumerate(spaces):
+            if not active[sample] or space is None:
+                out.append(None)
+                continue
+            template = space.snapshot()["candidate_templates"][
+                int(candidates[sample])
+            ]
+            out.append({
+                "candidate_index": int(candidates[sample]),
+                "left_mask": _bool_prefix(
+                    left[sample],
+                    _term_count(template, "left_definition"),
+                ),
+                "right_mask": _bool_prefix(
+                    right[sample],
+                    _term_count(template, "right_definition"),
+                ),
+            })
+        return out
+
+    def _flatten_transitions(self, transitions):
+        comps = []
+        spaces = []
+        decisions = []
+        targets = []
+        for group in transitions:
+            for choice in group.choices:
+                comps.append(group.state)
+                spaces.append(choice.action_space)
+                decisions.append(choice.decision)
+                targets.append(1 + choice.action_space.def_index)
+        if not comps:
+            raise ValueError("score_step requires at least one transition")
+        return {
+            "comps": comps,
+            "spaces": spaces,
+            "decisions": self._decision_list_to_arrays(decisions),
+            "targets": jnp.asarray(targets, dtype=jnp.int32),
+            "target_mask": jnp.ones(
+                (len(comps), 1 + self.definition_pad_to),
+                dtype=jnp.bool_,
+            ),
+            "active": jnp.ones((len(comps),), dtype=jnp.bool_),
+        }
+
+    def _decision_list_to_arrays(self, decisions):
+        candidates = []
+        left = []
+        right = []
+        for decision in decisions:
+            candidates.append(int(decision["candidate_index"]))
+            left.append(_pad_bool_mask(
+                decision["left_mask"],
+                self.side_term_pad_to,
+            ))
+            right.append(_pad_bool_mask(
+                decision["right_mask"],
+                self.side_term_pad_to,
+            ))
+        return {
+            "candidate_index": jnp.asarray(candidates, dtype=jnp.int32),
+            "left_mask": jnp.asarray(left, dtype=jnp.bool_),
+            "right_mask": jnp.asarray(right, dtype=jnp.bool_),
+        }
+
+    def _encode_tokens(self, params, tokens, token_mask):
+        vectors = self.embedder.apply(
+            {"params": params["embedder"]},
+            tokens,
+        )
+        return self.encoder.apply(
+            {"params": params["encoder"]},
+            vectors,
+            token_mask,
+        )
+
+    def _target_logits_from_encoded(self, params, encoded, token_mask):
+        return self.target_decoder.apply(
+            {"params": params["target_decoder"]},
+            encoded,
+            token_mask,
+        )
+
+    def _candidate_logits_from_encoded(self, params, encoded, token_mask):
+        return self.candidate_decoder.apply(
+            {"params": params["candidate_decoder"]},
+            encoded,
+            token_mask,
+        )
+
+    def _mask_logits_from_encoded(self, params, encoded, token_mask):
+        return self.mask_decoder.apply(
+            {"params": params["mask_decoder"]},
+            encoded,
+            token_mask,
+        )
+
+    def _target_logits_from_state_tokens(
+        self,
+        params,
+        state_tokens,
+        state_mask,
+    ):
+        encoded = self._encode_tokens(params, state_tokens, state_mask)
+        return self._target_logits_from_encoded(
+            params,
+            encoded,
+            state_mask,
+        )
+
+    def _sample_target_from_state_tokens(
+        self,
+        params,
+        rng,
+        state_tokens,
+        state_mask,
+        target_mask,
+    ):
+        logits = self._target_logits_from_state_tokens(
+            params,
+            state_tokens,
+            state_mask,
+        )
+        structural = self._target_mask_from_state_tokens(
+            state_tokens,
+            state_mask,
+        )
+        return _sample_categorical(rng, logits, structural & target_mask)
+
+    def _score_target_from_state_tokens(
+        self,
+        params,
+        state_tokens,
+        state_mask,
+        target_mask,
+        target,
+    ):
+        logits = self._target_logits_from_state_tokens(
+            params,
+            state_tokens,
+            state_mask,
+        )
+        structural = self._target_mask_from_state_tokens(
+            state_tokens,
+            state_mask,
+        )
+        active = jnp.any(target_mask)
+        valid = _valid_when_active(structural & target_mask, active)
+        score = _score_categorical(logits, valid, target)
+        return jnp.where(active, score, 0.0)
+
+    def _sample_decision_from_tokens(
+        self,
+        params,
+        rng,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        active,
+    ):
+        cand_rng, left_rng, right_rng = jax.random.split(rng, 3)
+        encoded, token_mask, tokens = self._encode_state_action_tokens(
+            params,
+            state_tokens,
+            state_mask,
+            action_tokens,
+            action_mask,
+        )
+        candidate_context = token_mask
+        candidate_logits = self._candidate_logits_from_encoded(
+            params,
+            encoded,
+            candidate_context,
+        )
+        candidate_mask = self._candidate_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+        )
+        candidate = _sample_categorical(
+            cand_rng,
+            candidate_logits,
+            candidate_mask & active,
+        )
+
+        left_context = self._chosen_candidate_context_mask(
+            tokens,
+            token_mask,
+            candidate,
+        )
+        mask_logits = self._mask_logits_from_encoded(
+            params,
+            encoded,
+            left_context,
+        )
+        left_valid = self._side_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+            candidate,
+            SIDE.LEFT,
+        ) & active
+        left_mask = _sample_nonempty_mask(left_rng, mask_logits, left_valid)
+
+        right_context = self._chosen_left_context_mask(
+            tokens,
+            token_mask,
+            candidate,
+            left_mask,
+        )
+        mask_logits = self._mask_logits_from_encoded(
+            params,
+            encoded,
+            right_context,
+        )
+        right_valid = self._side_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+            candidate,
+            SIDE.RIGHT,
+        ) & active
+        right_mask = _sample_nonempty_mask(
+            right_rng,
+            mask_logits,
+            right_valid,
+        )
+        return {
+            "candidate_index": candidate,
+            "left_mask": left_mask,
+            "right_mask": right_mask,
+        }
+
+    def _score_decision_from_tokens(
+        self,
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+        decision,
+        active,
+    ):
+        encoded, token_mask, tokens = self._encode_state_action_tokens(
+            params,
+            state_tokens,
+            state_mask,
+            action_tokens,
+            action_mask,
+        )
+        candidate_context = token_mask
+        candidate_logits = self._candidate_logits_from_encoded(
+            params,
+            encoded,
+            candidate_context,
+        )
+        candidate_mask = self._candidate_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+        )
+        candidate_valid = _valid_when_active(candidate_mask, active)
+        candidate = decision["candidate_index"]
+        candidate_logp = _score_categorical(
+            candidate_logits,
+            candidate_valid,
+            candidate,
+        )
+
+        left_context = self._chosen_candidate_context_mask(
+            tokens,
+            token_mask,
+            candidate,
+        )
+        mask_logits = self._mask_logits_from_encoded(
+            params,
+            encoded,
+            left_context,
+        )
+        left_valid = self._side_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+            candidate,
+            SIDE.LEFT,
+        ) & active
+        left_logp = _score_nonempty_mask(
+            mask_logits,
+            left_valid,
+            decision["left_mask"],
+        )
+        right_context = self._chosen_left_context_mask(
+            tokens,
+            token_mask,
+            candidate,
+            decision["left_mask"],
+        )
+        mask_logits = self._mask_logits_from_encoded(
+            params,
+            encoded,
+            right_context,
+        )
+        right_valid = self._side_mask_from_action_tokens(
+            action_tokens,
+            action_mask,
+            candidate,
+            SIDE.RIGHT,
+        ) & active
+        right_logp = _score_nonempty_mask(
+            mask_logits,
+            right_valid,
+            decision["right_mask"],
+        )
+        total = candidate_logp + left_logp + right_logp
+        return jnp.where(active, total, 0.0)
+
+    def _encode_state_action_tokens(
+        self,
+        params,
+        state_tokens,
+        state_mask,
+        action_tokens,
+        action_mask,
+    ):
+        tokens = _concat_token_arrays(state_tokens, action_tokens)
+        token_mask = jnp.concatenate([state_mask, action_mask], axis=0)
+        tokens, token_mask = _compact_token_arrays(tokens, token_mask)
+        return self._encode_tokens(params, tokens, token_mask), token_mask, tokens
+
+    def _chosen_candidate_context_mask(
+        self,
+        tokens,
+        token_mask,
+        candidate,
+    ):
+        is_state = token_mask & (
+            tokens["segment"] != int(SEGMENT.ACTION_SPACE)
+        )
+        chosen = (
+            token_mask
+            & (tokens["segment"] == int(SEGMENT.ACTION_SPACE))
+            & (tokens["candidate_index"] == candidate)
+        )
+        return is_state | chosen
+
+    def _chosen_left_context_mask(
+        self,
+        tokens,
+        token_mask,
+        candidate,
+        left_mask,
+    ):
+        is_state = token_mask & (
+            tokens["segment"] != int(SEGMENT.ACTION_SPACE)
+        )
+        left_term_content = (
+            token_mask
+            & (tokens["candidate_index"] == candidate)
+            & (tokens["side"] == int(SIDE.LEFT))
+            & (tokens["term_index"] >= 0)
+        )
+        selected = _selected_slots(
+            tokens["term_index"],
+            left_mask,
+        )
+        return is_state | (left_term_content & selected)
+
+    def _target_mask_from_state_tokens(self, state_tokens, state_mask):
+        is_def = state_mask & (
+            state_tokens["token_kind"] == int(TOKEN_KIND.DEF_START)
+        )
+        defs = _slot_mask(
+            state_tokens["def_index"],
+            is_def,
+            self.definition_pad_to,
+        )
+        return jnp.concatenate([jnp.ones((1,), dtype=jnp.bool_), defs])
+
+    def _candidate_mask_from_action_tokens(self, action_tokens, action_mask):
+        is_candidate = action_mask & (
+            action_tokens["token_kind"] == int(TOKEN_KIND.CANDIDATE_START)
+        )
+        return _slot_mask(
+            action_tokens["candidate_index"],
+            is_candidate,
+            self.candidate_pad_to,
+        )
+
+    def _side_mask_from_action_tokens(
+        self,
+        action_tokens,
+        action_mask,
+        candidate,
+        side,
+    ):
+        is_term = (
+            action_mask
+            & (action_tokens["token_kind"] == int(TOKEN_KIND.TERM_START))
+            & (action_tokens["candidate_index"] == candidate)
+            & (action_tokens["side"] == int(side))
+        )
+        return _slot_mask(
+            action_tokens["term_index"],
+            is_term,
+            self.side_term_pad_to,
+        )
+
+
+def _concat_token_arrays(left, right):
+    return {
+        field: jnp.concatenate([left[field], right[field]], axis=0)
+        for field in TOKEN_FIELDS
+    }
+
+
+def _compact_token_arrays(tokens, mask):
+    length = int(mask.shape[0])
+    indices = jnp.nonzero(mask, size=length, fill_value=0)[0]
+    compacted = {
+        field: jnp.take(values, indices, axis=0)
+        for field, values in tokens.items()
+    }
+    count = jnp.sum(mask, dtype=jnp.int32)
+    compact_mask = jnp.arange(length, dtype=jnp.int32) < count
+    return compacted, compact_mask
+
+
+def _dummy_action_space_snapshot():
+    return {"def_index": 0, "candidate_templates": []}
+
+
+def _action_space_snapshot_or_dummy(space):
+    if space is None:
+        return _dummy_action_space_snapshot()
+    return space.snapshot()
+
+
+def _target_slots_to_defs(targets):
+    return [
+        None if int(target) == 0 else int(target) - 1
+        for target in jax.device_get(targets).tolist()
+    ]
+
+
+def _query_action_spaces(comps, targets):
+    return list(action_spaces_for_batch(comps, _target_slots_to_defs(targets)))
+
+
+def _active_action_mask(targets, spaces):
+    target_values = jax.device_get(targets).tolist()
+    return [
+        int(target) > 0 and space is not None
+        for target, space in zip(target_values, spaces)
+    ]
+
+
+def _normalized_target_mask(mask, definition_pad_to: int):
+    if mask is None:
+        return [True] * (1 + definition_pad_to)
+    values = [bool(value) for value in jax.device_get(mask).tolist()]
+    if len(values) == definition_pad_to:
+        return [True, *values]
+    if len(values) == 1 + definition_pad_to:
+        return values
+    raise ValueError("target_mask has incompatible length")
+
+
+def _updated_target_mask(
+    mask,
+    target: int,
+    no_action_space: bool,
+    applied: bool,
+    definition_pad_to: int,
+):
+    out = [bool(value) for value in mask]
+    if target <= 0:
+        return [False] * len(out)
+    if no_action_space:
+        out[target] = False
+        return out
+    if not applied:
+        return out
+    def_index = target - 1
+    defs = out[1:]
+    defs = defs[:def_index] + [True, True, True] + defs[def_index + 1:]
+    defs = defs[:definition_pad_to]
+    defs += [False] * (definition_pad_to - len(defs))
+    return [out[0], *defs]
+
+
+def _term_count(template, side: str):
+    return len(template[side]["terms"])
+
+
+def _bool_prefix(values, length: int):
+    return [bool(value) for value in values[:length]]
+
+
+def _pad_bool_mask(values, width: int):
+    values = [bool(value) for value in values]
+    if len(values) > width:
+        raise ValueError("decision mask exceeds side_term_pad_to")
+    return values + [False] * (width - len(values))
+
+
+def _tree_add(left, right):
+    return jax.tree_util.tree_map(lambda x, y: x + y, left, right)
+
+
+def _slot_mask(item_index, item_mask, width: int):
+    slots = jnp.arange(width, dtype=jnp.int32)
+    in_range = (item_index >= 0) & (item_index < width)
+    keep = item_mask & in_range
+    by_slot = keep[None, :] & (item_index[None, :] == slots[:, None])
+    return jnp.any(by_slot, axis=1)
+
+
+def _selected_slots(item_index, selected):
+    safe = jnp.clip(item_index, 0, selected.shape[0] - 1)
+    in_range = (item_index >= 0) & (item_index < selected.shape[0])
+    return in_range & jnp.take(selected, safe)
+
+
+def _sample_categorical(rng, logits, valid):
+    valid, _ = _valid_with_fallback(valid)
+    masked = jnp.where(valid, logits, -jnp.inf)
+    return jax.random.categorical(rng, masked).astype(jnp.int32)
+
+
+def _score_categorical(logits, valid, choice_index):
+    valid, has_valid = _valid_with_fallback(valid)
+    masked = jnp.where(valid, logits, -jnp.inf)
+    log_probs = jax.nn.log_softmax(masked)
+    safe = jnp.clip(choice_index, 0, logits.shape[0] - 1)
+    logp = jnp.take(log_probs, safe)
+    legal = jnp.take(valid, safe)
+    in_range = (choice_index >= 0) & (choice_index < logits.shape[0])
+    return jnp.where(has_valid & legal & in_range, logp, -jnp.inf)
+
+
+def _valid_with_fallback(valid):
+    has_valid = jnp.any(valid)
+    fallback = jnp.arange(valid.shape[0]) == 0
+    return jnp.where(has_valid, valid, fallback), has_valid
+
+
+def _valid_when_active(valid, active):
+    fallback = jnp.arange(valid.shape[0]) == 0
+    return jnp.where(active, valid, fallback)
+
+
+def _last_valid_mask(valid):
+    remaining = jnp.cumsum(valid.astype(jnp.int32)[::-1])[::-1]
+    return valid & (remaining == 1)
+
+
+def _bit_logp(logit, keep):
+    return jnp.where(
+        keep,
+        jax.nn.log_sigmoid(logit),
+        jax.nn.log_sigmoid(-logit),
+    )
+
+
+def _sample_nonempty_mask(rng, logits, valid):
+    has_valid = jnp.any(valid)
+    sampled = jax.random.bernoulli(rng, jax.nn.sigmoid(logits))
+    last_valid = _last_valid_mask(valid)
+
+    def step(seen_keep, inputs):
+        is_valid, is_last_valid, raw_keep = inputs
+        forced = is_valid & is_last_valid & (~seen_keep)
+        keep = jnp.where(is_valid, forced | raw_keep, False)
+        return seen_keep | keep, keep
+
+    _, mask = jax.lax.scan(
+        step,
+        jnp.asarray(False),
+        (valid, last_valid, sampled),
+    )
+    return jnp.where(has_valid, mask, False)
+
+
+def _score_nonempty_mask(logits, valid, mask):
+    has_valid = jnp.any(valid)
+    last_valid = _last_valid_mask(valid)
+
+    def step(seen_keep, inputs):
+        is_valid, is_last_valid, keep, logit = inputs
+        forced = is_valid & is_last_valid & (~seen_keep)
+        legal = jnp.where(is_valid, jnp.where(forced, keep, True), ~keep)
+        logp = jnp.where(is_valid & (~forced), _bit_logp(logit, keep), 0.0)
+        return seen_keep | (is_valid & keep), (logp, legal)
+
+    _, (logps, legal_bits) = jax.lax.scan(
+        step,
+        jnp.asarray(False),
+        (valid, last_valid, mask, logits),
+    )
+    ok = (
+        jnp.all(legal_bits)
+        & has_valid
+        & jnp.any(mask & valid)
+        & (~jnp.any(mask & (~valid)))
+    )
+    return jnp.where(has_valid, jnp.where(ok, jnp.sum(logps), -jnp.inf), 0.0)

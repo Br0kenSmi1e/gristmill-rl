@@ -3,18 +3,21 @@ from dataclasses import fields
 import jax
 import jax.numpy as jnp
 
-from gristmill_symbolics import RewriteState, TensorComputation
+from gristmill_symbolics import TensorComputation
 import gristmill_symbolics.cli.train_state as train_state_module
 from gristmill_symbolics.cli.train_state import (
     advance_train_state,
     init_train_state,
 )
+from gristmill_symbolics.model.transformer_action_selector import SelectorState
 from tests.policy_fixtures import actionable_json
 from tests.test_bindings import exact_empty_json
 
 
 def _state_from_json(text):
-    return RewriteState.from_computation(TensorComputation.from_json_string(text))
+    return SelectorState(
+        comp=TensorComputation.from_json_string(text),
+    )
 
 
 def _batch():
@@ -22,8 +25,6 @@ def _batch():
 
 
 class RecordingModel:
-    batch_size = 2
-
     def __init__(self):
         self.init_rng = None
 

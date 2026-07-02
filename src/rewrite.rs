@@ -1,9 +1,12 @@
-mod row;
-mod scalar;
+mod batch;
+mod single;
 
-pub use row::{
-    ActionSpaceEntry, ActionSpaceRow, RewriteStateRow, ValidatedActionEntry, ValidatedActionRow,
+pub use batch::{
+    action_spaces_for_batch, apply_decisions_for_batch,
+    validate_decisions_for_batch, ActionSpaceBatch, BatchField,
+    BatchRewriteError, DecisionBatch,
 };
-pub use scalar::{
-    ActionSpace, Decision, Factorization, RewriteError, RewriteState, validate_decision,
+pub use single::{
+    action_space_for_def, apply_decision, validate_decision, ActionSpace,
+    Decision, DecisionSide, Factorization, RewriteError,
 };

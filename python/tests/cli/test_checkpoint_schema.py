@@ -4,7 +4,8 @@ import jax.numpy as jnp
 import pytest
 
 from gristmill_symbolics._training import TrainingError
-from gristmill_symbolics.cli.checkpoint import load_checkpoint, save_checkpoint
+from gristmill_symbolics.cli.checkpoint import load_checkpoint
+from gristmill_symbolics.cli.checkpoint import save_checkpoint
 from gristmill_symbolics.cli.train_state import init_train_state
 from gristmill_symbolics.model.transformer_action_selector import (
     TransformerActionSelectorModel,
@@ -12,19 +13,23 @@ from gristmill_symbolics.model.transformer_action_selector import (
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
 
 
-def _model(*, batch_size=2):
+def _model():
     return TransformerActionSelectorModel(
-        batch_size=batch_size,
-        max_steps=1,
         state_token_pad_to=128,
         action_token_pad_to=128,
         definition_pad_to=4,
+        candidate_pad_to=8,
+        side_term_pad_to=8,
         d_model=8,
     )
 
 
-def _trainer(*, batch_size=2):
-    return ReinforceTrainer(batch_size=batch_size, learning_rate=1.0e-2)
+def _trainer(*, batch_size=2, max_steps=1):
+    return ReinforceTrainer(
+        batch_size=batch_size,
+        max_steps=max_steps,
+        learning_rate=1.0e-2,
+    )
 
 
 def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
@@ -42,23 +47,8 @@ def test_checkpoint_restores_root_key_as_jax_uint32_array(tmp_path):
     assert jnp.array_equal(loaded.train_state.root_key, state.root_key)
 
 
-def test_checkpoint_rejects_mismatched_object_batch_sizes_on_save(tmp_path):
-    model = _model(batch_size=2)
-    trainer = _trainer(batch_size=2)
-    state = init_train_state(model, trainer, seed=13)
-
-    with pytest.raises(TrainingError, match="batch_size"):
-        save_checkpoint(
-            tmp_path / "checkpoint.pkl",
-            state,
-            model=model,
-            trainer=_trainer(batch_size=3),
-            recent_metrics=(),
-        )
-
-
-def test_checkpoint_rejects_mismatched_object_batch_sizes_on_load(tmp_path):
-    model = _model(batch_size=2)
+def test_checkpoint_allows_trainer_batch_size_to_be_checkpoint_local(tmp_path):
+    model = _model()
     trainer = _trainer(batch_size=2)
     state = init_train_state(model, trainer, seed=13)
     path = tmp_path / "checkpoint.pkl"
@@ -69,8 +59,9 @@ def test_checkpoint_rejects_mismatched_object_batch_sizes_on_load(tmp_path):
     with path.open("wb") as handle:
         pickle.dump(payload, handle)
 
-    with pytest.raises(TrainingError, match="batch_size"):
-        load_checkpoint(path)
+    loaded = load_checkpoint(path)
+
+    assert loaded.trainer.batch_size == 3
 
 
 def test_checkpoint_rejects_old_schema_version(tmp_path):

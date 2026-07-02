@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from gristmill_symbolics import RewriteState, TensorComputation
+from gristmill_symbolics import TensorComputation, action_space_for_def
+from gristmill_symbolics.model.transformer_action_selector import SelectorState
 
 
 def actionable_json() -> str:
@@ -43,18 +44,19 @@ def actionable_json() -> str:
     )
 
 
-def actionable_state() -> RewriteState:
-    return RewriteState.from_computation(
-        TensorComputation.from_json_string(actionable_json())
-    )
+def actionable_comp() -> TensorComputation:
+    return TensorComputation.from_json_string(actionable_json())
+
+
+def actionable_state() -> SelectorState:
+    return SelectorState(comp=actionable_comp())
 
 
 def actionable_state_snapshot():
-    return actionable_state().snapshot()
+    return actionable_comp().snapshot()
 
 
 def actionable_action_space_snapshot():
-    state = actionable_state()
-    space = state.action_space_for_def(0)
+    space = action_space_for_def(actionable_comp(), 0)
     assert space is not None
     return space.snapshot()

@@ -3,8 +3,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from gristmill_symbolics.model.protocols import ExpressionModel
-
 
 class Trainer(Protocol):
     @property
@@ -19,7 +17,7 @@ class Trainer(Protocol):
         params,
         opt_state,
         batch: Sequence[object],
-        model: ExpressionModel,
+        model: object,
         rng,
     ) -> tuple[object, object, Mapping[str, object]]:
         ...

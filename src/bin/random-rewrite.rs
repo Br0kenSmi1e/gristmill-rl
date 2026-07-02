@@ -2,7 +2,8 @@ use clap::Parser;
 use gristmill_symbolics::io::{self, IoJsonError};
 use gristmill_symbolics::repr::TensorComputation;
 use gristmill_symbolics::rewrite::{
-    ActionSpace, Decision, Factorization, RewriteError, RewriteState, validate_decision,
+    action_space_for_def, apply_decision, validate_decision, ActionSpace,
+    Decision, Factorization, RewriteError,
 };
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -164,30 +165,30 @@ fn decision_for_template(
     }
 }
 
-fn random_action_space_from_mask(
-    state: &mut RewriteState,
+fn random_action_space(
+    comp: &TensorComputation,
     rng: &mut impl Rng,
 ) -> Result<Option<ActionSpace>, RewriteError> {
-    loop {
-        let available: Vec<usize> = state
-            .definition_mask()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, possible)| possible.then_some(index))
-            .collect();
-        if available.is_empty() {
-            return Ok(None);
-        }
+    let mut available: Vec<_> = (0..comp.definitions().len()).collect();
 
-        let def_index = available[rng.gen_range(0..available.len())];
-        if let Some(space) = state.action_space_for_def(def_index)? {
+    while !available.is_empty() {
+        let choice = rng.gen_range(0..available.len());
+        let def_index = available.swap_remove(choice);
+        if let Some(space) = action_space_for_def(comp, def_index)? {
             return Ok(Some(space));
         }
     }
+
+    Ok(None)
 }
 
-fn random_decision(space: &ActionSpace, random_subsets: bool, rng: &mut impl Rng) -> Decision {
-    let candidate_index = choose_candidate_index(space.candidate_templates.len(), rng);
+fn random_decision(
+    space: &ActionSpace,
+    random_subsets: bool,
+    rng: &mut impl Rng,
+) -> Decision {
+    let candidate_index =
+        choose_candidate_index(space.candidate_templates.len(), rng);
     decision_for_template(
         candidate_index,
         &space.candidate_templates[candidate_index],
@@ -200,24 +201,31 @@ fn snapshot_path(dir: &Path, step: usize) -> PathBuf {
     dir.join(format!("step-{step:03}.json"))
 }
 
-fn write_snapshot(dir: &Path, step: usize, comp: &TensorComputation) -> Result<(), CliError> {
+fn write_snapshot(
+    dir: &Path,
+    step: usize,
+    comp: &TensorComputation,
+) -> Result<(), CliError> {
     let path = snapshot_path(dir, step);
-    io::write_json(&path, comp).map_err(|source| CliError::WriteSnapshot { path, source })
+    io::write_json(&path, comp)
+        .map_err(|source| CliError::WriteSnapshot { path, source })
 }
 
 fn run(args: Args) -> Result<RunSummary, CliError> {
-    let comp = io::read_json(&args.input).map_err(|source| CliError::ReadInput {
-        path: args.input.clone(),
-        source,
-    })?;
-    let mut state = RewriteState::new(comp);
-
-    if let Some(snapshot_dir) = &args.snapshot_dir {
-        fs::create_dir_all(snapshot_dir).map_err(|source| CliError::CreateSnapshotDir {
-            path: snapshot_dir.clone(),
+    let mut comp =
+        io::read_json(&args.input).map_err(|source| CliError::ReadInput {
+            path: args.input.clone(),
             source,
         })?;
-        write_snapshot(snapshot_dir, 0, state.computation())?;
+
+    if let Some(snapshot_dir) = &args.snapshot_dir {
+        fs::create_dir_all(snapshot_dir).map_err(|source| {
+            CliError::CreateSnapshotDir {
+                path: snapshot_dir.clone(),
+                source,
+            }
+        })?;
+        write_snapshot(snapshot_dir, 0, &comp)?;
     }
 
     let mut rng = StdRng::seed_from_u64(args.seed);
@@ -225,7 +233,7 @@ fn run(args: Args) -> Result<RunSummary, CliError> {
     let mut stop_reason = StopReason::ReachedStepLimit;
 
     for step in 0..args.steps {
-        let Some(space) = random_action_space_from_mask(&mut state, &mut rng)
+        let Some(space) = random_action_space(&comp, &mut rng)
             .map_err(|source| CliError::Rewrite { step, source })?
         else {
             stop_reason = StopReason::NoActionSpace;
@@ -235,21 +243,21 @@ fn run(args: Args) -> Result<RunSummary, CliError> {
         let decision = random_decision(&space, args.random_subsets, &mut rng);
         validate_decision(&space, &decision)
             .map_err(|source| CliError::Rewrite { step, source })?;
-        state
-            .apply_validated_decision(&space, &decision)
+        apply_decision(&mut comp, &space, &decision)
             .map_err(|source| CliError::Rewrite { step, source })?;
 
         applied_rewrites += 1;
 
         if let Some(snapshot_dir) = &args.snapshot_dir {
-            write_snapshot(snapshot_dir, applied_rewrites, state.computation())?;
+            write_snapshot(snapshot_dir, applied_rewrites, &comp)?;
         }
     }
 
-    let comp = state.into_computation();
-    io::write_json(&args.output, &comp).map_err(|source| CliError::WriteOutput {
-        path: args.output.clone(),
-        source,
+    io::write_json(&args.output, &comp).map_err(|source| {
+        CliError::WriteOutput {
+            path: args.output.clone(),
+            source,
+        }
     })?;
 
     Ok(RunSummary {
@@ -285,8 +293,8 @@ mod tests {
     use gristmill_symbolics::repr::{
         Factor, Index, IndexId, RangeId, Rational, TensorDef, TensorId, Term,
     };
-    use rand::SeedableRng;
     use rand::rngs::StdRng;
+    use rand::SeedableRng;
 
     fn term() -> Term {
         Term {
@@ -330,7 +338,6 @@ mod tests {
         Factorization {
             left_definition: def(10, left_terms),
             right_definition: def(11, right_terms),
-            rewritten_definition: def(0, 1),
         }
     }
 
@@ -371,8 +378,14 @@ mod tests {
             actionable_out,
             vec![idx(0), idx(1)],
             vec![
-                integration_term(vec![idx(2)], vec![factor(a, &[0, 2]), factor(b, &[2, 1])]),
-                integration_term(vec![idx(3)], vec![factor(a, &[0, 3]), factor(c, &[3, 1])]),
+                integration_term(
+                    vec![idx(2)],
+                    vec![factor(a, &[0, 2]), factor(b, &[2, 1])],
+                ),
+                integration_term(
+                    vec![idx(3)],
+                    vec![factor(a, &[0, 3]), factor(c, &[3, 1])],
+                ),
             ],
         );
 
@@ -381,7 +394,12 @@ mod tests {
 
     #[test]
     fn parse_defaults_for_seed_steps_and_optional_flags() {
-        let args = Args::try_parse_from(["random-rewrite", "input.json", "output.json"]).unwrap();
+        let args = Args::try_parse_from([
+            "random-rewrite",
+            "input.json",
+            "output.json",
+        ])
+        .unwrap();
 
         assert_eq!(args.seed, 42);
         assert_eq!(args.steps, 1);
@@ -417,7 +435,8 @@ mod tests {
 
     #[test]
     fn parse_requires_input_and_output_paths() {
-        let err = Args::try_parse_from(["random-rewrite", "input.json"]).unwrap_err();
+        let err =
+            Args::try_parse_from(["random-rewrite", "input.json"]).unwrap_err();
 
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
@@ -476,24 +495,21 @@ mod tests {
     }
 
     #[test]
-    fn random_action_space_from_mask_refines_empty_mask_entries() {
-        let mut state = RewriteState::new(comp_without_exact_action_space());
+    fn random_action_space_returns_none_without_actionable_definitions() {
+        let comp = comp_without_exact_action_space();
         let mut rng = StdRng::seed_from_u64(0);
 
-        let space = random_action_space_from_mask(&mut state, &mut rng).unwrap();
+        let space = random_action_space(&comp, &mut rng).unwrap();
 
         assert!(space.is_none());
-        assert_eq!(state.definition_mask(), &[false]);
     }
 
     #[test]
-    fn random_action_space_from_mask_returns_available_space() {
-        let mut state = RewriteState::new(comp_with_empty_and_actionable_spaces());
+    fn random_action_space_returns_available_space() {
+        let comp = comp_with_empty_and_actionable_spaces();
         let mut rng = StdRng::seed_from_u64(4);
 
-        let space = random_action_space_from_mask(&mut state, &mut rng)
-            .unwrap()
-            .unwrap();
+        let space = random_action_space(&comp, &mut rng).unwrap().unwrap();
 
         assert_eq!(space.def_index, 1);
         assert!(!space.candidate_templates.is_empty());

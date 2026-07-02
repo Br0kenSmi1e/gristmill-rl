@@ -8,7 +8,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from gristmill_symbolics import RewriteState, RewriteStateRow
 from gristmill_symbolics._training import TrainingError
 
 from .objective import compute_advantages
@@ -74,6 +73,21 @@ def _validate_reward_kind(reward_kind: str) -> str:
     if reward_kind != "log_flops_improvement":
         raise TrainingError(f"unsupported reward kind {reward_kind!r}")
     return reward_kind
+
+
+def _zero_grad_logp(params, batch_size: int):
+    def zero_leaf(leaf):
+        values = jnp.asarray(leaf)
+        return jnp.zeros((batch_size, *values.shape), dtype=values.dtype)
+
+    return jax.tree_util.tree_map(
+        zero_leaf,
+        params,
+    )
+
+
+def _tree_add(left, right):
+    return jax.tree_util.tree_map(lambda x, y: x + y, left, right)
 
 
 def _as_jax_array(name: str, value):
@@ -166,6 +180,22 @@ def _compute_reward(
     return reward.astype(np.float64, copy=False)
 
 
+def _state_log_total_flops(state) -> float:
+    return float(state.comp.log_total_flops())
+
+
+def _state_is_terminal(state) -> bool:
+    mask = getattr(state, "target_mask", None)
+    if mask is None:
+        return False
+    values = np.asarray(jax.device_get(mask), dtype=bool)
+    return not bool(np.any(values))
+
+
+def _all_terminal(states: Sequence[object]) -> bool:
+    return all(_state_is_terminal(state) for state in states)
+
+
 def _params_changed(before, after) -> bool:
     before_leaves = jax.tree_util.tree_leaves(before)
     after_leaves = jax.tree_util.tree_leaves(after)
@@ -211,6 +241,7 @@ class ReinforceTrainer:
         self,
         *,
         batch_size: int,
+        max_steps: int,
         learning_rate: float = 1.0e-3,
         b1: float = 0.9,
         b2: float = 0.999,
@@ -220,6 +251,7 @@ class ReinforceTrainer:
         baseline_epsilon: float = 1.0e-8,
     ):
         self._batch_size = _positive_int("batch_size", batch_size)
+        self._max_steps = _positive_int("max_steps", max_steps)
         self._learning_rate = _optimizer_float(
             "learning_rate",
             learning_rate,
@@ -256,9 +288,14 @@ class ReinforceTrainer:
     def batch_size(self) -> int:
         return self._batch_size
 
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
     def constructor_kwargs(self) -> dict[str, object]:
         return {
             "batch_size": self._batch_size,
+            "max_steps": self._max_steps,
             "learning_rate": self._learning_rate,
             "b1": self._b1,
             "b2": self._b2,
@@ -283,30 +320,48 @@ class ReinforceTrainer:
         self,
         params,
         opt_state,
-        batch: Sequence[RewriteState],
+        batch: Sequence[object],
         model,
         rng,
     ):
-        initial_states = list(batch)
-        if len(initial_states) != self._batch_size:
+        states = list(batch)
+        if len(states) != self._batch_size:
             raise TrainingError(
-                f"batch length {len(initial_states)} differs from "
+                f"batch length {len(states)} differs from "
                 f"batch_size {self._batch_size}"
             )
-        if getattr(model, "batch_size", self._batch_size) != self._batch_size:
-            raise TrainingError("model batch_size must match trainer batch_size")
 
-        initial_log_flops = [state.log_total_flops() for state in initial_states]
-        row = RewriteStateRow.from_states(initial_states)
-        out_row, logp, grad_logp, _model_metrics = model.sample_with_logp_grad(
+        initial_log_flops = [_state_log_total_flops(state) for state in states]
+        trajectory_logp = jnp.zeros((self._batch_size,), dtype=jnp.float32)
+        trajectory_grad_logp = _validate_grad_logp(
             params,
-            rng,
-            row,
+            _zero_grad_logp(params, self._batch_size),
+            self._batch_size,
         )
-        logp = _validate_logp(logp, self._batch_size)
-        grad_logp = _validate_grad_logp(params, grad_logp, self._batch_size)
+        for step_rng in jax.random.split(rng, self._max_steps):
+            if _all_terminal(states):
+                break
+            states, step_logp, step_grad_logp = model.sample_step(
+                params,
+                step_rng,
+                states,
+            )
+            step_logp = _validate_logp(step_logp, self._batch_size)
+            step_grad_logp = _validate_grad_logp(
+                params,
+                step_grad_logp,
+                self._batch_size,
+            )
+            trajectory_logp = trajectory_logp + step_logp
+            trajectory_grad_logp = _tree_add(
+                trajectory_grad_logp,
+                step_grad_logp,
+            )
 
-        raw_final_log_flops = out_row.log_total_flops()
+        raw_final_log_flops = [
+            _state_log_total_flops(state)
+            for state in states
+        ]
         reward = _compute_reward(
             initial_log_flops,
             raw_final_log_flops,
@@ -319,8 +374,8 @@ class ReinforceTrainer:
             epsilon=self._baseline_epsilon,
         )
 
-        grads = _reinforce_grad_loss(grad_logp, advantage)
-        surrogate_loss = _surrogate_loss(logp, advantage)
+        grads = _reinforce_grad_loss(trajectory_grad_logp, advantage)
+        surrogate_loss = _surrogate_loss(trajectory_logp, advantage)
         if not bool(np.isfinite(np.asarray(surrogate_loss))):
             raise TrainingError("surrogate_loss is non-finite")
 

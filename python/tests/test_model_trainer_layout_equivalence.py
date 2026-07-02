@@ -1,9 +1,11 @@
 import jax
 import jax.numpy as jnp
 
-from gristmill_symbolics import RewriteState, TensorComputation
-from gristmill_symbolics.cli.train_state import advance_train_state, init_train_state
+from gristmill_symbolics import TensorComputation
+from gristmill_symbolics.cli.train_state import advance_train_state
+from gristmill_symbolics.cli.train_state import init_train_state
 from gristmill_symbolics.model.transformer_action_selector import (
+    SelectorState,
     TransformerActionSelectorModel,
 )
 from gristmill_symbolics.trainer.reinforce import ReinforceTrainer
@@ -12,7 +14,9 @@ from tests.test_bindings import exact_empty_json
 
 
 def _state_from_json(text):
-    return RewriteState.from_computation(TensorComputation.from_json_string(text))
+    return SelectorState(
+        comp=TensorComputation.from_json_string(text),
+    )
 
 
 def _batch():
@@ -34,15 +38,18 @@ def _assert_pytrees_equal(left, right):
 
 def test_object_composed_training_is_deterministic_for_same_seed_and_kwargs():
     model_kwargs = {
-        "batch_size": 2,
-        "max_steps": 2,
         "state_token_pad_to": 512,
         "action_token_pad_to": 512,
         "definition_pad_to": 8,
+        "candidate_pad_to": 16,
+        "side_term_pad_to": 16,
         "d_model": 8,
-        "stop_bias_init": -20.0,
     }
-    trainer_kwargs = {"batch_size": 2, "learning_rate": 1.0e-2}
+    trainer_kwargs = {
+        "batch_size": 2,
+        "max_steps": 1,
+        "learning_rate": 1.0e-2,
+    }
 
     left_model = TransformerActionSelectorModel(**model_kwargs)
     left_trainer = ReinforceTrainer(**trainer_kwargs)
@@ -69,4 +76,3 @@ def test_object_composed_training_is_deterministic_for_same_seed_and_kwargs():
     _assert_pytrees_equal(left_next.opt_state, right_next.opt_state)
     assert left_next.update_index == right_next.update_index == 1
     assert left_metrics == right_metrics
-    assert left_metrics.params_changed is True

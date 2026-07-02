@@ -1,46 +1,28 @@
 use crate::{
-    PyTensorComputation, computation_value, py_gristmill_display_error, py_gristmill_error,
-    tensor_def_value,
+    py_gristmill_display_error, py_gristmill_error, tensor_def_value,
+    PyTensorComputation,
 };
-use ::gristmill_symbolics::cost;
-use ::gristmill_symbolics::io;
-use ::gristmill_symbolics::rewrite::{
-    ActionSpace as RustActionSpace, ActionSpaceEntry as RustActionSpaceEntry,
-    ActionSpaceRow as RustActionSpaceRow, Decision, Factorization,
-    RewriteState as RustRewriteState, RewriteStateRow as RustRewriteStateRow,
-    ValidatedActionRow as RustValidatedActionRow, validate_decision as rust_validate_decision,
+use gristmill_symbolics::repr::TensorComputation;
+use gristmill_symbolics::rewrite::{
+    action_space_for_def as rust_action_space_for_def,
+    action_spaces_for_batch as rust_action_spaces_for_batch,
+    apply_decision as rust_apply_decision,
+    apply_decisions_for_batch as rust_apply_decisions_for_batch,
+    validate_decision as rust_validate_decision,
+    validate_decisions_for_batch as rust_validate_decisions_for_batch,
+    ActionSpace as RustActionSpace, Decision, Factorization,
 };
-use pyo3::PyRef;
 use pyo3::exceptions::{PyTypeError, PyValueError};
-use pyo3::marker::Ungil;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList};
+use pyo3::{PyRef, PyRefMut};
 use pythonize::pythonize;
-use serde_json::{Value, json};
-use std::path::PathBuf;
-
-trait PythonAllowThreadsCompat {
-    fn allow_threads<T, F>(self, f: F) -> T
-    where
-        F: Ungil + FnOnce() -> T,
-        T: Ungil;
-}
-
-impl PythonAllowThreadsCompat for Python<'_> {
-    fn allow_threads<T, F>(self, f: F) -> T
-    where
-        F: Ungil + FnOnce() -> T,
-        T: Ungil,
-    {
-        self.detach(f)
-    }
-}
+use serde_json::{json, Value};
 
 fn factorization_value(factorization: &Factorization) -> Value {
     json!({
         "left_definition": tensor_def_value(&factorization.left_definition),
         "right_definition": tensor_def_value(&factorization.right_definition),
-        "rewritten_definition": tensor_def_value(&factorization.rewritten_definition),
     })
 }
 
@@ -55,15 +37,22 @@ fn action_space_value(space: &RustActionSpace) -> Value {
     })
 }
 
-fn required_dict_item<'py>(dict: &Bound<'py, PyDict>, field: &str) -> PyResult<Bound<'py, PyAny>> {
-    dict.get_item(field)?
-        .ok_or_else(|| PyValueError::new_err(format!("missing decision field '{field}'")))
+fn required_dict_item<'py>(
+    dict: &Bound<'py, PyDict>,
+    field: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(field)?.ok_or_else(|| {
+        PyValueError::new_err(format!("missing decision field '{field}'"))
+    })
 }
 
-fn parse_bool_mask(value: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<bool>> {
-    let list = value
-        .cast::<PyList>()
-        .map_err(|_| PyTypeError::new_err(format!("decision field '{field}' must be a list")))?;
+fn parse_bool_mask(
+    value: &Bound<'_, PyAny>,
+    field: &str,
+) -> PyResult<Vec<bool>> {
+    let list = value.cast::<PyList>().map_err(|_| {
+        PyTypeError::new_err(format!("decision field '{field}' must be a list"))
+    })?;
 
     let mut mask = Vec::with_capacity(list.len());
     for item in list.iter() {
@@ -77,37 +66,16 @@ fn parse_bool_mask(value: &Bound<'_, PyAny>, field: &str) -> PyResult<Vec<bool>>
     Ok(mask)
 }
 
-fn parse_candidate_index(value: &Bound<'_, PyAny>) -> PyResult<usize> {
+fn parse_usize(value: &Bound<'_, PyAny>, field: &str) -> PyResult<usize> {
     if value.is_exact_instance_of::<PyBool>() {
-        return Err(PyTypeError::new_err(
-            "decision field 'candidate_index' must be an integer, not bool",
-        ));
+        return Err(PyTypeError::new_err(format!(
+            "{field} must be an integer, not bool"
+        )));
     }
 
     value.extract::<usize>().map_err(|_| {
-        PyValueError::new_err("decision field 'candidate_index' must be a non-negative integer")
+        PyValueError::new_err(format!("{field} must be a non-negative integer"))
     })
-}
-
-fn parse_target_choices(value: &Bound<'_, PyAny>) -> PyResult<Vec<isize>> {
-    let list = value
-        .cast::<PyList>()
-        .map_err(|_| PyTypeError::new_err("target_choices must be a list"))?;
-
-    let mut choices = Vec::with_capacity(list.len());
-    for (sample, item) in list.iter().enumerate() {
-        if item.is_exact_instance_of::<PyBool>() {
-            return Err(PyTypeError::new_err(format!(
-                "target_choices[{sample}] must be an integer, not bool"
-            )));
-        }
-        choices.push(item.extract::<isize>().map_err(|_| {
-            PyValueError::new_err(format!(
-                "target_choices[{sample}] must be an integer target choice"
-            ))
-        })?);
-    }
-    Ok(choices)
 }
 
 fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
@@ -115,132 +83,103 @@ fn parse_decision(value: &Bound<'_, PyAny>) -> PyResult<Decision> {
         .cast::<PyDict>()
         .map_err(|_| PyTypeError::new_err("decision must be a dict"))?;
 
-    let candidate_index = parse_candidate_index(&required_dict_item(dict, "candidate_index")?)?;
-    let left_mask = parse_bool_mask(&required_dict_item(dict, "left_mask")?, "left_mask")?;
-    let right_mask = parse_bool_mask(&required_dict_item(dict, "right_mask")?, "right_mask")?;
-
     Ok(Decision {
-        candidate_index,
-        left_mask,
-        right_mask,
+        candidate_index: parse_usize(
+            &required_dict_item(dict, "candidate_index")?,
+            "decision field 'candidate_index'",
+        )?,
+        left_mask: parse_bool_mask(
+            &required_dict_item(dict, "left_mask")?,
+            "left_mask",
+        )?,
+        right_mask: parse_bool_mask(
+            &required_dict_item(dict, "right_mask")?,
+            "right_mask",
+        )?,
     })
 }
 
-fn parse_optional_padded_decision(
+fn parse_targets(value: &Bound<'_, PyAny>) -> PyResult<Vec<Option<usize>>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("targets must be a list"))?;
+
+    list.iter()
+        .enumerate()
+        .map(|(sample, item)| {
+            if item.is_none() {
+                Ok(None)
+            } else {
+                parse_usize(&item, &format!("targets[{sample}]")).map(Some)
+            }
+        })
+        .collect()
+}
+
+fn parse_comp_batch(
     value: &Bound<'_, PyAny>,
-    scored: bool,
-    sample: usize,
-) -> PyResult<Option<Decision>> {
-    if !scored {
-        return Ok(None);
-    }
+) -> PyResult<Vec<TensorComputation>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("comps must be a list"))?;
 
-    let dict = value.cast::<PyDict>().map_err(|_| {
-        PyTypeError::new_err(format!("sample {sample} action choice must be a dict"))
-    })?;
-    let candidate_index = parse_candidate_index(&required_dict_item(dict, "candidate_index")?)?;
-    let left_mask = parse_bool_mask(&required_dict_item(dict, "left_mask")?, "left_mask")?;
-    let left_valid_mask = parse_bool_mask(
-        &required_dict_item(dict, "left_valid_mask")?,
-        "left_valid_mask",
-    )?;
-    let right_mask = parse_bool_mask(&required_dict_item(dict, "right_mask")?, "right_mask")?;
-    let right_valid_mask = parse_bool_mask(
-        &required_dict_item(dict, "right_valid_mask")?,
-        "right_valid_mask",
-    )?;
-
-    Ok(Some(Decision {
-        candidate_index,
-        left_mask: trim_padded_mask(sample, "left", left_mask, left_valid_mask)?,
-        right_mask: trim_padded_mask(sample, "right", right_mask, right_valid_mask)?,
-    }))
+    list.iter()
+        .map(|item| {
+            let comp = item.extract::<PyRef<'_, PyTensorComputation>>()?;
+            Ok(comp.inner.clone())
+        })
+        .collect()
 }
 
-fn trim_padded_mask(
-    sample: usize,
-    side: &str,
-    mask: Vec<bool>,
-    valid_mask: Vec<bool>,
-) -> PyResult<Vec<bool>> {
-    if mask.len() != valid_mask.len() {
-        return Err(PyValueError::new_err(format!(
-            "sample {sample} {side}_mask and {side}_valid_mask lengths differ: {} != {}",
-            mask.len(),
-            valid_mask.len()
-        )));
-    }
-    if !valid_mask.iter().any(|valid| *valid) {
-        return Err(PyValueError::new_err(format!(
-            "sample {sample} {side}_valid_mask selects no usable bits"
-        )));
-    }
+fn parse_space_batch(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Vec<Option<RustActionSpace>>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("spaces must be a list"))?;
 
-    Ok(mask
-        .into_iter()
-        .zip(valid_mask)
-        .filter_map(|(keep, valid)| valid.then_some(keep))
-        .collect())
+    list.iter()
+        .map(|item| {
+            if item.is_none() {
+                Ok(None)
+            } else {
+                let space = item.extract::<PyRef<'_, PyActionSpace>>()?;
+                Ok(Some(space.inner.clone()))
+            }
+        })
+        .collect()
 }
 
-#[pyfunction(name = "validate_decision")]
-fn py_validate_decision(space: &PyActionSpace, decision: &Bound<'_, PyAny>) -> PyResult<()> {
-    let decision = parse_decision(decision)?;
-    rust_validate_decision(&space.inner, &decision).map_err(py_gristmill_error)
+fn parse_decision_batch(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Vec<Option<Decision>>> {
+    let list = value
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("decisions must be a list"))?;
+
+    list.iter()
+        .map(|item| {
+            if item.is_none() {
+                Ok(None)
+            } else {
+                parse_decision(&item).map(Some)
+            }
+        })
+        .collect()
 }
 
-#[pyclass(name = "RewriteState")]
-struct PyRewriteState {
-    inner: RustRewriteState,
-}
-
-#[pymethods]
-impl PyRewriteState {
-    #[staticmethod]
-    fn from_computation(comp: &PyTensorComputation) -> Self {
-        Self {
-            inner: RustRewriteState::new(comp.inner.clone()),
+fn py_action_space_batch<'py>(
+    py: Python<'py>,
+    spaces: Vec<Option<RustActionSpace>>,
+) -> PyResult<Bound<'py, PyList>> {
+    let out = PyList::empty(py);
+    for space in spaces {
+        match space {
+            Some(inner) => out.append(PyActionSpace { inner })?,
+            None => out.append(py.None())?,
         }
     }
-
-    fn definition_mask(&self) -> Vec<bool> {
-        self.inner.definition_mask().to_vec()
-    }
-
-    fn action_space_for_def(&mut self, def_index: usize) -> PyResult<Option<PyActionSpace>> {
-        self.inner
-            .action_space_for_def(def_index)
-            .map(|space| space.map(|inner| PyActionSpace { inner }))
-            .map_err(py_gristmill_error)
-    }
-
-    fn apply_validated_decision(
-        &mut self,
-        space: &PyActionSpace,
-        decision: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
-        let decision = parse_decision(decision)?;
-        self.inner
-            .apply_validated_decision(&space.inner, &decision)
-            .map_err(py_gristmill_error)
-    }
-
-    fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pythonize(py, &computation_value(self.inner.computation()))
-            .map_err(py_gristmill_display_error)
-    }
-
-    fn log_total_flops(&self) -> PyResult<f64> {
-        cost::log_total_flops(self.inner.computation()).map_err(py_gristmill_error)
-    }
-
-    fn to_json_string(&self) -> PyResult<String> {
-        io::to_json(self.inner.computation()).map_err(py_gristmill_display_error)
-    }
-
-    fn write_json(&self, path: PathBuf) -> PyResult<()> {
-        io::write_json(path, self.inner.computation()).map_err(py_gristmill_display_error)
-    }
+    Ok(out)
 }
 
 #[pyclass(name = "ActionSpace")]
@@ -261,181 +200,106 @@ impl PyActionSpace {
     }
 
     fn snapshot<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        pythonize(py, &action_space_value(&self.inner)).map_err(py_gristmill_display_error)
+        pythonize(py, &action_space_value(&self.inner))
+            .map_err(py_gristmill_display_error)
     }
 }
 
-#[allow(dead_code)]
-#[pyclass(name = "RewriteStateRow")]
-struct PyRewriteStateRow {
-    inner: RustRewriteStateRow,
-}
-
-#[pymethods]
-impl PyRewriteStateRow {
-    #[staticmethod]
-    fn from_states(states: &Bound<'_, PyAny>) -> PyResult<Self> {
-        let list = states
-            .cast::<PyList>()
-            .map_err(|_| PyTypeError::new_err("states must be a list of RewriteState objects"))?;
-
-        let mut rust_states = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            let state = item.extract::<PyRef<'_, PyRewriteState>>()?;
-            rust_states.push(state.inner.clone());
-        }
-
-        Ok(Self {
-            inner: RustRewriteStateRow::from_states(rust_states),
-        })
-    }
-
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn definition_masks(&self) -> Vec<Vec<bool>> {
-        self.inner.definition_masks()
-    }
-
-    fn snapshots<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let snapshots = self
-            .inner
-            .states()
-            .iter()
-            .map(|state| computation_value(state.computation()))
-            .collect::<Vec<_>>();
-        pythonize(py, &snapshots).map_err(py_gristmill_display_error)
-    }
-
-    fn log_total_flops(&self) -> PyResult<Vec<f64>> {
-        self.inner
-            .states()
-            .iter()
-            .map(|state| cost::log_total_flops(state.computation()).map_err(py_gristmill_error))
-            .collect()
-    }
-
-    fn query_action_spaces_for_row(
-        &mut self,
-        py: Python<'_>,
-        target_choices: &Bound<'_, PyAny>,
-        active_mask: Vec<bool>,
-    ) -> PyResult<PyActionSpaceRow> {
-        let target_choices = parse_target_choices(target_choices)?;
-        let inner = py
-            .allow_threads(|| {
-                self.inner
-                    .query_action_spaces_for_row(&target_choices, &active_mask)
-            })
-            .map_err(py_gristmill_error)?;
-        Ok(PyActionSpaceRow { inner })
-    }
-
-    fn validate_actions_for_row(
-        &self,
-        py: Python<'_>,
-        action_space_row: &PyActionSpaceRow,
-        action_choices: &Bound<'_, PyAny>,
-        action_score_mask: Vec<bool>,
-    ) -> PyResult<PyValidatedActionRow> {
-        let action_choices = action_choices
-            .cast::<PyList>()
-            .map_err(|_| PyTypeError::new_err("action_choices must be a list"))?;
-        if action_choices.len() != action_score_mask.len() {
-            return Err(PyValueError::new_err(format!(
-                "action_choices length {} differs from action_score_mask length {}",
-                action_choices.len(),
-                action_score_mask.len()
-            )));
-        }
-
-        let decisions = action_choices
-            .iter()
-            .zip(action_score_mask.iter().copied())
-            .enumerate()
-            .map(|(sample, (value, scored))| parse_optional_padded_decision(&value, scored, sample))
-            .collect::<PyResult<Vec<_>>>()?;
-
-        let inner = py
-            .allow_threads(|| {
-                self.inner.validate_actions_for_row(
-                    &action_space_row.inner,
-                    &decisions,
-                    &action_score_mask,
-                )
-            })
-            .map_err(py_gristmill_error)?;
-        Ok(PyValidatedActionRow { inner })
-    }
-
-    fn apply_validated_actions_for_row(
-        &mut self,
-        py: Python<'_>,
-        validated_action_row: &PyValidatedActionRow,
-    ) -> PyResult<Vec<bool>> {
-        py.allow_threads(|| {
-            self.inner
-                .apply_validated_actions_for_row(&validated_action_row.inner)
-        })
+#[pyfunction(name = "action_space_for_def")]
+fn py_action_space_for_def(
+    comp: &PyTensorComputation,
+    def_index: usize,
+) -> PyResult<Option<PyActionSpace>> {
+    rust_action_space_for_def(&comp.inner, def_index)
+        .map(|space| space.map(|inner| PyActionSpace { inner }))
         .map_err(py_gristmill_error)
-    }
 }
 
-#[allow(dead_code)]
-#[pyclass(name = "ActionSpaceRow")]
-struct PyActionSpaceRow {
-    inner: RustActionSpaceRow,
+#[pyfunction(name = "validate_decision")]
+fn py_validate_decision(
+    space: &PyActionSpace,
+    decision: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let decision = parse_decision(decision)?;
+    rust_validate_decision(&space.inner, &decision).map_err(py_gristmill_error)
 }
 
-#[pymethods]
-impl PyActionSpaceRow {
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn entry_kinds(&self) -> Vec<&'static str> {
-        self.inner.entry_kinds()
-    }
-
-    fn snapshots<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let snapshots = self
-            .inner
-            .entries()
-            .iter()
-            .map(|entry| match entry {
-                RustActionSpaceEntry::NonEmpty(space) => Some(action_space_value(space)),
-                RustActionSpaceEntry::Skipped | RustActionSpaceEntry::ExactEmpty => None,
-            })
-            .collect::<Vec<Option<Value>>>();
-        pythonize(py, &snapshots).map_err(py_gristmill_display_error)
-    }
+#[pyfunction(name = "apply_decision")]
+fn py_apply_decision(
+    mut comp: PyRefMut<'_, PyTensorComputation>,
+    space: &PyActionSpace,
+    decision: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let decision = parse_decision(decision)?;
+    rust_apply_decision(&mut comp.inner, &space.inner, &decision)
+        .map_err(py_gristmill_error)
 }
 
-#[allow(dead_code)]
-#[pyclass(name = "ValidatedActionRow")]
-struct PyValidatedActionRow {
-    inner: RustValidatedActionRow,
+#[pyfunction(name = "action_spaces_for_batch")]
+fn py_action_spaces_for_batch<'py>(
+    py: Python<'py>,
+    comps: &Bound<'_, PyAny>,
+    targets: &Bound<'_, PyAny>,
+) -> PyResult<Bound<'py, PyList>> {
+    let comps = parse_comp_batch(comps)?;
+    let targets = parse_targets(targets)?;
+    let spaces = rust_action_spaces_for_batch(&comps, &targets)
+        .map_err(py_gristmill_error)?;
+    py_action_space_batch(py, spaces)
 }
 
-#[pymethods]
-impl PyValidatedActionRow {
-    fn len(&self) -> usize {
-        self.inner.len()
-    }
-
-    fn entry_kinds(&self) -> Vec<&'static str> {
-        self.inner.entry_kinds()
-    }
+#[pyfunction(name = "validate_decisions_for_batch")]
+fn py_validate_decisions_for_batch(
+    spaces: &Bound<'_, PyAny>,
+    decisions: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    let spaces = parse_space_batch(spaces)?;
+    let decisions = parse_decision_batch(decisions)?;
+    rust_validate_decisions_for_batch(&spaces, &decisions)
+        .map_err(py_gristmill_error)
 }
 
-pub(crate) fn register(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pyfunction(name = "apply_decisions_for_batch")]
+fn py_apply_decisions_for_batch(
+    comps: &Bound<'_, PyAny>,
+    spaces: &Bound<'_, PyAny>,
+    decisions: &Bound<'_, PyAny>,
+) -> PyResult<Vec<bool>> {
+    let comp_list = comps
+        .cast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("comps must be a list"))?;
+    let mut rust_comps = parse_comp_batch(comps)?;
+    let spaces = parse_space_batch(spaces)?;
+    let decisions = parse_decision_batch(decisions)?;
+    let applied =
+        rust_apply_decisions_for_batch(&mut rust_comps, &spaces, &decisions)
+            .map_err(py_gristmill_error)?;
+
+    for (item, rust_comp) in comp_list.iter().zip(rust_comps) {
+        let mut comp = item.extract::<PyRefMut<'_, PyTensorComputation>>()?;
+        comp.inner = rust_comp;
+    }
+    Ok(applied)
+}
+
+pub(crate) fn register(
+    py: Python<'_>,
+    module: &Bound<'_, PyModule>,
+) -> PyResult<()> {
     let _ = py;
-    module.add_class::<PyRewriteState>()?;
     module.add_class::<PyActionSpace>()?;
-    module.add_class::<PyRewriteStateRow>()?;
-    module.add_class::<PyActionSpaceRow>()?;
-    module.add_class::<PyValidatedActionRow>()?;
+    module.add_function(wrap_pyfunction!(py_action_space_for_def, module)?)?;
     module.add_function(wrap_pyfunction!(py_validate_decision, module)?)?;
+    module.add_function(wrap_pyfunction!(py_apply_decision, module)?)?;
+    module
+        .add_function(wrap_pyfunction!(py_action_spaces_for_batch, module)?)?;
+    module.add_function(wrap_pyfunction!(
+        py_validate_decisions_for_batch,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
+        py_apply_decisions_for_batch,
+        module
+    )?)?;
     Ok(())
 }

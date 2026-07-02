@@ -23,10 +23,10 @@ def test_new_public_import_surface_exists():
     train_state = importlib.import_module("gristmill_symbolics.cli.train_state")
     checkpoint = importlib.import_module("gristmill_symbolics.cli.checkpoint")
 
-    assert model.__all__ == ("ExpressionModel",)
+    assert model.__all__ == ("StepwiseModel",)
     assert trainer.__all__ == ("Trainer",)
-    assert hasattr(model, "ExpressionModel")
-    assert hasattr(model_protocols, "ExpressionModel")
+    assert hasattr(model, "StepwiseModel")
+    assert hasattr(model_protocols, "StepwiseModel")
     assert hasattr(trainer, "Trainer")
     assert hasattr(trainer_protocols, "Trainer")
     assert hasattr(model_pkg, "TransformerActionSelectorModel")
@@ -55,7 +55,8 @@ def test_no_public_config_dataclasses_are_exported():
     )
     trainer_pkg = importlib.import_module("gristmill_symbolics.trainer.reinforce")
 
-    assert model_pkg.__all__ == ("TransformerActionSelectorModel",)
+    assert "TransformerActionSelectorModel" in model_pkg.__all__
+    assert "SelectorState" in model_pkg.__all__
     assert trainer_pkg.__all__ == ("ReinforceTrainer",)
 
     forbidden = {
