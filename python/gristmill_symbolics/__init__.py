@@ -8,6 +8,7 @@ from ._core import (
     action_spaces_for_batch,
     apply_decision,
     apply_decisions_for_batch,
+    equivalent_computations,
     validate_decision,
     validate_decisions_for_batch,
 )
@@ -20,6 +21,7 @@ __all__ = (
     "action_spaces_for_batch",
     "apply_decision",
     "apply_decisions_for_batch",
+    "equivalent_computations",
     "validate_decision",
     "validate_decisions_for_batch",
 )
