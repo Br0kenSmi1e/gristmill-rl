@@ -7,6 +7,7 @@ import pytest
 from gristmill_symbolics import (
     ActionSpace,
     ActionSpaceRow,
+    equivalent_computations,
     GristmillSymbolicsError,
     RewriteState,
     RewriteStateRow,
@@ -30,6 +31,7 @@ def test_module_exports_core_types():
     assert hasattr(gristmill_symbolics, "ActionSpaceRow")
     assert hasattr(gristmill_symbolics, "ValidatedActionRow")
     assert hasattr(gristmill_symbolics, "GristmillSymbolicsError")
+    assert hasattr(gristmill_symbolics, "equivalent_computations")
     assert hasattr(gristmill_symbolics, "validate_decision")
     assert not hasattr(TensorComputation, "next_" "action_space")
     assert not hasattr(TensorComputation, "apply_decision_" "with_space")
@@ -73,6 +75,39 @@ def test_from_json_string_validates_and_clones():
 
     assert clone.snapshot() == comp.snapshot()
     assert clone is not comp
+
+
+def test_equivalent_computations_returns_true_when_computations_match():
+    lhs = TensorComputation.from_json_string(single_output_json())
+    rhs = TensorComputation.from_json_string(single_output_json())
+
+    assert equivalent_computations(lhs, rhs, [1]) is True
+
+
+def test_equivalent_computations_returns_false_when_difference_exists():
+    lhs = TensorComputation.from_json_string(single_output_json(coeff=(1, 1)))
+    rhs = TensorComputation.from_json_string(single_output_json(coeff=(2, 1)))
+
+    assert equivalent_computations(lhs, rhs, [1]) is False
+
+
+def test_equivalent_computations_raises_for_missing_output():
+    lhs = TensorComputation.from_json_string(single_output_json())
+    rhs = TensorComputation.from_json_string(missing_output_json())
+
+    with pytest.raises(GristmillSymbolicsError, match="MissingOutputDefinition"):
+        equivalent_computations(lhs, rhs, [1])
+
+
+def test_equivalent_computations_raises_for_duplicate_outputs_and_invalid_output_ids():
+    lhs = TensorComputation.from_json_string(single_output_json())
+    rhs = TensorComputation.from_json_string(single_output_json())
+
+    with pytest.raises(GristmillSymbolicsError, match="DuplicateOutputDefinition"):
+        equivalent_computations(lhs, rhs, [1, 1])
+
+    with pytest.raises(TypeError, match="outputs\\[1\\].*not bool"):
+        equivalent_computations(lhs, rhs, [1, True])
 
 
 def test_invalid_json_string_raises_gristmill_error():
@@ -169,6 +204,44 @@ def exact_empty_json() -> str:
                     ],
                 }
             ],
+        }
+    )
+
+
+def single_output_json(*, coeff=(1, 1), output_id=1) -> str:
+    return json.dumps(
+        {
+            "ranges": [{"id": 0, "size": 3}],
+            "tensors": [
+                {"id": 0, "symmetry": []},
+                {"id": output_id, "symmetry": []},
+            ],
+            "definitions": [
+                {
+                    "base": output_id,
+                    "ext_indices": [{"id": 0, "range": 0}],
+                    "terms": [
+                        {
+                            "coeff": list(coeff),
+                            "sum_indices": [],
+                            "factors": [{"tensor": 0, "indices": [0]}],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+
+def missing_output_json() -> str:
+    return json.dumps(
+        {
+            "ranges": [{"id": 0, "size": 3}],
+            "tensors": [
+                {"id": 0, "symmetry": []},
+                {"id": 1, "symmetry": []},
+            ],
+            "definitions": [],
         }
     )
 
