@@ -10,6 +10,7 @@ description = "Python bindings for the gristmill-symbolics rewrite kernel"
 dependencies = [
     "flax>=0.12",
     "jax>=0.10",
+    "matplotlib>=3.8",
     "numpy>=1.26",
     "optax>=0.2",
 ]
