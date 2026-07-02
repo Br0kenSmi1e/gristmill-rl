@@ -1,4 +1,5 @@
 mod rewrite_bindings;
+mod verify_bindings;
 
 use ::gristmill_symbolics::cost;
 use ::gristmill_symbolics::io;
@@ -150,6 +151,7 @@ impl PyTensorComputation {
 fn gristmill_symbolics(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyTensorComputation>()?;
     rewrite_bindings::register(py, module)?;
+    verify_bindings::register(py, module)?;
     module.add(
         "GristmillSymbolicsError",
         py.get_type::<GristmillSymbolicsError>(),

@@ -3,6 +3,7 @@
 from ._core import (
     ActionSpace,
     ActionSpaceRow,
+    equivalent_computations,
     GristmillSymbolicsError,
     RewriteState,
     RewriteStateRow,
@@ -14,6 +15,7 @@ from ._core import (
 __all__ = (
     "ActionSpace",
     "ActionSpaceRow",
+    "equivalent_computations",
     "GristmillSymbolicsError",
     "RewriteState",
     "RewriteStateRow",

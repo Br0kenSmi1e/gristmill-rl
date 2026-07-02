@@ -6,3 +6,4 @@ pub mod io;
 pub mod repr;
 pub mod rewrite;
 pub mod split;
+pub mod verify;
