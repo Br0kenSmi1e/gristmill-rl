@@ -3,6 +3,8 @@ import json
 import pytest
 
 from gristmill_symbolics.cli.plot_training_curves import (
+    GRISTMILL_OPTIMIZED_LOG_FLOPS,
+    _plot_final_flops,
     load_metrics,
     main,
     objective_errorbar,
@@ -71,6 +73,25 @@ def test_plot_training_curves_cli_writes_png(tmp_path):
 
     assert exit_code == 0
     assert output_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_final_flops_plot_includes_gristmill_optimized_baseline():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from matplotlib import pyplot as plt
+
+    figure, axis = plt.subplots()
+    try:
+        _plot_final_flops(axis, [0, 1], [60.0, 55.0])
+        y_values = [line.get_ydata()[0] for line in axis.lines]
+    finally:
+        plt.close(figure)
+
+    assert any(
+        value == pytest.approx(GRISTMILL_OPTIMIZED_LOG_FLOPS)
+        for value in y_values
+    )
 
 
 def test_plot_training_curves_rejects_non_positive_batch_size():

@@ -16,6 +16,8 @@ REQUIRED_FIELDS = (
     "final_flops_best",
 )
 
+GRISTMILL_OPTIMIZED_LOG_FLOPS = 49.23057289544251
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -130,10 +132,18 @@ def _plot_objective(axis, x, objective, objective_error) -> None:
 
 def _plot_final_flops(axis, x, final_flops) -> None:
     axis.plot(x, final_flops, "-o", markersize=3.0, linewidth=1.4)
+    axis.axhline(
+        GRISTMILL_OPTIMIZED_LOG_FLOPS,
+        color="tab:red",
+        linestyle="--",
+        linewidth=1.2,
+        label="gristmill optimized",
+    )
     axis.set_title("Best Final FLOPs")
     axis.set_xlabel("Update")
     axis.set_ylabel("final_flops_best")
     axis.grid(True, alpha=0.3)
+    axis.legend(loc="best", fontsize="small")
 
 
 if __name__ == "__main__":
