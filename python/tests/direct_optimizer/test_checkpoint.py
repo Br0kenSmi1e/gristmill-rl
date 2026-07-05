@@ -151,6 +151,68 @@ def test_failed_checkpoint_overwrite_leaves_existing_checkpoint_loadable(
     assert loaded.metadata["last_train_loss"] == pytest.approx(3.0)
 
 
+def test_failed_checkpoint_publish_restores_backup_and_cleans_temps(
+    tmp_path,
+    monkeypatch,
+):
+    model = _model()
+    trainer = DirectOptimizerTrainer(batch_size=2, learning_rate=1.0e-3)
+    optimizer = trainer.init_optimizer(model)
+    save_checkpoint(
+        tmp_path,
+        model=model,
+        optimizer=optimizer,
+        trainer=trainer,
+        epoch=4,
+        updates=5,
+        last_train_loss=6.0,
+    )
+
+    original_replace = checkpoint_module.os.replace
+    publish_ops = []
+
+    def failing_replace(src, dst):
+        src_path = checkpoint_module.Path(src)
+        dst_path = checkpoint_module.Path(dst)
+        if src_path == tmp_path and dst_path.name.endswith(".bak"):
+            publish_ops.append("backup")
+            return original_replace(src, dst)
+        if dst_path == tmp_path and src_path.name.endswith(".tmp"):
+            publish_ops.append("publish")
+            raise OSError("injected checkpoint publish failure")
+        if dst_path == tmp_path and src_path.name.endswith(".bak"):
+            publish_ops.append("restore")
+            return original_replace(src, dst)
+        return original_replace(src, dst)
+
+    monkeypatch.setattr(checkpoint_module.os, "replace", failing_replace)
+
+    with pytest.raises(OSError, match="injected checkpoint publish failure"):
+        save_checkpoint(
+            tmp_path,
+            model=model,
+            optimizer=optimizer,
+            trainer=trainer,
+            epoch=9,
+            updates=10,
+            last_train_loss=11.0,
+        )
+
+    loaded = load_checkpoint(tmp_path)
+    sibling_prefix = f".{tmp_path.name}."
+
+    assert publish_ops == ["backup", "publish", "restore"]
+    assert loaded.metadata["epoch"] == 4
+    assert loaded.metadata["updates"] == 5
+    assert loaded.metadata["last_train_loss"] == pytest.approx(6.0)
+    assert not [
+        path
+        for path in tmp_path.parent.iterdir()
+        if path.name.startswith(sibling_prefix)
+        and (path.name.endswith(".tmp") or path.name.endswith(".bak"))
+    ]
+
+
 def test_load_model_for_inference_ignores_optimizer_state(tmp_path):
     model = _model()
     trainer = DirectOptimizerTrainer(batch_size=2, learning_rate=1.0e-3)
