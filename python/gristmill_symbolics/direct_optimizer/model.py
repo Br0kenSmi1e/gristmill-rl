@@ -54,7 +54,7 @@ def token_log_probs(
     target = _token_arrays(target_tokens)
     scalar_value_logits = jnp.asarray(logits["scalar_value"])
     scalar_value_min = jnp.asarray(logits["scalar_value_min"])
-    if not _contains_tracer((target_tokens, logits["scalar_value_min"])):
+    if not _contains_tracer((target, scalar_value_logits, scalar_value_min)):
         concrete_scalar_value_min = int(scalar_value_min)
         validate_scalar_bounds(
             target_tokens,

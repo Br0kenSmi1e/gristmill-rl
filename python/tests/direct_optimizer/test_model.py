@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import pytest
 
 from gristmill_symbolics.direct_optimizer.converter import computation_to_target_text
+from gristmill_symbolics.direct_optimizer import model as direct_model
 from gristmill_symbolics.direct_optimizer.model import (
     make_decoder_inputs,
     sequence_log_prob,
@@ -182,6 +183,44 @@ def test_token_log_probs_can_be_jitted_with_traced_scalar_value_min():
 
     assert values.shape == (1, 1)
     assert jnp.isfinite(values[0, 0])
+
+
+def test_token_log_probs_can_be_differentiated_with_closed_over_labels(monkeypatch):
+    target = {
+        "kind": jnp.asarray([[KIND["SCALAR"]]]),
+        "keyword": jnp.asarray([[-1]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    scalar_value_min = jnp.asarray(-5)
+    constant_logits = {
+        "kind": jnp.zeros((1, 1, len(KIND))),
+        "keyword": jnp.zeros((1, 1, len(KEYWORD))),
+        "scalar_type": jnp.zeros((1, 1, len(SCALAR_TYPE))),
+    }
+
+    def fail_if_eager_validation_runs(*_args, **_kwargs):
+        raise AssertionError("eager scalar-bound validation ran during tracing")
+
+    monkeypatch.setattr(
+        direct_model,
+        "validate_scalar_bounds",
+        fail_if_eager_validation_runs,
+    )
+
+    def loss(scalar_value_logits):
+        logits = {
+            **constant_logits,
+            "scalar_value": scalar_value_logits,
+            "scalar_value_min": scalar_value_min,
+        }
+        return -jnp.sum(token_log_probs(logits, target))
+
+    value, grad = jax.jit(jax.value_and_grad(loss))(jnp.zeros((1, 1, 11)))
+
+    assert jnp.isfinite(value)
+    assert grad.shape == (1, 1, 11)
 
 
 def test_sequence_log_prob_ignores_padding_mask():
