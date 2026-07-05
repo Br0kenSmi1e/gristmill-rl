@@ -548,16 +548,12 @@ class DirectOptimizerTransformer(nnx.Module):
         _validate_token_length(arrays, length, "tokens")
 
         kind = arrays["kind"]
-        keyword = _safe_embed_index(
-            arrays["keyword"],
-            kind == KIND["KEYWORD"],
-        )
-        scalar_type = _safe_embed_index(
-            arrays["scalar_type"],
-            kind == KIND["SCALAR"],
-        )
+        keyword_mask = kind == KIND["KEYWORD"]
+        scalar_mask = kind == KIND["SCALAR"]
+        keyword = _safe_embed_index(arrays["keyword"], keyword_mask)
+        scalar_type = _safe_embed_index(arrays["scalar_type"], scalar_mask)
         scalar_value = jnp.where(
-            kind == KIND["SCALAR"],
+            scalar_mask,
             arrays["scalar_value"],
             0,
         )
@@ -570,9 +566,12 @@ class DirectOptimizerTransformer(nnx.Module):
 
         embedded = (
             self.kind_embed(kind)
-            + self.keyword_embed(keyword)
-            + self.scalar_type_embed(scalar_type)
-            + self.scalar_value_projection(scalar_value[..., None])
+            + _where_component(keyword_mask, self.keyword_embed(keyword))
+            + _where_component(scalar_mask, self.scalar_type_embed(scalar_type))
+            + _where_component(
+                scalar_mask,
+                self.scalar_value_projection(scalar_value[..., None]),
+            )
             + position_embed(positions)[None, :, :]
         )
         embedded = _mask_sequence(embedded, arrays["mask"])
@@ -621,3 +620,7 @@ def _normalize_scalar_values(
 
 def _mask_sequence(x: jax.Array, mask: jax.Array) -> jax.Array:
     return x * mask[..., None].astype(x.dtype)
+
+
+def _where_component(mask: jax.Array, component: jax.Array) -> jax.Array:
+    return jnp.where(mask[..., None], component, 0)

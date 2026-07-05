@@ -322,3 +322,80 @@ def test_structured_embedder_distinguishes_same_scalar_value_by_type():
             model.embed_tokens(index_token, length=1),
         )
     )
+
+
+def test_keyword_embedding_ignores_inactive_scalar_fields():
+    model = DirectOptimizerTransformer(
+        source_len=4,
+        target_len=4,
+        scalar_value_min=-16,
+        scalar_value_max=16,
+        d_model=8,
+        num_layers=1,
+        num_heads=1,
+        rngs=nnx.Rngs(2),
+    )
+    keyword_token = {
+        "kind": jnp.asarray([[KIND["KEYWORD"]]]),
+        "keyword": jnp.asarray([[KEYWORD["def"]]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    changed_inactive = {
+        **keyword_token,
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["index_id"]]]),
+        "scalar_value": jnp.asarray([[-7]]),
+    }
+
+    embedded = model.embed_tokens(keyword_token, length=1)
+    expected = (
+        model.kind_embed(keyword_token["kind"])
+        + model.keyword_embed(keyword_token["keyword"])
+        + model.source_position_embed(jnp.asarray([0]))[None, :, :]
+    )
+
+    assert jnp.allclose(
+        embedded,
+        model.embed_tokens(changed_inactive, length=1),
+    )
+    assert jnp.allclose(embedded, expected)
+
+
+@pytest.mark.parametrize("kind_name", ["BOS", "EOS"])
+def test_control_embedding_ignores_inactive_keyword_and_scalar_fields(kind_name):
+    model = DirectOptimizerTransformer(
+        source_len=4,
+        target_len=4,
+        scalar_value_min=-16,
+        scalar_value_max=16,
+        d_model=8,
+        num_layers=1,
+        num_heads=1,
+        rngs=nnx.Rngs(3),
+    )
+    control_token = {
+        "kind": jnp.asarray([[KIND[kind_name]]]),
+        "keyword": jnp.asarray([[KEYWORD["def"]]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    changed_inactive = {
+        **control_token,
+        "keyword": jnp.asarray([[KEYWORD["term"]]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["index_id"]]]),
+        "scalar_value": jnp.asarray([[-7]]),
+    }
+
+    embedded = model.embed_tokens(control_token, length=1)
+    expected = (
+        model.kind_embed(control_token["kind"])
+        + model.source_position_embed(jnp.asarray([0]))[None, :, :]
+    )
+
+    assert jnp.allclose(
+        embedded,
+        model.embed_tokens(changed_inactive, length=1),
+    )
+    assert jnp.allclose(embedded, expected)
