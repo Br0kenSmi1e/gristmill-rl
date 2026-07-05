@@ -1,13 +1,19 @@
 import json
 import math
+import subprocess
+import sys
 
 import pytest
 
+from gristmill_symbolics import TensorComputation
 from gristmill_symbolics.direct_optimizer import dataset
 from gristmill_symbolics.direct_optimizer.dataset import (
     BuildConfig,
+    GenerationConfig,
     SplitConfig,
     build_processed_dataset,
+    generate_raw_candidates,
+    main as dataset_main,
     read_processed_jsonl,
     read_raw_candidates_jsonl,
     split_raw_candidates,
@@ -15,6 +21,7 @@ from gristmill_symbolics.direct_optimizer.dataset import (
     write_raw_candidates_jsonl,
 )
 from tests.direct_optimizer.fixtures import source_comp_json, two_candidate_jsons
+from tests.test_bindings import actionable_json
 
 
 def _raw_record(
@@ -31,6 +38,96 @@ def _raw_record(
         "initial_log_flops": 4.0,
         "candidate_log_flops": candidate_log_flops,
     }
+
+
+def _equivalent_raw_records(count: int) -> list[dict]:
+    return [
+        _raw_record(
+            candidate_json=source_comp_json(),
+            candidate_log_flops=1.0 + index,
+        )
+        for index in range(count)
+    ]
+
+
+def test_generate_raw_candidates_is_deterministic_and_skips_initial_state():
+    comp = TensorComputation.from_json_string(actionable_json())
+    config = GenerationConfig(seed=3, trajectories_per_input=2, max_steps=1)
+
+    first = generate_raw_candidates([(comp, [3])], config)
+    second = generate_raw_candidates(
+        [(TensorComputation.from_json_string(actionable_json()), [3])],
+        config,
+    )
+
+    assert first == second
+    assert first
+    assert all(
+        row["input_computation"] != row["candidate_computation"] for row in first
+    )
+    assert all(row["outputs"] == [3] for row in first)
+    assert set(first[0]) >= {
+        "input_computation",
+        "candidate_computation",
+        "outputs",
+        "initial_log_flops",
+        "candidate_log_flops",
+    }
+
+
+def test_dataset_build_splits_cli_processes_each_split_independently(tmp_path):
+    raw_path = tmp_path / "raw.jsonl"
+    train_path = tmp_path / "train.jsonl"
+    valid_path = tmp_path / "valid.jsonl"
+    test_path = tmp_path / "test.jsonl"
+    write_raw_candidates_jsonl(_equivalent_raw_records(8), raw_path)
+
+    exit_code = dataset_main(
+        [
+            "build-splits",
+            "--raw-input",
+            str(raw_path),
+            "--train-output",
+            str(train_path),
+            "--valid-output",
+            str(valid_path),
+            "--test-output",
+            str(test_path),
+            "--train-fraction",
+            "0.5",
+            "--valid-fraction",
+            "0.25",
+            "--test-fraction",
+            "0.25",
+            "--split-seed",
+            "9",
+            "--beta",
+            "1.0",
+            "--verify",
+        ]
+    )
+
+    assert exit_code == 0
+    for path in (train_path, valid_path, test_path):
+        rows = read_processed_jsonl(path)
+        assert rows
+        groups = {}
+        for row in rows:
+            groups.setdefault(row["input_key"], 0.0)
+            groups[row["input_key"]] += row["weight"]
+        assert all(math.isclose(total, 1.0) for total in groups.values())
+
+
+def test_dataset_module_help_smoke():
+    result = subprocess.run(
+        [sys.executable, "-m", "gristmill_symbolics.direct_optimizer.dataset", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "build-splits" in result.stdout
 
 
 def test_build_processed_dataset_preserves_outputs_and_weights_lower_cost_higher():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import math
@@ -12,7 +13,10 @@ from typing import Any
 from gristmill_symbolics import (
     GristmillSymbolicsError,
     TensorComputation,
+    action_space_for_def,
+    apply_decision,
     equivalent_computations,
+    validate_decision,
 )
 
 from .converter import computation_to_source_text, computation_to_target_text
@@ -55,6 +59,54 @@ def write_processed_jsonl(rows: Sequence[dict[str, Any]], path: Path) -> None:
 
 def read_processed_jsonl(path: Path) -> list[dict[str, Any]]:
     return _read_jsonl(path)
+
+
+def generate_raw_candidates(
+    inputs: Sequence[tuple[TensorComputation, Sequence[int]]],
+    config: GenerationConfig,
+) -> list[dict[str, Any]]:
+    if config.trajectories_per_input <= 0:
+        raise ValueError("GenerationConfig.trajectories_per_input must be positive")
+    if config.max_steps <= 0:
+        raise ValueError("GenerationConfig.max_steps must be positive")
+
+    rng = random.Random(config.seed)
+    records: list[dict[str, Any]] = []
+
+    for input_comp, output_value in inputs:
+        outputs = _validate_outputs(list(output_value))
+        initial_json = input_comp.to_json_string()
+        initial_log_flops = _finite_cost(input_comp.log_total_flops())
+        for _trajectory in range(config.trajectories_per_input):
+            comp = _clone_comp(input_comp)
+            trajectory_records: list[dict[str, Any]] = []
+            for _step in range(config.max_steps):
+                spaces = _actionable_spaces(comp)
+                if not spaces:
+                    break
+                _def_index, space = rng.choice(spaces)
+                try:
+                    decision = _sample_decision(space, rng, config.random_subsets)
+                    validate_decision(space, decision)
+                    apply_decision(comp, space, decision)
+                    candidate_json = comp.to_json_string()
+                    if candidate_json == initial_json:
+                        continue
+                    trajectory_records.append({
+                        "input_computation": initial_json,
+                        "candidate_computation": candidate_json,
+                        "outputs": outputs,
+                        "initial_log_flops": initial_log_flops,
+                        "candidate_log_flops": _finite_cost(comp.log_total_flops()),
+                    })
+                except Exception:
+                    break
+            if config.collect_intermediates:
+                records.extend(trajectory_records)
+            elif trajectory_records:
+                records.append(trajectory_records[-1])
+
+    return records
 
 
 def split_raw_candidates(
@@ -146,6 +198,154 @@ def build_processed_dataset(
             weighted["weight"] = raw_weight / weight_sum
             processed.append(weighted)
     return processed
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="gristmill_symbolics.direct_optimizer.dataset",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    generate_parser = subparsers.add_parser("generate")
+    generate_parser.add_argument("--input", required=True, type=Path)
+    generate_parser.add_argument("--outputs", required=True, type=_parse_outputs)
+    generate_parser.add_argument("--raw-output", required=True, type=Path)
+    generate_parser.add_argument("--seed", required=True, type=int)
+    generate_parser.add_argument("--trajectories", required=True, type=int)
+    generate_parser.add_argument("--max-steps", required=True, type=int)
+    generate_parser.add_argument("--random-subsets", action="store_true")
+    generate_parser.add_argument("--collect-intermediates", action="store_true")
+
+    build_parser = subparsers.add_parser("build")
+    build_parser.add_argument("--raw-input", required=True, type=Path)
+    build_parser.add_argument("--output", required=True, type=Path)
+    build_parser.add_argument("--beta", default=1.0, type=float)
+    build_parser.add_argument("--verify", action="store_true")
+
+    split_parser = subparsers.add_parser("build-splits")
+    split_parser.add_argument("--raw-input", required=True, type=Path)
+    split_parser.add_argument("--train-output", required=True, type=Path)
+    split_parser.add_argument("--valid-output", required=True, type=Path)
+    split_parser.add_argument("--test-output", required=True, type=Path)
+    split_parser.add_argument("--train-fraction", default=0.8, type=float)
+    split_parser.add_argument("--valid-fraction", default=0.1, type=float)
+    split_parser.add_argument("--test-fraction", default=0.1, type=float)
+    split_parser.add_argument("--split-seed", default=0, type=int)
+    split_parser.add_argument("--beta", default=1.0, type=float)
+    split_parser.add_argument("--verify", action="store_true")
+
+    args = parser.parse_args(argv)
+
+    if args.command == "generate":
+        input_comp = TensorComputation.from_json_string(
+            args.input.read_text(encoding="utf-8")
+        )
+        records = generate_raw_candidates(
+            [(input_comp, args.outputs)],
+            GenerationConfig(
+                seed=args.seed,
+                trajectories_per_input=args.trajectories,
+                max_steps=args.max_steps,
+                random_subsets=args.random_subsets,
+                collect_intermediates=args.collect_intermediates,
+            ),
+        )
+        write_raw_candidates_jsonl(records, args.raw_output)
+        return 0
+
+    if args.command == "build":
+        raw_records = read_raw_candidates_jsonl(args.raw_input)
+        rows = build_processed_dataset(
+            raw_records,
+            BuildConfig(beta=args.beta, verify=args.verify),
+        )
+        write_processed_jsonl(rows, args.output)
+        return 0
+
+    if args.command == "build-splits":
+        raw_records = read_raw_candidates_jsonl(args.raw_input)
+        train_raw, valid_raw, test_raw = split_raw_candidates(
+            raw_records,
+            SplitConfig(
+                train_fraction=args.train_fraction,
+                valid_fraction=args.valid_fraction,
+                test_fraction=args.test_fraction,
+                seed=args.split_seed,
+            ),
+        )
+        build_config = BuildConfig(beta=args.beta, verify=args.verify)
+        write_processed_jsonl(
+            build_processed_dataset(train_raw, build_config),
+            args.train_output,
+        )
+        write_processed_jsonl(
+            build_processed_dataset(valid_raw, build_config),
+            args.valid_output,
+        )
+        write_processed_jsonl(
+            build_processed_dataset(test_raw, build_config),
+            args.test_output,
+        )
+        return 0
+
+    raise AssertionError(f"unknown command: {args.command}")
+
+
+def _clone_comp(comp: TensorComputation) -> TensorComputation:
+    return TensorComputation.from_json_string(comp.to_json_string())
+
+
+def _actionable_spaces(comp: TensorComputation) -> list[tuple[int, Any]]:
+    snapshot = comp.snapshot()
+    definitions = snapshot.get("definitions", [])
+    spaces: list[tuple[int, Any]] = []
+    for def_index in range(len(definitions)):
+        try:
+            space = action_space_for_def(comp, def_index)
+        except Exception:
+            continue
+        if space is not None:
+            spaces.append((def_index, space))
+    return spaces
+
+
+def _sample_decision(space: Any, rng: random.Random, random_subsets: bool) -> dict[str, Any]:
+    templates = space.snapshot()["candidate_templates"]
+    candidate_index = rng.randrange(len(templates))
+    template = templates[candidate_index]
+    return {
+        "candidate_index": candidate_index,
+        "left_mask": _sample_mask(
+            len(template["left_definition"]["terms"]),
+            rng,
+            random_subsets,
+        ),
+        "right_mask": _sample_mask(
+            len(template["right_definition"]["terms"]),
+            rng,
+            random_subsets,
+        ),
+    }
+
+
+def _sample_mask(count: int, rng: random.Random, random_subset: bool) -> list[bool]:
+    if not random_subset:
+        return [True] * count
+    if count == 0:
+        return []
+    mask = [bool(rng.getrandbits(1)) for _ in range(count)]
+    if not any(mask):
+        mask[rng.randrange(count)] = True
+    return mask
+
+
+def _parse_outputs(value: str) -> list[int]:
+    if "," in value:
+        parts = value.split(",")
+    else:
+        parts = value.split()
+    outputs = [int(part) for part in parts if part != ""]
+    return _validate_outputs(outputs)
 
 
 def _write_jsonl(rows: Sequence[dict[str, Any]], path: Path) -> None:
@@ -243,3 +443,7 @@ def _finite_cost(value: Any) -> float:
     if not math.isfinite(cost):
         raise ValueError("cost must be finite")
     return cost
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
