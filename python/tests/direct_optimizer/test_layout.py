@@ -23,12 +23,7 @@ def _package_name_for(path: Path) -> str | None:
     if relative.parts[:2] != ("gristmill_symbolics", "direct_optimizer"):
         return None
 
-    parts = relative.with_suffix("").parts
-    if relative.name == "__init__.py":
-        package_parts = parts
-    else:
-        package_parts = parts[:-1]
-    return ".".join(package_parts)
+    return ".".join(relative.with_suffix("").parts[:-1])
 
 
 def _resolved_import_from_module(path: Path, node: ast.ImportFrom) -> str | None:
@@ -101,6 +96,19 @@ def test_imported_modules_resolves_relative_import_from_aliases():
         assert "gristmill_symbolics.model.tokenizer" in _imported_modules(path)
     finally:
         path.unlink()
+
+
+def test_imported_modules_resolves_package_initializer_relative_import_from_alias():
+    tree = ast.parse("from ..model import tokenizer")
+    node = next(node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+
+    module = _resolved_import_from_module(PACKAGE / "__init__.py", node)
+    imported = set()
+    if module:
+        imported.add(module)
+        imported.update(f"{module}.{alias.name}" for alias in node.names)
+
+    assert "gristmill_symbolics.model.tokenizer" in imported
 
 
 def test_direct_optimizer_modules_do_not_import_forbidden_training_paths():
