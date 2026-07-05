@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         trainer = DirectOptimizerTrainer(
             batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
+            learning_rate=_learning_rate_or_default(args),
         )
         optimizer = trainer.init_optimizer(model)
         start_epoch = 0
@@ -59,13 +59,15 @@ def main(argv: list[str] | None = None) -> int:
         model_kwargs = dict(checkpoint.metadata["model_kwargs"])
         _validate_provided_model_kwargs(args, model_kwargs)
         trainer_kwargs = checkpoint.metadata.get("trainer_kwargs")
+        if trainer_kwargs is not None:
+            _validate_provided_trainer_kwargs(args, trainer_kwargs)
         if checkpoint.optimizer is not None and trainer_kwargs is not None:
             trainer = DirectOptimizerTrainer(**trainer_kwargs)
             optimizer = checkpoint.optimizer
         else:
             trainer = DirectOptimizerTrainer(
                 batch_size=args.batch_size,
-                learning_rate=args.learning_rate,
+                learning_rate=_learning_rate_or_default(args),
             )
             optimizer = trainer.init_optimizer(model)
         start_epoch = int(checkpoint.metadata["epoch"])
@@ -103,7 +105,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkpoint-in", type=Path)
     parser.add_argument("--epochs", type=_positive_int, default=1)
     parser.add_argument("--batch-size", required=True, type=_positive_int)
-    parser.add_argument("--learning-rate", type=float, default=1.0e-3)
+    parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--source-len", type=_positive_int)
     parser.add_argument("--target-len", type=_positive_int)
     parser.add_argument("--scalar-value-min", type=int)
@@ -147,6 +149,25 @@ def _validate_provided_model_kwargs(
         value = getattr(args, name)
         if value is not None and saved_kwargs.get(name) != value:
             raise ValueError(f"mismatched model kwarg {name}")
+
+
+def _validate_provided_trainer_kwargs(
+    args: argparse.Namespace,
+    saved_kwargs: dict[str, Any],
+) -> None:
+    if int(saved_kwargs["batch_size"]) != args.batch_size:
+        raise ValueError("mismatched trainer kwarg batch_size")
+    if (
+        args.learning_rate is not None
+        and float(saved_kwargs["learning_rate"]) != float(args.learning_rate)
+    ):
+        raise ValueError("mismatched trainer kwarg learning_rate")
+
+
+def _learning_rate_or_default(args: argparse.Namespace) -> float:
+    if args.learning_rate is None:
+        return 1.0e-3
+    return float(args.learning_rate)
 
 
 def _complete_static_model_kwargs(

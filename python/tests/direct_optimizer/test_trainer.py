@@ -10,9 +10,11 @@ from gristmill_symbolics.direct_optimizer.checkpoint import load_checkpoint
 from gristmill_symbolics.direct_optimizer.dataset import (
     BuildConfig,
     build_processed_dataset,
+    read_processed_jsonl,
     write_processed_jsonl,
 )
 from gristmill_symbolics.direct_optimizer.model import DirectOptimizerTransformer
+from gristmill_symbolics.direct_optimizer import train as train_module
 from gristmill_symbolics.direct_optimizer.train import main as train_main
 from gristmill_symbolics.direct_optimizer.trainer import (
     DirectOptimizerTrainer,
@@ -283,12 +285,26 @@ def test_train_cli_runs_one_tiny_epoch_and_writes_checkpoint(tmp_path, capsys):
     assert loaded.metadata["updates"] > 0
 
 
-def test_trainer_does_not_split_processed_datasets(tmp_path, capsys):
+def test_trainer_does_not_split_processed_datasets(tmp_path, capsys, monkeypatch):
     train_path = tmp_path / "train.jsonl"
     valid_path = tmp_path / "valid.jsonl"
     checkpoint_path = tmp_path / "checkpoint"
     write_processed_jsonl(_processed_rows(4), train_path)
     write_processed_jsonl(_processed_rows(2), valid_path)
+    captured = {}
+
+    def fake_train_epochs(**kwargs):
+        captured["train_rows"] = kwargs["train_rows"]
+        captured["valid_rows"] = kwargs["valid_rows"]
+        captured["test_rows"] = kwargs["test_rows"]
+        return {
+            "train_loss": 1.0,
+            "valid_loss": 2.0,
+            "epoch": 1,
+            "updates": 0,
+        }
+
+    monkeypatch.setattr(train_module, "train_epochs", fake_train_epochs)
 
     exit_code = train_main(
         _tiny_train_args(
@@ -303,6 +319,9 @@ def test_trainer_does_not_split_processed_datasets(tmp_path, capsys):
 
     assert exit_code == 0
     assert math.isfinite(float(metrics["valid_loss"]))
+    assert captured["train_rows"] == read_processed_jsonl(train_path)
+    assert captured["valid_rows"] == read_processed_jsonl(valid_path)
+    assert captured["test_rows"] is None
 
 
 def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
@@ -331,6 +350,30 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
                 **{
                     "--checkpoint-in": checkpoint_path,
                     "--source-len": 64,
+                },
+            )
+        )
+
+    with pytest.raises(ValueError, match="batch_size"):
+        train_main(
+            _tiny_train_args(
+                dataset_path,
+                checkpoint_path,
+                **{
+                    "--checkpoint-in": checkpoint_path,
+                    "--batch-size": 4,
+                },
+            )
+        )
+
+    with pytest.raises(ValueError, match="learning_rate"):
+        train_main(
+            _tiny_train_args(
+                dataset_path,
+                checkpoint_path,
+                **{
+                    "--checkpoint-in": checkpoint_path,
+                    "--learning-rate": 0.002,
                 },
             )
         )
