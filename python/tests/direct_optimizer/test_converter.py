@@ -1,6 +1,9 @@
+import json
+
 import pytest
 import numpy as np
 
+from gristmill_symbolics.direct_optimizer import converter
 from gristmill_symbolics.direct_optimizer.converter import (
     _definitions_to_text,
     computation_to_source_text,
@@ -248,7 +251,7 @@ def test_target_reconstruction_copies_input_envelope_and_registers_new_bases():
     x = source_comp()
     target_text = "\n".join(
         [
-            "def base tensor_id:9",
+            "def base tensor_id:2",
             "ext id index_id:0 range range_id:0",
             "term",
             "coeff numer coeff_num:1 denom coeff_den:1",
@@ -264,11 +267,64 @@ def test_target_reconstruction_copies_input_envelope_and_registers_new_bases():
     snapshot = candidate.snapshot()
 
     assert snapshot["ranges"] == x.snapshot()["ranges"]
+    assert [tensor["id"] for tensor in snapshot["tensors"]] == [0, 1, 2]
     assert {"id": 0, "symmetry": [{"perm": [0], "action": "Identity"}]} in snapshot[
         "tensors"
     ]
-    assert {"id": 9, "symmetry": []} in snapshot["tensors"]
-    assert snapshot["definitions"][0]["base"] == 9
+    assert {"id": 2, "symmetry": []} in snapshot["tensors"]
+    assert snapshot["definitions"][0]["base"] == 2
+
+
+def test_target_reconstruction_keeps_sparse_generated_base_without_placeholders(
+    monkeypatch,
+):
+    x = source_comp()
+    target_text = "\n".join(
+        [
+            "def base tensor_id:9",
+            "ext id index_id:0 range range_id:0",
+            "term",
+            "coeff numer coeff_num:1 denom coeff_den:1",
+            "factor tensor tensor_id:0",
+            "index index_id:0",
+            "endfactor",
+            "endterm",
+            "enddef",
+        ]
+    )
+    captured = {}
+
+    class CapturingTensorComputation:
+        @staticmethod
+        def from_json_string(text):
+            captured["snapshot"] = json.loads(text)
+            return object()
+
+    monkeypatch.setattr(converter, "TensorComputation", CapturingTensorComputation)
+
+    target_text_to_computation(x, target_text)
+
+    assert [tensor["id"] for tensor in captured["snapshot"]["tensors"]] == [0, 1, 9]
+
+
+def test_target_reconstruction_reports_sparse_tensor_id_validation_limit():
+    x = source_comp()
+    target_text = "\n".join(
+        [
+            "def base tensor_id:9",
+            "ext id index_id:0 range range_id:0",
+            "term",
+            "coeff numer coeff_num:1 denom coeff_den:1",
+            "factor tensor tensor_id:0",
+            "index index_id:0",
+            "endfactor",
+            "endterm",
+            "enddef",
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"tensor_ids:\[0, 1, 9\].*TensorIdMismatch"):
+        target_text_to_computation(x, target_text)
 
 
 def test_target_reconstruction_rejects_unknown_factor_tensor():

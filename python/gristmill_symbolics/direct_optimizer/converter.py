@@ -66,11 +66,11 @@ def target_text_to_computation(
 ) -> TensorComputation:
     definitions = target_text_to_definitions(target_text)
     x_snapshot = x.snapshot()
-    tensors_by_id = {int(tensor["id"]): tensor for tensor in x_snapshot["tensors"]}
-    known_tensors = set(tensors_by_id)
+    tensors = list(x_snapshot["tensors"])
+    known_tensors = {int(tensor["id"]) for tensor in tensors}
     generated_bases = {int(definition["base"]) for definition in definitions}
     for base in sorted(generated_bases - known_tensors):
-        tensors_by_id[base] = {"id": base, "symmetry": []}
+        tensors.append({"id": base, "symmetry": []})
         known_tensors.add(base)
     for definition in definitions:
         for term in definition["terms"]:
@@ -78,11 +78,6 @@ def target_text_to_computation(
                 tensor_id = int(factor["tensor"])
                 if tensor_id not in known_tensors:
                     raise ValueError(f"factor references unknown tensor_id:{tensor_id}")
-    max_tensor_id = max(tensors_by_id, default=-1)
-    tensors = [
-        tensors_by_id.get(tensor_id, {"id": tensor_id, "symmetry": []})
-        for tensor_id in range(max_tensor_id + 1)
-    ]
     snapshot = {
         "ranges": list(x_snapshot["ranges"]),
         "tensors": tensors,
@@ -91,8 +86,10 @@ def target_text_to_computation(
     try:
         return TensorComputation.from_json_string(json.dumps(snapshot))
     except Exception as exc:
+        tensor_ids = [int(tensor["id"]) for tensor in tensors]
         raise ValueError(
-            "target reconstruction failed TensorComputation validation"
+            "target reconstruction failed TensorComputation validation "
+            f"for tensor_ids:{tensor_ids}: {exc}"
         ) from exc
 
 
