@@ -5,11 +5,13 @@
 The dataset module owns the path from symbolic candidate generation to
 trainer-ready supervised rows.
 
-It has two internal responsibilities:
+It has three internal responsibilities:
 
 1. Raw candidate generation: use the Rust symbolic rewrite engine to generate
    equivalent candidate computations from an input computation.
-2. Dataset building and cleaning: convert raw records into processed training
+2. Raw train/valid/test splitting: assign raw candidate records to dataset
+   splits before weight normalization.
+3. Dataset building and cleaning: convert raw records into processed training
    examples with source DSL, target DSL, grouping keys, finite costs, and
    cost-softmax weights.
 
@@ -91,6 +93,48 @@ Raw candidate record shape:
 
 Generator internals may track seed, trajectory, or step information for logs, but
 that metadata is not part of the required raw record schema.
+
+## Raw Train/Valid/Test Split
+
+Train/valid/test split happens on raw candidate records before processing.
+
+The pipeline is:
+
+```text
+generate raw candidates
+  -> split raw candidates into train/valid/test
+  -> build/process each split independently
+  -> train.jsonl / valid.jsonl / test.jsonl
+```
+
+This order matters because processed weights are normalized per `input_key`
+group. If rows were split after processing, group weights could be divided across
+files and no longer sum to `1.0` within each train/valid/test file.
+
+Split config:
+
+```python
+@dataclass(frozen=True)
+class SplitConfig:
+    train_fraction: float = 0.8
+    valid_fraction: float = 0.1
+    test_fraction: float = 0.1
+    seed: int = 0
+```
+
+Rules:
+
+- Split is row-level, not grouped by `input_key`.
+- Fractions must be finite, non-negative, and sum to `1.0` within tolerance.
+- Assignment is deterministic for a fixed seed and input record order.
+- The split function shuffles raw records with the configured seed and assigns
+  rows according to the requested fractions.
+- Raw records are preserved unchanged.
+- Empty train splits are never allowed.
+- Empty valid or test splits are allowed only when their configured fraction is
+  `0.0`.
+- Each split is processed independently with `build_processed_dataset`, so
+  deduplication and cost-softmax weights are local to that split.
 
 ## Dataset Builder And Cleaner
 
@@ -225,7 +269,7 @@ Rules:
 
 ## Public API And CLI
 
-Public API should separate generation from building.
+Public API should separate generation, raw splitting, and building.
 
 Configuration:
 
@@ -243,6 +287,14 @@ class GenerationConfig:
 class BuildConfig:
     beta: float = 1.0
     verify: bool = False
+
+
+@dataclass(frozen=True)
+class SplitConfig:
+    train_fraction: float = 0.8
+    valid_fraction: float = 0.1
+    test_fraction: float = 0.1
+    seed: int = 0
 ```
 
 Core functions:
@@ -255,6 +307,11 @@ generate_raw_candidates(
 
 write_raw_candidates_jsonl(records: Sequence[dict], path: Path) -> None
 read_raw_candidates_jsonl(path: Path) -> list[dict]
+
+split_raw_candidates(
+    raw_records: Sequence[dict],
+    config: SplitConfig,
+) -> tuple[list[dict], list[dict], list[dict]]
 
 build_processed_dataset(
     raw_records: Sequence[dict],
@@ -282,10 +339,24 @@ python -m gristmill_symbolics.direct_optimizer.dataset build \
   --output processed_direct_dataset.jsonl \
   --beta 1.0 \
   --verify
+
+python -m gristmill_symbolics.direct_optimizer.dataset build-splits \
+  --raw-input raw_candidates.jsonl \
+  --train-output train.jsonl \
+  --valid-output valid.jsonl \
+  --test-output test.jsonl \
+  --train-fraction 0.8 \
+  --valid-fraction 0.1 \
+  --test-fraction 0.1 \
+  --split-seed 0 \
+  --beta 1.0 \
+  --verify
 ```
 
-A convenience `generate-build` subcommand can be added if trivial, but generation
-and build should remain separate functions.
+A convenience `generate-build` subcommand can be added if trivial, but
+generation, raw splitting, and build should remain separate functions.
+`build-splits` is a CLI convenience that composes `split_raw_candidates` and
+`build_processed_dataset` for each split.
 
 ## Error Handling And Boundaries
 
@@ -308,6 +379,14 @@ Builder failures:
   `verify=False`, no equivalence check is performed.
 - The builder should never emit a processed row without valid `source_text`,
   `target_text`, finite costs, ordered outputs, keys, and weight.
+
+Split failures:
+
+- Invalid split fractions raise `ValueError`.
+- Empty train output raises `ValueError`.
+- Empty valid or test outputs raise `ValueError` when their configured fraction
+  is greater than `0.0`.
+- The split function does not inspect or mutate raw record contents.
 
 Boundaries:
 
@@ -345,6 +424,10 @@ Required focused tests:
 - Builder weights candidates per input group:
   - weights sum to `1.0`;
   - lower `candidate_log_flops` has larger weight when `beta > 0`.
+- Raw split is deterministic for a fixed seed and preserves raw records
+  unchanged.
+- `build-splits` processes each split independently so weights normalize within
+  each output file.
 - Builder skips malformed records and non-finite costs.
 - Optional verification mode rejects non-equivalent external raw records.
 - JSONL read/write round-trips raw and processed rows.
@@ -354,4 +437,3 @@ Verification command:
 ```bash
 uv run pytest python/tests/direct_optimizer/test_dataset.py -q
 ```
-
