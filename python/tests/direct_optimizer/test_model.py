@@ -1,10 +1,15 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from flax import nnx
 
-from gristmill_symbolics.direct_optimizer.converter import computation_to_target_text
+from gristmill_symbolics.direct_optimizer.converter import (
+    computation_to_source_text,
+    computation_to_target_text,
+)
 from gristmill_symbolics.direct_optimizer import model as direct_model
 from gristmill_symbolics.direct_optimizer.model import (
+    DirectOptimizerTransformer,
     make_decoder_inputs,
     sequence_log_prob,
     token_log_probs,
@@ -24,6 +29,20 @@ def _target_tokens(length=32):
         encode_text(computation_to_target_text(source_comp())),
         length=length,
     )
+
+
+def _source_tokens(length=64):
+    return pad_tokens(
+        encode_text(computation_to_source_text(source_comp())),
+        length=length,
+    )
+
+
+def _batch(row, batch_size=2):
+    return {
+        key: jnp.asarray(value[None, :]).repeat(batch_size, axis=0)
+        for key, value in row.items()
+    }
 
 
 def test_make_decoder_inputs_shifts_encoded_row_for_teacher_forcing():
@@ -249,3 +268,57 @@ def test_sequence_log_prob_ignores_padding_mask():
     assert jnp.isfinite(seq[0])
     assert seq[0] == pytest.approx(token_scores[0, 0])
     assert seq[0] != pytest.approx(jnp.sum(token_scores[0]))
+
+
+def test_nnx_transformer_returns_static_logits():
+    model = DirectOptimizerTransformer(
+        source_len=64,
+        target_len=32,
+        scalar_value_min=-16,
+        scalar_value_max=16,
+        d_model=16,
+        num_layers=1,
+        num_heads=2,
+        rngs=nnx.Rngs(0),
+    )
+    target = _target_tokens(length=32)
+    decoder_input, _labels, _mask = make_decoder_inputs(target)
+
+    logits = model(_batch(_source_tokens()), _batch(decoder_input))
+
+    assert logits["kind"].shape == (2, 32, len(KIND))
+    assert logits["keyword"].shape == (2, 32, len(KEYWORD))
+    assert logits["scalar_type"].shape == (2, 32, len(SCALAR_TYPE))
+    assert logits["scalar_value"].shape == (2, 32, 33)
+    assert logits["scalar_value_min"] == -16
+
+
+def test_structured_embedder_distinguishes_same_scalar_value_by_type():
+    model = DirectOptimizerTransformer(
+        source_len=4,
+        target_len=4,
+        scalar_value_min=-16,
+        scalar_value_max=16,
+        d_model=8,
+        num_layers=1,
+        num_heads=1,
+        rngs=nnx.Rngs(1),
+    )
+    tensor_token = {
+        "kind": jnp.asarray([[KIND["SCALAR"]]]),
+        "keyword": jnp.asarray([[-1]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    index_token = {
+        **tensor_token,
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["index_id"]]]),
+    }
+
+    assert not bool(
+        jnp.allclose(
+            model.embed_tokens(tensor_token, length=1),
+            model.embed_tokens(index_token, length=1),
+        )
+    )
