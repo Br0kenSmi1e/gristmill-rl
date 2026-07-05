@@ -11,6 +11,7 @@ from gristmill_symbolics.direct_optimizer import model as direct_model
 from gristmill_symbolics.direct_optimizer.model import (
     DirectOptimizerTransformer,
     make_decoder_inputs,
+    sample_tokens,
     sequence_log_prob,
     token_log_probs,
 )
@@ -425,3 +426,64 @@ def test_control_embedding_ignores_inactive_keyword_and_scalar_fields(kind_name)
         model.embed_tokens(changed_inactive, length=1),
     )
     assert jnp.allclose(embedded, expected)
+
+
+def test_sample_tokens_returns_static_padded_batch():
+    model = DirectOptimizerTransformer(
+        source_len=64,
+        target_len=16,
+        scalar_value_min=-8,
+        scalar_value_max=8,
+        d_model=16,
+        num_layers=1,
+        num_heads=2,
+        rngs=nnx.Rngs(2),
+    )
+    source = _batch(_source_tokens(length=64), batch_size=3)
+
+    generated, mask = sample_tokens(
+        model,
+        jax.random.PRNGKey(2),
+        source,
+        max_length=16,
+        temperature=1.0,
+    )
+
+    assert generated["kind"].shape == (3, 16)
+    assert generated["keyword"].shape == (3, 16)
+    assert generated["scalar_type"].shape == (3, 16)
+    assert generated["scalar_value"].shape == (3, 16)
+    assert generated["mask"].shape == (3, 16)
+    assert mask.shape == (3, 16)
+
+
+def test_sample_tokens_is_deterministic_for_fixed_rng_and_state():
+    model = DirectOptimizerTransformer(
+        source_len=64,
+        target_len=8,
+        scalar_value_min=-4,
+        scalar_value_max=4,
+        d_model=8,
+        num_layers=1,
+        num_heads=1,
+        rngs=nnx.Rngs(3),
+    )
+    source = _batch(_source_tokens(length=64), batch_size=2)
+
+    left, left_mask = sample_tokens(
+        model,
+        jax.random.PRNGKey(5),
+        source,
+        max_length=8,
+        temperature=1.0,
+    )
+    right, right_mask = sample_tokens(
+        model,
+        jax.random.PRNGKey(5),
+        source,
+        max_length=8,
+        temperature=1.0,
+    )
+
+    assert all(jnp.array_equal(left[field], right[field]) for field in left)
+    assert jnp.array_equal(left_mask, right_mask)

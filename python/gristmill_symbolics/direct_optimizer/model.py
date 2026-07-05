@@ -109,6 +109,114 @@ def sequence_log_prob(
     return jnp.sum(token_log_probs(logits, target_tokens) * target_mask, axis=1)
 
 
+def sample_tokens(
+    model: "DirectOptimizerTransformer",
+    rng,
+    source_tokens,
+    *,
+    max_length: int,
+    temperature: float,
+    mask_provider=None,
+) -> tuple[dict[str, jax.Array], jax.Array]:
+    if max_length <= 0 or max_length > model.target_len:
+        raise ValueError("max_length must satisfy 0 < max_length <= model.target_len")
+    if temperature <= 0:
+        raise ValueError("temperature must be positive")
+
+    source = _token_batch(source_tokens)
+    _validate_token_length(source, model.source_len, "source_tokens")
+    batch_size = source["kind"].shape[0]
+
+    prefix = _sample_pad_batch(batch_size, model.target_len)
+    prefix["kind"] = prefix["kind"].at[:, 0].set(KIND["BOS"])
+    prefix["mask"] = prefix["mask"].at[:, 0].set(True)
+    generated = _sample_pad_batch(batch_size, model.target_len)
+    alive = jnp.ones((batch_size,), dtype=bool)
+
+    def scan_step(carry, step):
+        rng_key, decoder_prefix, output_tokens, rows_alive = carry
+        rng_key, kind_key, keyword_key, scalar_type_key, scalar_value_key = (
+            jax.random.split(rng_key, 5)
+        )
+        logits = model(source, decoder_prefix, deterministic=True)
+        step_logits = {
+            field: jnp.asarray(logits[field])[:, step, :] / temperature
+            for field in ("kind", "keyword", "scalar_type", "scalar_value")
+        }
+        if mask_provider is not None:
+            step_logits = _apply_sampling_masks(
+                step_logits,
+                mask_provider(decoder_prefix, step, source),
+            )
+
+        sampled_kind = jax.random.categorical(kind_key, step_logits["kind"]).astype(
+            jnp.int32
+        )
+        sampled_keyword = jax.random.categorical(
+            keyword_key,
+            step_logits["keyword"],
+        ).astype(jnp.int32)
+        sampled_scalar_type = jax.random.categorical(
+            scalar_type_key,
+            step_logits["scalar_type"],
+        ).astype(jnp.int32)
+        sampled_scalar_value = jax.random.categorical(
+            scalar_value_key,
+            step_logits["scalar_value"],
+        ).astype(jnp.int32)
+        sampled_scalar_value = sampled_scalar_value + model.scalar_value_min
+
+        active = rows_alive
+        kind = jnp.where(active, sampled_kind, KIND["PAD"])
+        keyword = jnp.where(
+            active & (kind == KIND["KEYWORD"]),
+            sampled_keyword,
+            SENTINEL,
+        )
+        scalar_type = jnp.where(
+            active & (kind == KIND["SCALAR"]),
+            sampled_scalar_type,
+            SENTINEL,
+        )
+        scalar_value = jnp.where(
+            active & (kind == KIND["SCALAR"]),
+            sampled_scalar_value,
+            SENTINEL,
+        )
+        token_mask = active
+
+        output_tokens = _set_sample_position(
+            output_tokens,
+            step,
+            kind=kind,
+            keyword=keyword,
+            scalar_type=scalar_type,
+            scalar_value=scalar_value,
+            mask=token_mask,
+        )
+
+        next_position = step + 1
+        next_alive = rows_alive & (kind != KIND["EOS"])
+        prefix_mask = active & next_alive
+        decoder_prefix = _set_sample_position(
+            decoder_prefix,
+            next_position,
+            kind=kind,
+            keyword=keyword,
+            scalar_type=scalar_type,
+            scalar_value=scalar_value,
+            mask=prefix_mask,
+        )
+        return (rng_key, decoder_prefix, output_tokens, next_alive), None
+
+    (_rng, _prefix, generated, _alive), _ = jax.lax.scan(
+        scan_step,
+        (jnp.asarray(rng), prefix, generated, alive),
+        jnp.arange(max_length, dtype=jnp.int32),
+    )
+    return generated, generated["mask"]
+
+
 def _token_arrays(tokens: Mapping[str, Any]) -> dict[str, jax.Array]:
     missing = [field for field in TOKEN_FIELDS if field not in tokens]
     if missing:
@@ -129,6 +237,55 @@ def _token_row(tokens: Mapping[str, Any]) -> dict[str, jax.Array]:
         if array.ndim != 1:
             raise ValueError(f"expected {field} to be a 1D encoded token row")
     return arrays
+
+
+def _sample_pad_batch(batch_size: int, length: int) -> dict[str, jax.Array]:
+    return {
+        "kind": jnp.full((batch_size, length), KIND["PAD"], dtype=jnp.int32),
+        "keyword": jnp.full((batch_size, length), SENTINEL, dtype=jnp.int32),
+        "scalar_type": jnp.full((batch_size, length), SENTINEL, dtype=jnp.int32),
+        "scalar_value": jnp.full((batch_size, length), SENTINEL, dtype=jnp.int32),
+        "mask": jnp.zeros((batch_size, length), dtype=bool),
+    }
+
+
+def _set_sample_position(
+    tokens: Mapping[str, jax.Array],
+    position: jax.Array,
+    *,
+    kind: jax.Array,
+    keyword: jax.Array,
+    scalar_type: jax.Array,
+    scalar_value: jax.Array,
+    mask: jax.Array,
+) -> dict[str, jax.Array]:
+    updated = dict(tokens)
+    updated["kind"] = updated["kind"].at[:, position].set(kind)
+    updated["keyword"] = updated["keyword"].at[:, position].set(keyword)
+    updated["scalar_type"] = updated["scalar_type"].at[:, position].set(scalar_type)
+    updated["scalar_value"] = updated["scalar_value"].at[:, position].set(scalar_value)
+    updated["mask"] = updated["mask"].at[:, position].set(mask)
+    return updated
+
+
+def _apply_sampling_masks(
+    logits: Mapping[str, jax.Array],
+    masks,
+) -> dict[str, jax.Array]:
+    if masks is None:
+        return dict(logits)
+    masked = dict(logits)
+    for field in ("kind", "keyword", "scalar_type", "scalar_value"):
+        additive_mask = _optional_mask_field(masks, field)
+        if additive_mask is not None:
+            masked[field] = masked[field] + jnp.asarray(additive_mask)
+    return masked
+
+
+def _optional_mask_field(masks, field: str):
+    if isinstance(masks, Mapping):
+        return masks.get(field)
+    return getattr(masks, field, None)
 
 
 def _pad_like(length: int) -> dict[str, jax.Array]:
