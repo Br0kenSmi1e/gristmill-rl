@@ -1,11 +1,20 @@
 import pytest
+import numpy as np
 
 from gristmill_symbolics.direct_optimizer.converter import (
     _definitions_to_text,
     computation_to_source_text,
     computation_to_target_text,
     source_text_to_snapshot,
+    target_text_to_computation,
     target_text_to_definitions,
+)
+from gristmill_symbolics.direct_optimizer.tokens import (
+    KIND,
+    SCALAR_TYPE,
+    decode_token_row_to_text,
+    encode_text,
+    pad_tokens,
 )
 from tests.direct_optimizer.fixtures import source_comp
 
@@ -224,3 +233,65 @@ def test_source_parser_rejects_unknown_symmetry_action():
 def test_source_parser_rejects_unclosed_tensor():
     with pytest.raises(ValueError, match="unclosed tensor"):
         source_text_to_snapshot("tensor id tensor_id:0")
+
+
+def test_target_reconstruction_copies_input_envelope_and_registers_new_bases():
+    x = source_comp()
+    target_text = "\n".join(
+        [
+            "def base tensor_id:9",
+            "ext id index_id:0 range range_id:0",
+            "term",
+            "coeff numer coeff_num:1 denom coeff_den:1",
+            "factor tensor tensor_id:0",
+            "index index_id:0",
+            "endfactor",
+            "endterm",
+            "enddef",
+        ]
+    )
+
+    candidate = target_text_to_computation(x, target_text)
+    snapshot = candidate.snapshot()
+
+    assert snapshot["ranges"] == x.snapshot()["ranges"]
+    assert {"id": 0, "symmetry": [{"perm": [0], "action": "Identity"}]} in snapshot[
+        "tensors"
+    ]
+    assert {"id": 9, "symmetry": []} in snapshot["tensors"]
+    assert snapshot["definitions"][0]["base"] == 9
+
+
+def test_target_reconstruction_rejects_unknown_factor_tensor():
+    x = source_comp()
+    target_text = "\n".join(
+        [
+            "def base tensor_id:9",
+            "ext id index_id:0 range range_id:0",
+            "term",
+            "coeff numer coeff_num:1 denom coeff_den:1",
+            "factor tensor tensor_id:99",
+            "index index_id:0",
+            "endfactor",
+            "endterm",
+            "enddef",
+        ]
+    )
+
+    with pytest.raises(ValueError, match="unknown tensor_id:99"):
+        target_text_to_computation(x, target_text)
+
+
+def test_structured_token_round_trip_preserves_valid_dsl_text():
+    text = computation_to_target_text(source_comp())
+
+    tokens = encode_text(text)
+    padded = pad_tokens(tokens, length=len(tokens["kind"]) + 3)
+    decoded = decode_token_row_to_text(
+        {key: value[: len(tokens["kind"])] for key, value in padded.items()}
+    )
+
+    assert decoded == text
+    assert KIND["KEYWORD"] in set(np.asarray(tokens["kind"]).tolist())
+    assert SCALAR_TYPE["tensor_id"] in set(np.asarray(tokens["scalar_type"]).tolist())
+    assert SCALAR_TYPE["index_id"] in set(np.asarray(tokens["scalar_type"]).tolist())

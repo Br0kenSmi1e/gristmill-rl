@@ -60,6 +60,73 @@ def target_text_to_definitions(text: str) -> list[dict[str, Any]]:
     return parser.parse_definitions_until_end()
 
 
+def target_text_to_computation(
+    x: TensorComputation,
+    target_text: str,
+) -> TensorComputation:
+    definitions = target_text_to_definitions(target_text)
+    x_snapshot = x.snapshot()
+    tensors_by_id = {int(tensor["id"]): tensor for tensor in x_snapshot["tensors"]}
+    known_tensors = set(tensors_by_id)
+    generated_bases = {int(definition["base"]) for definition in definitions}
+    for base in sorted(generated_bases - known_tensors):
+        tensors_by_id[base] = {"id": base, "symmetry": []}
+        known_tensors.add(base)
+    for definition in definitions:
+        for term in definition["terms"]:
+            for factor in term["factors"]:
+                tensor_id = int(factor["tensor"])
+                if tensor_id not in known_tensors:
+                    raise ValueError(f"factor references unknown tensor_id:{tensor_id}")
+    max_tensor_id = max(tensors_by_id, default=-1)
+    tensors = [
+        tensors_by_id.get(tensor_id, {"id": tensor_id, "symmetry": []})
+        for tensor_id in range(max_tensor_id + 1)
+    ]
+    snapshot = {
+        "ranges": list(x_snapshot["ranges"]),
+        "tensors": tensors,
+        "definitions": _definitions_to_constructor_json(definitions),
+    }
+    try:
+        return TensorComputation.from_json_string(json.dumps(snapshot))
+    except Exception as exc:
+        raise ValueError(
+            "target reconstruction failed TensorComputation validation"
+        ) from exc
+
+
+def _definitions_to_constructor_json(
+    definitions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    constructor_definitions = []
+    for definition in _sequence(definitions, "definitions"):
+        _expect_mapping_keys(definition, {"base", "ext_indices", "terms"}, "definition")
+        constructor_terms = []
+        for term in _sequence(definition["terms"], "definition.terms"):
+            _expect_mapping_keys(term, {"coeff", "sum_indices", "factors"}, "term")
+            coeff = _coeff_value(term["coeff"])
+            constructor_terms.append(
+                {
+                    "coeff": [coeff["numer"], coeff["denom"]],
+                    "sum_indices": list(
+                        _sequence(term["sum_indices"], "term.sum_indices")
+                    ),
+                    "factors": list(_sequence(term["factors"], "term.factors")),
+                }
+            )
+        constructor_definitions.append(
+            {
+                "base": definition["base"],
+                "ext_indices": list(
+                    _sequence(definition["ext_indices"], "definition.ext_indices")
+                ),
+                "terms": constructor_terms,
+            }
+        )
+    return constructor_definitions
+
+
 def _source_snapshot_to_text(snapshot: dict[str, Any]) -> str:
     _expect_mapping_keys(snapshot, {"ranges", "tensors", "definitions"}, "snapshot")
     lines: list[str] = []
