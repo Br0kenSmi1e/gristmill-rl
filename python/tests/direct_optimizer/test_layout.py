@@ -1,5 +1,7 @@
 import ast
 import importlib
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -66,6 +68,25 @@ def test_direct_optimizer_package_imports():
         "optimize_from_checkpoint",
         "optimize_with_model",
     )
+
+
+def test_sample_module_help_runs_without_runtime_warning():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-W",
+            "error",
+            "-m",
+            "gristmill_symbolics.direct_optimizer.sample",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
 
 
 def test_orbax_checkpoint_is_declared_as_direct_dependency():
