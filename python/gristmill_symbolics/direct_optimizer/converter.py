@@ -38,6 +38,7 @@ TARGET_RECORD_STARTS = {
     "endterm",
     "enddef",
 }
+VALID_SYM_ACTIONS = {"Identity", "Negate"}
 
 
 def computation_to_source_text(comp: TensorComputation) -> str:
@@ -80,14 +81,14 @@ def _definitions_to_text(definitions: Sequence[dict[str, Any]]) -> str:
 
 def _range_to_lines(range_info: dict[str, Any]) -> list[str]:
     _expect_mapping_keys(range_info, {"id", "size"}, "range")
-    range_id = _int_value(range_info["id"], "range.id")
-    size = _int_value(range_info["size"], "range.size")
+    range_id = _nonnegative_int_value(range_info["id"], "range.id")
+    size = _nonnegative_int_value(range_info["size"], "range.size")
     return [f"range id range_id:{range_id} size dim_size:{size}"]
 
 
 def _tensor_to_lines(tensor: dict[str, Any]) -> list[str]:
     _expect_mapping_keys(tensor, {"id", "symmetry"}, "tensor")
-    tensor_id = _int_value(tensor["id"], "tensor.id")
+    tensor_id = _nonnegative_int_value(tensor["id"], "tensor.id")
     lines = [f"tensor id tensor_id:{tensor_id}"]
     for symmetry in _sequence(tensor["symmetry"], "tensor.symmetry"):
         lines.extend(_symmetry_to_lines(symmetry))
@@ -97,12 +98,12 @@ def _tensor_to_lines(tensor: dict[str, Any]) -> list[str]:
 
 def _definition_to_lines(definition: dict[str, Any]) -> list[str]:
     _expect_mapping_keys(definition, {"base", "ext_indices", "terms"}, "definition")
-    base = _int_value(definition["base"], "definition.base")
+    base = _nonnegative_int_value(definition["base"], "definition.base")
     lines = [f"def base tensor_id:{base}"]
     for ext_index in _sequence(definition["ext_indices"], "definition.ext_indices"):
         _expect_mapping_keys(ext_index, {"id", "range"}, "ext index")
-        index_id = _int_value(ext_index["id"], "ext index.id")
-        range_id = _int_value(ext_index["range"], "ext index.range")
+        index_id = _nonnegative_int_value(ext_index["id"], "ext index.id")
+        range_id = _nonnegative_int_value(ext_index["range"], "ext index.range")
         lines.append(f"ext id index_id:{index_id} range range_id:{range_id}")
     for term in _sequence(definition["terms"], "definition.terms"):
         lines.extend(_term_to_lines(term))
@@ -119,8 +120,8 @@ def _term_to_lines(term: dict[str, Any]) -> list[str]:
     ]
     for sum_index in _sequence(term["sum_indices"], "term.sum_indices"):
         _expect_mapping_keys(sum_index, {"id", "range"}, "sum index")
-        index_id = _int_value(sum_index["id"], "sum index.id")
-        range_id = _int_value(sum_index["range"], "sum index.range")
+        index_id = _nonnegative_int_value(sum_index["id"], "sum index.id")
+        range_id = _nonnegative_int_value(sum_index["range"], "sum index.range")
         lines.append(f"sum id index_id:{index_id} range range_id:{range_id}")
     for factor in _sequence(term["factors"], "term.factors"):
         lines.extend(_factor_to_lines(factor))
@@ -130,10 +131,12 @@ def _term_to_lines(term: dict[str, Any]) -> list[str]:
 
 def _factor_to_lines(factor: dict[str, Any]) -> list[str]:
     _expect_mapping_keys(factor, {"tensor", "indices"}, "factor")
-    tensor_id = _int_value(factor["tensor"], "factor.tensor")
+    tensor_id = _nonnegative_int_value(factor["tensor"], "factor.tensor")
     lines = [f"factor tensor tensor_id:{tensor_id}"]
     for index_id in _sequence(factor["indices"], "factor.indices"):
-        lines.append(f"index index_id:{_int_value(index_id, 'factor.index')}")
+        lines.append(
+            f"index index_id:{_nonnegative_int_value(index_id, 'factor.index')}"
+        )
     lines.append("endfactor")
     return lines
 
@@ -141,9 +144,13 @@ def _factor_to_lines(factor: dict[str, Any]) -> list[str]:
 def _symmetry_to_lines(symmetry: dict[str, Any]) -> list[str]:
     _expect_mapping_keys(symmetry, {"perm", "action"}, "symmetry")
     action = _string_value(symmetry["action"], "symmetry.action")
+    if action not in VALID_SYM_ACTIONS:
+        raise ValueError(
+            f"expected symmetry.action to be one of {sorted(VALID_SYM_ACTIONS)}"
+        )
     lines = [f"symmetry action sym_action:{action}"]
     for axis in _sequence(symmetry["perm"], "symmetry.perm"):
-        lines.append(f"perm axis:{_int_value(axis, 'symmetry.perm')}")
+        lines.append(f"perm axis:{_nonnegative_int_value(axis, 'symmetry.perm')}")
     lines.append("endsymmetry")
     return lines
 
@@ -153,12 +160,12 @@ def _coeff_value(coeff: Any) -> dict[str, int]:
         _expect_mapping_keys(coeff, {"numer", "denom"}, "coeff")
         return {
             "numer": _int_value(coeff["numer"], "coeff.numer"),
-            "denom": _int_value(coeff["denom"], "coeff.denom"),
+            "denom": _positive_int_value(coeff["denom"], "coeff.denom"),
         }
     if _is_sequence(coeff) and len(coeff) == 2:
         return {
             "numer": _int_value(coeff[0], "coeff.numer"),
-            "denom": _int_value(coeff[1], "coeff.denom"),
+            "denom": _positive_int_value(coeff[1], "coeff.denom"),
         }
     raise ValueError(
         f"expected coeff object or pair, got {json.dumps(coeff, default=str)}"
@@ -198,6 +205,20 @@ def _int_value(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"expected {context} to be an integer")
     return value
+
+
+def _nonnegative_int_value(value: Any, context: str) -> int:
+    parsed = _int_value(value, context)
+    if parsed < 0:
+        raise ValueError(f"expected {context} to be nonnegative")
+    return parsed
+
+
+def _positive_int_value(value: Any, context: str) -> int:
+    parsed = _int_value(value, context)
+    if parsed <= 0:
+        raise ValueError(f"expected {context} to be positive")
+    return parsed
 
 
 def _string_value(value: Any, context: str) -> str:
@@ -256,16 +277,16 @@ class _Parser:
         record = self._take("range")
         self._expect_count(record, 5, "range")
         self._expect_literal(record, 1, "id")
-        range_id = self._typed_int(record.parts[2], "range_id", record)
+        range_id = self._typed_nonnegative_int(record.parts[2], "range_id", record)
         self._expect_literal(record, 3, "size")
-        size = self._typed_int(record.parts[4], "dim_size", record)
+        size = self._typed_nonnegative_int(record.parts[4], "dim_size", record)
         return {"id": range_id, "size": size}
 
     def _parse_tensor(self) -> dict[str, Any]:
         record = self._take("tensor")
         self._expect_count(record, 3, "tensor")
         self._expect_literal(record, 1, "id")
-        tensor_id = self._typed_int(record.parts[2], "tensor_id", record)
+        tensor_id = self._typed_nonnegative_int(record.parts[2], "tensor_id", record)
         symmetry = []
         while not self._done() and not self._peek("endtensor"):
             if self._peek("symmetry"):
@@ -287,6 +308,11 @@ class _Parser:
         self._expect_count(record, 3, "symmetry")
         self._expect_literal(record, 1, "action")
         action = self._typed_string(record.parts[2], "sym_action", record)
+        if action not in VALID_SYM_ACTIONS:
+            raise ValueError(
+                f"line {record.line_number}: expected sym_action to be one of "
+                f"{sorted(VALID_SYM_ACTIONS)}, got {action}"
+            )
         perm = []
         while not self._done() and not self._peek("endsymmetry"):
             if self._peek("perm"):
@@ -306,13 +332,13 @@ class _Parser:
     def _parse_perm(self) -> int:
         record = self._take("perm")
         self._expect_count(record, 2, "perm")
-        return self._typed_int(record.parts[1], "axis", record)
+        return self._typed_nonnegative_int(record.parts[1], "axis", record)
 
     def _parse_definition(self) -> dict[str, Any]:
         record = self._take("def")
         self._expect_count(record, 3, "def")
         self._expect_literal(record, 1, "base")
-        base = self._typed_int(record.parts[2], "tensor_id", record)
+        base = self._typed_nonnegative_int(record.parts[2], "tensor_id", record)
         ext_indices = []
         terms = []
         seen_term = False
@@ -381,14 +407,14 @@ class _Parser:
         self._expect_literal(record, 1, "numer")
         numer = self._typed_int(record.parts[2], "coeff_num", record)
         self._expect_literal(record, 3, "denom")
-        denom = self._typed_int(record.parts[4], "coeff_den", record)
+        denom = self._typed_positive_int(record.parts[4], "coeff_den", record)
         return {"numer": numer, "denom": denom}
 
     def _parse_factor(self) -> dict[str, Any]:
         record = self._take("factor")
         self._expect_count(record, 3, "factor")
         self._expect_literal(record, 1, "tensor")
-        tensor_id = self._typed_int(record.parts[2], "tensor_id", record)
+        tensor_id = self._typed_nonnegative_int(record.parts[2], "tensor_id", record)
         indices = []
         while not self._done() and not self._peek("endfactor"):
             if self._peek("index"):
@@ -408,15 +434,15 @@ class _Parser:
     def _parse_index(self) -> int:
         record = self._take("index")
         self._expect_count(record, 2, "index")
-        return self._typed_int(record.parts[1], "index_id", record)
+        return self._typed_nonnegative_int(record.parts[1], "index_id", record)
 
     def _parse_index_range(self, keyword: str) -> dict[str, int]:
         record = self._take(keyword)
         self._expect_count(record, 5, keyword)
         self._expect_literal(record, 1, "id")
-        index_id = self._typed_int(record.parts[2], "index_id", record)
+        index_id = self._typed_nonnegative_int(record.parts[2], "index_id", record)
         self._expect_literal(record, 3, "range")
-        range_id = self._typed_int(record.parts[4], "range_id", record)
+        range_id = self._typed_nonnegative_int(record.parts[4], "range_id", record)
         return {"id": index_id, "range": range_id}
 
     def _done(self) -> bool:
@@ -476,6 +502,34 @@ class _Parser:
             raise ValueError(
                 f"line {record.line_number}: malformed {expected}: {raw_value}"
             ) from exc
+
+    def _typed_nonnegative_int(
+        self,
+        token: str,
+        expected: str,
+        record: _Record,
+    ) -> int:
+        value = self._typed_int(token, expected, record)
+        if value < 0:
+            raise ValueError(
+                f"line {record.line_number}: expected nonnegative {expected}, "
+                f"got {value}"
+            )
+        return value
+
+    def _typed_positive_int(
+        self,
+        token: str,
+        expected: str,
+        record: _Record,
+    ) -> int:
+        value = self._typed_int(token, expected, record)
+        if value <= 0:
+            raise ValueError(
+                f"line {record.line_number}: expected positive {expected}, "
+                f"got {value}"
+            )
+        return value
 
     def _typed_string(self, token: str, expected: str, record: _Record) -> str:
         prefix = expected + ":"
