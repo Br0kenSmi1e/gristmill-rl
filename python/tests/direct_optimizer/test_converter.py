@@ -15,8 +15,17 @@ from gristmill_symbolics.direct_optimizer.tokens import (
     decode_token_row_to_text,
     encode_text,
     pad_tokens,
+    repeat_token_row,
 )
 from tests.direct_optimizer.fixtures import source_comp
+
+INTEGER_TOKEN_FIELDS = ("kind", "keyword", "scalar_type", "scalar_value")
+
+
+def _assert_structured_token_dtypes(tokens):
+    for field in INTEGER_TOKEN_FIELDS:
+        assert tokens[field].dtype == np.dtype(np.int32)
+    assert tokens["mask"].dtype == np.dtype(np.bool_)
 
 
 def test_source_text_round_trips_full_snapshot():
@@ -295,3 +304,15 @@ def test_structured_token_round_trip_preserves_valid_dsl_text():
     assert KIND["KEYWORD"] in set(np.asarray(tokens["kind"]).tolist())
     assert SCALAR_TYPE["tensor_id"] in set(np.asarray(tokens["scalar_type"]).tolist())
     assert SCALAR_TYPE["index_id"] in set(np.asarray(tokens["scalar_type"]).tolist())
+
+
+def test_structured_token_rows_use_int32_integer_fields_and_bool_masks():
+    text = computation_to_target_text(source_comp())
+
+    tokens = encode_text(text)
+    padded = pad_tokens(tokens, length=len(tokens["kind"]) + 3)
+    repeated = repeat_token_row(padded, batch_size=2)
+
+    _assert_structured_token_dtypes(tokens)
+    _assert_structured_token_dtypes(padded)
+    _assert_structured_token_dtypes(repeated)

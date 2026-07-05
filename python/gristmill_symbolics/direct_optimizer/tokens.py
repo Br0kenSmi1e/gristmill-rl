@@ -235,10 +235,10 @@ def pad_tokens(tokens: Mapping[str, Any], *, length: int) -> dict[str, np.ndarra
             f"{current_length} to shorter length {length}"
         )
     padded = {
-        "kind": np.full(length, KIND["PAD"], dtype=np.int64),
-        "keyword": np.full(length, SENTINEL, dtype=np.int64),
-        "scalar_type": np.full(length, SENTINEL, dtype=np.int64),
-        "scalar_value": np.full(length, SENTINEL, dtype=np.int64),
+        "kind": np.full(length, KIND["PAD"], dtype=np.int32),
+        "keyword": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_type": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_value": np.full(length, SENTINEL, dtype=np.int32),
         "mask": np.zeros(length, dtype=bool),
     }
     for field in TOKEN_FIELDS:
@@ -373,10 +373,10 @@ def _scalar_text(scalar_type: str, scalar_value: int | str | None) -> str:
 def _encode_logical_tokens(tokens: list[LogicalToken]) -> dict[str, np.ndarray]:
     length = len(tokens)
     encoded = {
-        "kind": np.full(length, SENTINEL, dtype=np.int64),
-        "keyword": np.full(length, SENTINEL, dtype=np.int64),
-        "scalar_type": np.full(length, SENTINEL, dtype=np.int64),
-        "scalar_value": np.full(length, SENTINEL, dtype=np.int64),
+        "kind": np.full(length, SENTINEL, dtype=np.int32),
+        "keyword": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_type": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_value": np.full(length, SENTINEL, dtype=np.int32),
         "mask": np.ones(length, dtype=bool),
     }
     for position, token in enumerate(tokens):
