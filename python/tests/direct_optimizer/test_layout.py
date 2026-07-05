@@ -14,14 +14,52 @@ FORBIDDEN_IMPORTS = {
 }
 
 
+def _package_name_for(path: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(ROOT)
+    except ValueError:
+        return None
+
+    if relative.parts[:2] != ("gristmill_symbolics", "direct_optimizer"):
+        return None
+
+    parts = relative.with_suffix("").parts
+    if relative.name == "__init__.py":
+        package_parts = parts
+    else:
+        package_parts = parts[:-1]
+    return ".".join(package_parts)
+
+
+def _resolved_import_from_module(path: Path, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+
+    package_name = _package_name_for(path)
+    if package_name is None:
+        return node.module
+
+    package_parts = package_name.split(".")
+    if node.level > len(package_parts):
+        return node.module
+
+    module_parts = package_parts[: len(package_parts) - node.level + 1]
+    if node.module:
+        module_parts.extend(node.module.split("."))
+    return ".".join(module_parts)
+
+
 def _imported_modules(path: Path) -> set[str]:
     tree = ast.parse(path.read_text())
     modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolved_import_from_module(path, node)
+            if module:
+                modules.add(module)
+                modules.update(f"{module}.{alias.name}" for alias in node.names)
     return modules
 
 
@@ -35,6 +73,34 @@ def test_orbax_checkpoint_is_declared_as_direct_dependency():
     pyproject = (ROOT / "pyproject.toml").read_text()
 
     assert '"orbax-checkpoint>=0.11"' in pyproject
+
+
+def test_imported_modules_records_import_from_aliases(tmp_path):
+    path = tmp_path / "imports.py"
+    path.write_text(
+        "\n".join(
+            [
+                "from gristmill_symbolics.model import tokenizer",
+                "from gristmill_symbolics.trainer import reinforce",
+                "from gristmill_symbolics.cli import checkpoint",
+            ]
+        )
+    )
+
+    assert {
+        "gristmill_symbolics.model.tokenizer",
+        "gristmill_symbolics.trainer.reinforce",
+        "gristmill_symbolics.cli.checkpoint",
+    }.issubset(_imported_modules(path))
+
+
+def test_imported_modules_resolves_relative_import_from_aliases():
+    path = PACKAGE / "_temp_boundary_import.py"
+    path.write_text("from ..model import tokenizer")
+    try:
+        assert "gristmill_symbolics.model.tokenizer" in _imported_modules(path)
+    finally:
+        path.unlink()
 
 
 def test_direct_optimizer_modules_do_not_import_forbidden_training_paths():
