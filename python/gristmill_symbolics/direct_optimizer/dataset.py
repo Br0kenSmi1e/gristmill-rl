@@ -208,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     generate_parser = subparsers.add_parser("generate")
     generate_parser.add_argument("--input", required=True, type=Path)
-    generate_parser.add_argument("--outputs", required=True, type=_parse_outputs)
+    generate_parser.add_argument("--outputs", required=True, nargs="+")
     generate_parser.add_argument("--raw-output", required=True, type=Path)
     generate_parser.add_argument("--seed", required=True, type=int)
     generate_parser.add_argument("--trajectories", required=True, type=int)
@@ -240,8 +240,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         input_comp = TensorComputation.from_json_string(
             args.input.read_text(encoding="utf-8")
         )
+        outputs = _parse_outputs(" ".join(args.outputs))
         records = generate_raw_candidates(
-            [(input_comp, args.outputs)],
+            [(input_comp, outputs)],
             GenerationConfig(
                 seed=args.seed,
                 trajectories_per_input=args.trajectories,

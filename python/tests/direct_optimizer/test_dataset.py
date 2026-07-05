@@ -118,6 +118,46 @@ def test_dataset_build_splits_cli_processes_each_split_independently(tmp_path):
         assert all(math.isclose(total, 1.0) for total in groups.values())
 
 
+def test_dataset_generate_cli_accepts_whitespace_separated_outputs(
+    monkeypatch,
+    tmp_path,
+):
+    input_path = tmp_path / "seed.json"
+    raw_path = tmp_path / "raw.jsonl"
+    input_path.write_text(actionable_json(), encoding="utf-8")
+    captured = {}
+
+    def fake_generate_raw_candidates(inputs, config):
+        captured["outputs"] = inputs[0][1]
+        captured["config"] = config
+        return []
+
+    monkeypatch.setattr(dataset, "generate_raw_candidates", fake_generate_raw_candidates)
+
+    exit_code = dataset_main(
+        [
+            "generate",
+            "--input",
+            str(input_path),
+            "--outputs",
+            "1",
+            "3",
+            "--raw-output",
+            str(raw_path),
+            "--seed",
+            "0",
+            "--trajectories",
+            "1",
+            "--max-steps",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured["outputs"] == [1, 3]
+    assert raw_path.read_text(encoding="utf-8") == ""
+
+
 def test_dataset_module_help_smoke():
     result = subprocess.run(
         [sys.executable, "-m", "gristmill_symbolics.direct_optimizer.dataset", "--help"],
