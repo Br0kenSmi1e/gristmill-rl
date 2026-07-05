@@ -61,7 +61,11 @@ def _imported_modules(path: Path) -> set[str]:
 def test_direct_optimizer_package_imports():
     package = importlib.import_module("gristmill_symbolics.direct_optimizer")
 
-    assert package.__all__ == ()
+    assert package.__all__ == (
+        "DirectOptimizerTransformer",
+        "optimize_from_checkpoint",
+        "optimize_with_model",
+    )
 
 
 def test_orbax_checkpoint_is_declared_as_direct_dependency():

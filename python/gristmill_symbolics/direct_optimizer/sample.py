@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import json
 import math
+from pathlib import Path
 from typing import Any
 
 import jax
@@ -8,6 +11,7 @@ import jax.numpy as jnp
 
 from gristmill_symbolics import TensorComputation, equivalent_computations
 
+from .checkpoint import load_model_for_inference
 from .converter import (
     computation_to_source_text,
     target_text_to_computation,
@@ -95,6 +99,69 @@ def optimize_with_model(
     return best_candidate, metrics
 
 
+def optimize_from_checkpoint(
+    checkpoint_path: str | Path,
+    input_computation: TensorComputation,
+    outputs: list[int],
+    *,
+    num_samples: int,
+    sample_batch_size: int,
+    source_len: int | None = None,
+    target_len: int | None = None,
+    temperature: float = 1.0,
+    seed: int = 0,
+) -> tuple[TensorComputation | None, dict[str, Any]]:
+    model, metadata = load_model_for_inference(checkpoint_path)
+    model_kwargs = metadata["model_kwargs"]
+    resolved_source_len = _resolve_checkpoint_shape(
+        model_kwargs,
+        "source_len",
+        source_len,
+    )
+    resolved_target_len = _resolve_checkpoint_shape(
+        model_kwargs,
+        "target_len",
+        target_len,
+    )
+
+    return optimize_with_model(
+        model,
+        None,
+        input_computation,
+        outputs,
+        num_samples=num_samples,
+        sample_batch_size=sample_batch_size,
+        source_len=resolved_source_len,
+        target_len=resolved_target_len,
+        temperature=temperature,
+        seed=seed,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+
+    input_computation = TensorComputation.load_json(args.input)
+    outputs = _parse_outputs(args.outputs)
+    candidate, metrics = optimize_from_checkpoint(
+        args.checkpoint,
+        input_computation,
+        outputs,
+        num_samples=args.samples,
+        sample_batch_size=args.sample_batch_size,
+        source_len=args.source_len,
+        target_len=args.target_len,
+        temperature=args.temperature,
+        seed=args.seed,
+    )
+    print(json.dumps(metrics, sort_keys=True))
+    if candidate is None:
+        return 1
+    candidate.write_json(args.output)
+    return 0
+
+
 def _candidate_from_tokens(
     token_row: dict[str, Any],
     input_computation: TensorComputation,
@@ -137,6 +204,62 @@ def _candidate_from_tokens(
     return candidate, log_flops
 
 
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gristmill_symbolics.direct_optimizer.sample",
+    )
+    parser.add_argument("--checkpoint", required=True, type=Path)
+    parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--outputs", required=True)
+    parser.add_argument("--samples", required=True, type=_positive_int_arg)
+    parser.add_argument(
+        "--sample-batch-size",
+        required=True,
+        type=_positive_int_arg,
+    )
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--source-len", type=_positive_int_arg)
+    parser.add_argument("--target-len", type=_positive_int_arg)
+    parser.add_argument("--seed", type=int, default=0)
+    return parser
+
+
+def _parse_outputs(value: str) -> list[int]:
+    try:
+        outputs = [int(part) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise ValueError("outputs must be comma-separated integer ids") from exc
+    _validate_outputs(outputs)
+    return outputs
+
+
+def _resolve_checkpoint_shape(
+    model_kwargs: dict[str, Any],
+    key: str,
+    provided: int | None,
+) -> int:
+    checkpoint_value = int(model_kwargs[key])
+    if provided is None:
+        return checkpoint_value
+    if provided != checkpoint_value:
+        raise ValueError(
+            f"mismatched {key}: checkpoint has {checkpoint_value}, "
+            f"caller provided {provided}"
+        )
+    return provided
+
+
+def _positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _validate_positive_int(value: Any, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -159,3 +282,7 @@ def _validate_outputs(outputs: Any) -> None:
         if output in seen:
             raise ValueError("outputs must not contain duplicates")
         seen.add(output)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

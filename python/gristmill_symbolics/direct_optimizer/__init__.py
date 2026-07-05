@@ -1,3 +1,10 @@
 """Self-contained direct optimizer package."""
 
-__all__ = ()
+from .model import DirectOptimizerTransformer
+from .sample import optimize_from_checkpoint, optimize_with_model
+
+__all__ = (
+    "DirectOptimizerTransformer",
+    "optimize_from_checkpoint",
+    "optimize_with_model",
+)

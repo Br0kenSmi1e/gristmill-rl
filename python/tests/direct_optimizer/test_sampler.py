@@ -1,10 +1,20 @@
+import json
+
 import jax
 import jax.numpy as jnp
 import pytest
+from flax import nnx
 
+from gristmill_symbolics.direct_optimizer.checkpoint import save_checkpoint
 from gristmill_symbolics.direct_optimizer.converter import computation_to_target_text
-from gristmill_symbolics.direct_optimizer.sample import optimize_with_model
+from gristmill_symbolics.direct_optimizer.model import DirectOptimizerTransformer
+from gristmill_symbolics.direct_optimizer.sample import (
+    main as sample_main,
+    optimize_from_checkpoint,
+    optimize_with_model,
+)
 from gristmill_symbolics.direct_optimizer.tokens import encode_text, pad_tokens
+from gristmill_symbolics.direct_optimizer.trainer import DirectOptimizerTrainer
 from tests.direct_optimizer.fixtures import source_comp
 
 
@@ -221,3 +231,96 @@ def test_sampler_returns_none_when_no_valid_candidates(monkeypatch):
         "valid_samples": 0,
         "best_log_flops": None,
     }
+
+
+def _checkpoint_model(seed: int = 4) -> DirectOptimizerTransformer:
+    return DirectOptimizerTransformer(
+        source_len=128,
+        target_len=64,
+        scalar_value_min=-128,
+        scalar_value_max=128,
+        d_model=8,
+        num_layers=1,
+        num_heads=1,
+        rngs=nnx.Rngs(seed),
+    )
+
+
+def _save_checkpoint(path, model: DirectOptimizerTransformer) -> None:
+    trainer = DirectOptimizerTrainer(batch_size=2)
+    optimizer = trainer.init_optimizer(model)
+    save_checkpoint(
+        path,
+        model=model,
+        optimizer=optimizer,
+        trainer=trainer,
+        epoch=0,
+        updates=0,
+        last_train_loss=1.0,
+    )
+
+
+def test_optimize_from_checkpoint_rejects_static_shape_mismatch(tmp_path):
+    model = _checkpoint_model()
+    _save_checkpoint(tmp_path, model)
+
+    with pytest.raises(ValueError, match="source_len"):
+        optimize_from_checkpoint(
+            tmp_path,
+            source_comp(),
+            [1],
+            num_samples=1,
+            sample_batch_size=1,
+            source_len=64,
+            target_len=64,
+            temperature=1.0,
+            seed=0,
+        )
+
+
+def test_sample_cli_writes_output_for_valid_monkeypatched_candidate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "optimized.json"
+    ckpt_path = tmp_path / "ckpt"
+    source_comp().write_json(input_path)
+    model = _checkpoint_model()
+    _save_checkpoint(ckpt_path, model)
+
+    valid = _token_row(computation_to_target_text(source_comp()))
+    fake = FakeModel([valid])
+    monkeypatch.setattr(
+        "gristmill_symbolics.direct_optimizer.sample.load_model_for_inference",
+        lambda path: (fake, {"model_kwargs": model.model_kwargs()}),
+    )
+    monkeypatch.setattr(
+        "gristmill_symbolics.direct_optimizer.sample.sample_tokens",
+        fake_sample_tokens,
+    )
+
+    exit_code = sample_main(
+        [
+            "--checkpoint",
+            str(ckpt_path),
+            "--input",
+            str(input_path),
+            "--outputs",
+            "1",
+            "--samples",
+            "1",
+            "--sample-batch-size",
+            "1",
+            "--temperature",
+            "1.0",
+            "--output",
+            str(output_path),
+        ]
+    )
+
+    metrics = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert metrics["valid_samples"] == 1
+    assert output_path.exists()
