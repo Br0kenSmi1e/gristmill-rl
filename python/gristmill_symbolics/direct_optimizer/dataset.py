@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from gristmill_symbolics import TensorComputation, equivalent_computations
+from gristmill_symbolics import (
+    GristmillSymbolicsError,
+    TensorComputation,
+    equivalent_computations,
+)
 
 from .converter import computation_to_source_text, computation_to_target_text
 
@@ -104,7 +108,7 @@ def build_processed_dataset(
     for raw_record in raw_records:
         try:
             row = _processed_row_without_weight(raw_record, verify=config.verify)
-        except (KeyError, TypeError, ValueError):
+        except (GristmillSymbolicsError, KeyError, TypeError, ValueError):
             continue
 
         input_key = row["input_key"]

@@ -76,6 +76,28 @@ def test_build_processed_dataset_skips_malformed_outputs(bad_outputs):
     )
 
 
+def test_build_processed_dataset_skips_invalid_input_computation():
+    low_json, _ = two_candidate_jsons()
+
+    assert (
+        build_processed_dataset(
+            [_raw_record(candidate_json=low_json, input_computation="{")],
+            BuildConfig(),
+        )
+        == []
+    )
+
+
+def test_build_processed_dataset_skips_invalid_candidate_computation():
+    assert (
+        build_processed_dataset(
+            [_raw_record(candidate_json="{")],
+            BuildConfig(),
+        )
+        == []
+    )
+
+
 def test_duplicate_candidates_keep_lowest_cost_and_single_weight():
     low_json, _ = two_candidate_jsons()
     rows = build_processed_dataset(
