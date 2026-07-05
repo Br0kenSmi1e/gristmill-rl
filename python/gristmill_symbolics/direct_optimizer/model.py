@@ -20,26 +20,29 @@ from .tokens import (
 def make_decoder_inputs(
     target_tokens: Mapping[str, Any],
 ) -> tuple[dict[str, jax.Array], dict[str, jax.Array], jax.Array]:
-    target = _token_arrays(target_tokens)
+    target = _token_row(target_tokens)
     target_len = target["kind"].shape[0]
     real_length = int(jnp.sum(target["mask"]))
-    if real_length >= target_len:
-        raise ValueError("target has no room for EOS label")
+    if real_length < 2:
+        raise ValueError("encoded target row must contain at least BOS and EOS")
+    if int(target["kind"][0]) != KIND["BOS"]:
+        raise ValueError("encoded target row must start with BOS")
+    if int(target["kind"][real_length - 1]) != KIND["EOS"]:
+        raise ValueError("encoded target row must end with EOS")
 
     decoder_input = _pad_like(target_len)
     labels = _pad_like(target_len)
+    label_length = real_length - 1
 
-    decoder_input["kind"] = decoder_input["kind"].at[0].set(KIND["BOS"])
-    decoder_input["mask"] = decoder_input["mask"].at[0].set(True)
-    for field in TOKEN_FIELDS:
-        decoder_input[field] = decoder_input[field].at[1:].set(target[field][:-1])
-        labels[field] = labels[field].at[:real_length].set(target[field][:real_length])
-
-    labels["kind"] = labels["kind"].at[real_length].set(KIND["EOS"])
-    labels["keyword"] = labels["keyword"].at[real_length].set(SENTINEL)
-    labels["scalar_type"] = labels["scalar_type"].at[real_length].set(SENTINEL)
-    labels["scalar_value"] = labels["scalar_value"].at[real_length].set(SENTINEL)
-    labels["mask"] = labels["mask"].at[real_length].set(True)
+    for field in ("kind", "keyword", "scalar_type", "scalar_value"):
+        decoder_input[field] = decoder_input[field].at[:label_length].set(
+            target[field][:label_length]
+        )
+        labels[field] = labels[field].at[:label_length].set(
+            target[field][1:real_length]
+        )
+    decoder_input["mask"] = decoder_input["mask"].at[:label_length].set(True)
+    labels["mask"] = labels["mask"].at[:label_length].set(True)
 
     return decoder_input, labels, labels["mask"]
 
@@ -50,12 +53,16 @@ def token_log_probs(
 ) -> jax.Array:
     target = _token_arrays(target_tokens)
     scalar_value_logits = jnp.asarray(logits["scalar_value"])
-    scalar_value_min = int(logits["scalar_value_min"])
-    validate_scalar_bounds(
-        target_tokens,
-        scalar_value_min=scalar_value_min,
-        scalar_value_max=scalar_value_min + scalar_value_logits.shape[-1] - 1,
-    )
+    scalar_value_min = jnp.asarray(logits["scalar_value_min"])
+    if not _contains_tracer((target_tokens, logits["scalar_value_min"])):
+        concrete_scalar_value_min = int(scalar_value_min)
+        validate_scalar_bounds(
+            target_tokens,
+            scalar_value_min=concrete_scalar_value_min,
+            scalar_value_max=(
+                concrete_scalar_value_min + scalar_value_logits.shape[-1] - 1
+            ),
+        )
 
     kind = target["kind"]
     token_scores = _take_log_probs(jnp.asarray(logits["kind"]), kind)
@@ -108,6 +115,14 @@ def _token_arrays(tokens: Mapping[str, Any]) -> dict[str, jax.Array]:
     return arrays
 
 
+def _token_row(tokens: Mapping[str, Any]) -> dict[str, jax.Array]:
+    arrays = _token_arrays(tokens)
+    for field, array in arrays.items():
+        if array.ndim != 1:
+            raise ValueError(f"expected {field} to be a 1D encoded token row")
+    return arrays
+
+
 def _pad_like(length: int) -> dict[str, jax.Array]:
     return {
         "kind": jnp.full((length,), KIND["PAD"], dtype=jnp.int32),
@@ -125,6 +140,13 @@ def _take_log_probs(logits: jax.Array, indices: jax.Array) -> jax.Array:
 
 def _safe_index(indices: jax.Array, mask: jax.Array) -> jax.Array:
     return jnp.where(mask, indices, 0)
+
+
+def _contains_tracer(value: Any) -> bool:
+    return any(
+        isinstance(leaf, jax.core.Tracer)
+        for leaf in jax.tree_util.tree_leaves(value)
+    )
 
 
 _NNX_MODULE = nnx.Module

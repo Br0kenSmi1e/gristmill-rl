@@ -25,24 +25,62 @@ def _target_tokens(length=32):
     )
 
 
-def test_make_decoder_inputs_adds_bos_prefix_and_eos_label():
+def test_make_decoder_inputs_shifts_encoded_row_for_teacher_forcing():
     target = _target_tokens(length=32)
 
     decoder_input, labels, mask = make_decoder_inputs(target)
     real_length = int(sum(target["mask"]))
+    label_length = real_length - 1
 
     assert int(decoder_input["kind"][0]) == KIND["BOS"]
-    assert jnp.array_equal(decoder_input["kind"][1:], target["kind"][:-1])
-    assert jnp.array_equal(labels["kind"][:real_length], target["kind"][:real_length])
-    assert int(labels["kind"][real_length]) == KIND["EOS"]
-    assert bool(mask[real_length])
-    assert not bool(mask[real_length + 1])
+    assert jnp.array_equal(
+        decoder_input["kind"][:label_length],
+        target["kind"][:label_length],
+    )
+    assert jnp.array_equal(labels["kind"][:label_length], target["kind"][1:real_length])
+    assert int(jnp.sum(labels["kind"] == KIND["BOS"])) == 0
+    assert int(labels["kind"][label_length - 1]) == KIND["EOS"]
+    assert int(jnp.sum(labels["kind"] == KIND["EOS"])) == 1
+    assert int(jnp.sum(decoder_input["kind"] == KIND["BOS"])) == 1
+    assert int(jnp.sum(decoder_input["kind"] == KIND["EOS"])) == 0
+    assert jnp.array_equal(mask[:label_length], jnp.ones(label_length, dtype=bool))
+    assert not bool(mask[label_length])
 
 
-def test_make_decoder_inputs_rejects_full_target_without_eos_room():
+def test_make_decoder_inputs_accepts_full_encoded_row_ending_in_eos():
     target = _target_tokens(length=24)
 
-    with pytest.raises(ValueError, match="no room for EOS"):
+    decoder_input, labels, mask = make_decoder_inputs(target)
+    label_length = int(sum(target["mask"])) - 1
+
+    assert decoder_input["kind"].shape == target["kind"].shape
+    assert int(labels["kind"][label_length - 1]) == KIND["EOS"]
+    assert bool(mask[label_length - 1])
+    assert int(labels["kind"][-1]) == KIND["PAD"]
+    assert not bool(mask[-1])
+
+
+def test_make_decoder_inputs_rejects_rows_without_encoded_controls():
+    target = _target_tokens(length=32)
+    target["kind"][0] = KIND["KEYWORD"]
+
+    with pytest.raises(ValueError, match="BOS"):
+        make_decoder_inputs(target)
+
+    target = _target_tokens(length=32)
+    target["kind"][int(sum(target["mask"])) - 1] = KIND["KEYWORD"]
+
+    with pytest.raises(ValueError, match="EOS"):
+        make_decoder_inputs(target)
+
+
+def test_make_decoder_inputs_rejects_batched_rows():
+    target = {
+        field: jnp.asarray(value[None, :])
+        for field, value in _target_tokens(length=32).items()
+    }
+
+    with pytest.raises(ValueError, match="1D encoded token row"):
         make_decoder_inputs(target)
 
 
@@ -122,6 +160,28 @@ def test_token_log_probs_rejects_scalar_labels_outside_logits_bounds():
 
     with pytest.raises(ValueError, match="scalar_value out of bounds"):
         token_log_probs(logits, target)
+
+
+def test_token_log_probs_can_be_jitted_with_traced_scalar_value_min():
+    target = {
+        "kind": jnp.asarray([[KIND["SCALAR"]]]),
+        "keyword": jnp.asarray([[-1]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    logits = {
+        "kind": jnp.zeros((1, 1, len(KIND))),
+        "keyword": jnp.zeros((1, 1, len(KEYWORD))),
+        "scalar_type": jnp.zeros((1, 1, len(SCALAR_TYPE))),
+        "scalar_value": jnp.zeros((1, 1, 11)),
+        "scalar_value_min": jnp.asarray(-5),
+    }
+
+    values = jax.jit(token_log_probs)(logits, target)
+
+    assert values.shape == (1, 1)
+    assert jnp.isfinite(values[0, 0])
 
 
 def test_sequence_log_prob_ignores_padding_mask():
