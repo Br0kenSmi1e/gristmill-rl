@@ -268,6 +268,17 @@ def _tiny_train_args(dataset_path, checkpoint_path, **overrides):
     return args
 
 
+def _without_flag(args, flag):
+    filtered = []
+    iterator = iter(args)
+    for value in iterator:
+        if value == flag:
+            next(iterator)
+            continue
+        filtered.append(value)
+    return filtered
+
+
 def test_train_cli_runs_one_tiny_epoch_and_writes_checkpoint(tmp_path, capsys):
     dataset_path = tmp_path / "train.jsonl"
     checkpoint_path = tmp_path / "checkpoint"
@@ -377,3 +388,29 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
                 },
             )
         )
+
+
+def test_train_cli_resume_requires_explicit_seed(tmp_path):
+    dataset_path = tmp_path / "train.jsonl"
+    checkpoint_path = tmp_path / "checkpoint"
+    write_processed_jsonl(_processed_rows(4), dataset_path)
+
+    train_main(
+        _tiny_train_args(
+            dataset_path,
+            checkpoint_path,
+            **{"--seed": 123},
+        )
+    )
+
+    resume_args = _without_flag(
+        _tiny_train_args(
+            dataset_path,
+            checkpoint_path,
+            **{"--checkpoint-in": checkpoint_path},
+        ),
+        "--seed",
+    )
+
+    with pytest.raises(ValueError, match="seed.*checkpoint-in|checkpoint-in.*seed"):
+        train_main(resume_args)

@@ -38,10 +38,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.checkpoint_in is None:
+        seed = _seed_or_default(args)
         model_kwargs = _fresh_model_kwargs(args, parser)
         model = DirectOptimizerTransformer(
             **model_kwargs,
-            rngs=nnx.Rngs(args.seed),
+            rngs=nnx.Rngs(seed),
         )
         trainer = DirectOptimizerTrainer(
             batch_size=args.batch_size,
@@ -51,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         start_epoch = 0
         start_updates = 0
     else:
+        seed = _required_resume_seed(args)
         checkpoint = load_checkpoint(
             args.checkpoint_in,
             expected_model_kwargs=_complete_static_model_kwargs(args),
@@ -85,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         target_len=int(model_kwargs["target_len"]),
         scalar_value_min=int(model_kwargs["scalar_value_min"]),
         scalar_value_max=int(model_kwargs["scalar_value_max"]),
-        seed=args.seed,
+        seed=seed,
         checkpoint_out=args.checkpoint_out,
         start_epoch=start_epoch,
         start_updates=start_updates,
@@ -113,7 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--d-model", type=_positive_int)
     parser.add_argument("--num-layers", type=_positive_int)
     parser.add_argument("--num-heads", type=_positive_int)
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--dropout", type=float)
     parser.add_argument("--init-scale", type=float)
     return parser
@@ -168,6 +170,18 @@ def _learning_rate_or_default(args: argparse.Namespace) -> float:
     if args.learning_rate is None:
         return 1.0e-3
     return float(args.learning_rate)
+
+
+def _seed_or_default(args: argparse.Namespace) -> int:
+    if args.seed is None:
+        return 0
+    return int(args.seed)
+
+
+def _required_resume_seed(args: argparse.Namespace) -> int:
+    if args.seed is None:
+        raise ValueError("seed must be provided when using checkpoint-in")
+    return int(args.seed)
 
 
 def _complete_static_model_kwargs(
