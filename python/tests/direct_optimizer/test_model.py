@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -73,6 +74,36 @@ def test_token_log_probs_scores_relevant_heads_only():
     assert values[0, 2] == pytest.approx(-jnp.log(len(KIND)))
 
 
+def test_token_log_probs_uses_shifted_scalar_value_index():
+    target = {
+        "kind": jnp.asarray([[KIND["SCALAR"]]]),
+        "keyword": jnp.asarray([[-1]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[3]]),
+        "mask": jnp.asarray([[True]]),
+    }
+    scalar_value_logits = jnp.full((1, 1, 11), -20.0)
+    scalar_value_logits = scalar_value_logits.at[0, 0, 8].set(20.0)
+    logits = {
+        "kind": jnp.zeros((1, 1, len(KIND))),
+        "keyword": jnp.zeros((1, 1, len(KEYWORD))),
+        "scalar_type": jnp.zeros((1, 1, len(SCALAR_TYPE))),
+        "scalar_value": scalar_value_logits,
+        "scalar_value_min": -5,
+    }
+
+    values = token_log_probs(logits, target)
+
+    expected_scalar_value_logp = jax.nn.log_softmax(scalar_value_logits, axis=-1)[
+        0, 0, 8
+    ]
+    assert values[0, 0] == pytest.approx(
+        -jnp.log(len(KIND))
+        - jnp.log(len(SCALAR_TYPE))
+        + expected_scalar_value_logp
+    )
+
+
 def test_token_log_probs_rejects_scalar_labels_outside_logits_bounds():
     target = {
         "kind": jnp.asarray([[KIND["SCALAR"]]]),
@@ -94,18 +125,28 @@ def test_token_log_probs_rejects_scalar_labels_outside_logits_bounds():
 
 
 def test_sequence_log_prob_ignores_padding_mask():
-    target = _target_tokens(length=32)
-    _decoder_input, labels, mask = make_decoder_inputs(target)
-    batch_labels = {key: jnp.asarray(value[None, :]) for key, value in labels.items()}
+    labels = {
+        "kind": jnp.asarray([[KIND["KEYWORD"], KIND["KEYWORD"], KIND["PAD"]]]),
+        "keyword": jnp.asarray([[KEYWORD["def"], KEYWORD["def"], -1]]),
+        "scalar_type": jnp.asarray([[-1, -1, -1]]),
+        "scalar_value": jnp.asarray([[-1, -1, -1]]),
+        "mask": jnp.asarray([[True, True, False]]),
+    }
+    target_mask = jnp.asarray([[True, False, False]])
+    keyword_logits = jnp.zeros((1, 3, len(KEYWORD)))
+    keyword_logits = keyword_logits.at[0, 1, KEYWORD["def"]].set(-100.0)
     logits = {
-        "kind": jnp.zeros((1, 32, len(KIND))),
-        "keyword": jnp.zeros((1, 32, len(KEYWORD))),
-        "scalar_type": jnp.zeros((1, 32, len(SCALAR_TYPE))),
-        "scalar_value": jnp.zeros((1, 32, 21)),
+        "kind": jnp.zeros((1, 3, len(KIND))),
+        "keyword": keyword_logits,
+        "scalar_type": jnp.zeros((1, 3, len(SCALAR_TYPE))),
+        "scalar_value": jnp.zeros((1, 3, 21)),
         "scalar_value_min": -10,
     }
 
-    seq = sequence_log_prob(logits, batch_labels, jnp.asarray(mask[None, :]))
+    token_scores = token_log_probs(logits, labels)
+    seq = sequence_log_prob(logits, labels, target_mask)
 
     assert seq.shape == (1,)
     assert jnp.isfinite(seq[0])
+    assert seq[0] == pytest.approx(token_scores[0, 0])
+    assert seq[0] != pytest.approx(jnp.sum(token_scores[0]))
