@@ -434,7 +434,9 @@ def _validate_outputs(value: Any) -> list[int]:
     seen: set[int] = set()
     for item in value:
         if isinstance(item, bool) or not isinstance(item, int):
-            raise ValueError("outputs must contain integer tensor ids")
+            raise ValueError("outputs must contain non-negative integer tensor ids")
+        if item < 0:
+            raise ValueError("outputs must contain non-negative integer tensor ids")
         if item in seen:
             raise ValueError("outputs must not contain duplicates")
         seen.add(item)

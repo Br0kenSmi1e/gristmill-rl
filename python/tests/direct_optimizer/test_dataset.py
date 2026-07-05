@@ -254,7 +254,7 @@ def test_different_output_orders_produce_different_input_groups():
     assert rows[0]["input_key"] != rows[1]["input_key"]
 
 
-@pytest.mark.parametrize("bad_outputs", [[1, 1], [True], [], ["1"]])
+@pytest.mark.parametrize("bad_outputs", [[1, 1], [True], [], ["1"], [-1]])
 def test_build_processed_dataset_skips_malformed_outputs(bad_outputs):
     low_json, _ = two_candidate_jsons()
 
