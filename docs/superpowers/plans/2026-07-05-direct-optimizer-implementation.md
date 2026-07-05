@@ -36,6 +36,10 @@ fa9d53d docs: add direct optimizer overview spec
 
 Current unrelated untracked files may exist under `.superpowers/` and older `docs/superpowers/plans/*.md`. Do not stage or edit them while executing this plan.
 
+All Python `uv run ...` commands in this plan must be run with working directory
+`python/`. Test paths in command blocks are relative to `python/`. Run Rust
+commands from the repository root.
+
 Read these accepted specs before implementation:
 
 ```bash
@@ -197,7 +201,7 @@ def test_direct_optimizer_modules_do_not_import_forbidden_training_paths():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_layout.py -q
+uv run pytest tests/direct_optimizer/test_layout.py -q
 ```
 
 Expected: FAIL because `gristmill_symbolics.direct_optimizer` and the explicit Orbax dependency do not exist yet.
@@ -236,7 +240,7 @@ uv lock
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_layout.py -q
+uv run pytest tests/direct_optimizer/test_layout.py -q
 ```
 
 Expected: PASS.
@@ -372,7 +376,7 @@ def test_parser_rejects_malformed_dsl(bad_text, message):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_converter.py -q
+uv run pytest tests/direct_optimizer/test_converter.py -q
 ```
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'gristmill_symbolics.direct_optimizer.converter'`.
@@ -427,7 +431,7 @@ Implement `_source_snapshot_to_text`, `_definitions_to_text`, `_range_to_lines`,
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_converter.py -q
+uv run pytest tests/direct_optimizer/test_converter.py -q
 ```
 
 Expected: PASS.
@@ -528,7 +532,7 @@ def test_structured_token_round_trip_preserves_valid_dsl_text():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_converter.py -q
+uv run pytest tests/direct_optimizer/test_converter.py -q
 ```
 
 Expected: FAIL because `tokens.py` and `target_text_to_computation` are missing.
@@ -653,7 +657,7 @@ def target_text_to_computation(
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_converter.py -q
+uv run pytest tests/direct_optimizer/test_converter.py -q
 ```
 
 Expected: PASS.
@@ -780,7 +784,7 @@ def test_jsonl_helpers_round_trip_raw_and_processed_rows(tmp_path):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_dataset.py -q
+uv run pytest tests/direct_optimizer/test_dataset.py -q
 ```
 
 Expected: FAIL because `dataset.py` is missing.
@@ -861,7 +865,7 @@ Required internal helper behavior:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_dataset.py -q
+uv run pytest tests/direct_optimizer/test_dataset.py -q
 ```
 
 Expected: PASS.
@@ -959,7 +963,7 @@ def test_dataset_build_splits_cli_processes_each_split_independently(tmp_path):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_dataset.py -q
+uv run pytest tests/direct_optimizer/test_dataset.py -q
 ```
 
 Expected: FAIL because `generate_raw_candidates` and `main` are missing.
@@ -1029,7 +1033,7 @@ if __name__ == "__main__":
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_dataset.py -q
+uv run pytest tests/direct_optimizer/test_dataset.py -q
 uv run python -m gristmill_symbolics.direct_optimizer.dataset --help
 ```
 
@@ -1129,7 +1133,7 @@ def test_sequence_log_prob_ignores_padding_mask():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: FAIL because `model.py` is missing.
@@ -1169,7 +1173,7 @@ Rules:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: PASS.
@@ -1257,7 +1261,7 @@ def test_structured_embedder_distinguishes_same_scalar_value_by_type():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: FAIL because `DirectOptimizerTransformer` is missing.
@@ -1292,7 +1296,7 @@ Implementation rules:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: PASS.
@@ -1369,7 +1373,7 @@ def test_sample_tokens_is_deterministic_for_fixed_rng_and_state():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: FAIL because `sample_tokens` is missing.
@@ -1394,7 +1398,7 @@ Sampling rules:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_model.py -q
+uv run pytest tests/direct_optimizer/test_model.py -q
 ```
 
 Expected: PASS.
@@ -1482,7 +1486,7 @@ def test_weighted_sequence_loss_normalizes_by_weight_sum():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: FAIL because `trainer.py` is missing.
@@ -1538,7 +1542,7 @@ Collation rules:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: PASS.
@@ -1610,7 +1614,7 @@ def test_eval_step_returns_finite_loss_without_mutating_model():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: FAIL because `DirectOptimizerTrainer` lacks optimizer and step methods.
@@ -1682,7 +1686,7 @@ Constructor validation:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: PASS.
@@ -1789,7 +1793,7 @@ def test_load_model_for_inference_ignores_optimizer_state(tmp_path):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_checkpoint.py -q
+uv run pytest tests/direct_optimizer/test_checkpoint.py -q
 ```
 
 Expected: FAIL because `checkpoint.py` is missing.
@@ -1878,7 +1882,7 @@ assert loaded.metadata["trainer_kwargs"]["batch_size"] == 2
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_checkpoint.py python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_checkpoint.py tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: PASS.
@@ -1991,7 +1995,7 @@ def test_trainer_does_not_split_processed_datasets(tmp_path):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py -q
 ```
 
 Expected: FAIL because train loop and CLI are missing.
@@ -2046,7 +2050,7 @@ if __name__ == "__main__":
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_trainer.py python/tests/direct_optimizer/test_checkpoint.py -q
+uv run pytest tests/direct_optimizer/test_trainer.py tests/direct_optimizer/test_checkpoint.py -q
 uv run python -m gristmill_symbolics.direct_optimizer.train --help
 ```
 
@@ -2166,7 +2170,7 @@ def test_sampler_ignores_padded_extra_rows(monkeypatch):
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_sampler.py -q
+uv run pytest tests/direct_optimizer/test_sampler.py -q
 ```
 
 Expected: FAIL because `sample.py` is missing.
@@ -2216,7 +2220,7 @@ Sampler rules:
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_sampler.py -q
+uv run pytest tests/direct_optimizer/test_sampler.py -q
 ```
 
 Expected: PASS.
@@ -2329,7 +2333,7 @@ def test_sample_cli_writes_output_for_valid_monkeypatched_candidate(tmp_path, mo
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_sampler.py -q
+uv run pytest tests/direct_optimizer/test_sampler.py -q
 ```
 
 Expected: FAIL because `optimize_from_checkpoint`, `main`, and final package exports are missing.
@@ -2413,7 +2417,7 @@ def test_direct_optimizer_package_imports():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer/test_sampler.py python/tests/direct_optimizer/test_layout.py -q
+uv run pytest tests/direct_optimizer/test_sampler.py tests/direct_optimizer/test_layout.py -q
 uv run python -m gristmill_symbolics.direct_optimizer.sample --help
 ```
 
@@ -2462,7 +2466,7 @@ def test_direct_optimizer_does_not_register_existing_cli_checkpoint():
 Run:
 
 ```bash
-uv run pytest python/tests/direct_optimizer -q
+uv run pytest tests/direct_optimizer -q
 ```
 
 Expected: PASS.
@@ -2472,7 +2476,7 @@ Expected: PASS.
 Run:
 
 ```bash
-uv run pytest python/tests/test_model_trainer_cli_layout.py -q
+uv run pytest tests/test_model_trainer_cli_layout.py -q
 ```
 
 Expected: PASS. This proves the new package did not reintroduce public `policy` or `reinforce` paths and did not disturb the existing model/trainer/CLI surface.
@@ -2482,9 +2486,9 @@ Expected: PASS. This proves the new package did not reintroduce public `policy` 
 Run:
 
 ```bash
-uv run pytest python/tests/model/transformer_action_selector/test_model_protocol.py -q
-uv run pytest python/tests/trainer/reinforce/test_trainer_protocol.py -q
-uv run pytest python/tests/cli/test_checkpoint.py python/tests/cli/test_checkpoint_schema.py -q
+uv run pytest tests/model/transformer_action_selector/test_model_protocol.py -q
+uv run pytest tests/trainer/reinforce/test_trainer_protocol.py -q
+uv run pytest tests/cli/test_checkpoint.py tests/cli/test_checkpoint_schema.py -q
 ```
 
 Expected: PASS. If protocol test filenames differ in this branch, run the closest existing equivalents under `python/tests/model/transformer_action_selector`, `python/tests/trainer/reinforce`, and `python/tests/cli`.
