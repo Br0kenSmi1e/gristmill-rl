@@ -46,8 +46,15 @@ def fake_sample_tokens(
 
 def test_sampler_rejects_invalid_and_non_equivalent_candidates(monkeypatch):
     valid_text = computation_to_target_text(source_comp())
+    non_equivalent_text = valid_text.replace("coeff_num:1", "coeff_num:2", 1)
     invalid_text = "def base tensor_id:1\nterm\nenddef"
-    model = FakeModel([_token_row(invalid_text), _token_row(valid_text)])
+    model = FakeModel(
+        [
+            _token_row(invalid_text),
+            _token_row(non_equivalent_text),
+            _token_row(valid_text),
+        ]
+    )
     monkeypatch.setattr(
         "gristmill_symbolics.direct_optimizer.sample.sample_tokens",
         fake_sample_tokens,
@@ -58,7 +65,7 @@ def test_sampler_rejects_invalid_and_non_equivalent_candidates(monkeypatch):
         None,
         source_comp(),
         [1],
-        num_samples=2,
+        num_samples=3,
         sample_batch_size=2,
         source_len=128,
         target_len=64,
@@ -67,8 +74,9 @@ def test_sampler_rejects_invalid_and_non_equivalent_candidates(monkeypatch):
     )
 
     assert candidate is not None
-    assert metrics["total_samples"] == 2
+    assert metrics["total_samples"] == 3
     assert metrics["parse_failures"] == 1
+    assert metrics["verifier_failures"] == 1
     assert metrics["valid_samples"] == 1
     assert metrics["best_log_flops"] is not None
 
