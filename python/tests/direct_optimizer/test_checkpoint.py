@@ -1,3 +1,4 @@
+from dataclasses import FrozenInstanceError
 import json
 
 import jax
@@ -63,6 +64,8 @@ def test_checkpoint_round_trips_model_optimizer_and_metadata(tmp_path):
     assert jax.tree_util.tree_structure(nnx.state(loaded.optimizer)) == (
         jax.tree_util.tree_structure(nnx.state(optimizer))
     )
+    with pytest.raises(FrozenInstanceError):
+        loaded.metadata = {}
 
 
 def test_checkpoint_rejects_incompatible_static_model_kwargs(tmp_path):

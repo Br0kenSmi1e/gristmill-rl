@@ -38,7 +38,7 @@ _STATIC_MODEL_KWARGS = (
 _OPTIONAL_MODEL_KWARGS = ("dropout", "init_scale")
 
 
-@dataclass
+@dataclass(frozen=True)
 class DirectOptimizerCheckpoint:
     model: DirectOptimizerTransformer
     optimizer: nnx.Optimizer | None
