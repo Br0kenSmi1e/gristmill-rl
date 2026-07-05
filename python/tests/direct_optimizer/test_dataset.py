@@ -75,6 +75,59 @@ def test_generate_raw_candidates_is_deterministic_and_skips_initial_state():
     }
 
 
+def test_generate_raw_candidates_without_intermediates_skips_final_initial_state(
+    monkeypatch,
+):
+    class FakeInputComputation:
+        def to_json_string(self):
+            return '{"state":"initial"}'
+
+        def log_total_flops(self):
+            return 1.0
+
+    class FakeTrajectoryComputation:
+        def __init__(self):
+            self.index = 0
+            self.states = [
+                '{"state":"initial"}',
+                '{"state":"changed"}',
+                '{"state":"initial"}',
+            ]
+
+        def to_json_string(self):
+            return self.states[self.index]
+
+        def log_total_flops(self):
+            return 1.0 + self.index
+
+        def advance(self):
+            self.index += 1
+
+    fake_comp = FakeTrajectoryComputation()
+
+    monkeypatch.setattr(dataset, "_clone_comp", lambda _comp: fake_comp)
+    monkeypatch.setattr(dataset, "_actionable_spaces", lambda _comp: [(0, object())])
+    monkeypatch.setattr(dataset, "_sample_decision", lambda _space, _rng, _subsets: {})
+    monkeypatch.setattr(dataset, "validate_decision", lambda _space, _decision: None)
+    monkeypatch.setattr(
+        dataset,
+        "apply_decision",
+        lambda comp, _space, _decision: comp.advance(),
+    )
+
+    records = generate_raw_candidates(
+        [(FakeInputComputation(), [1])],
+        GenerationConfig(
+            seed=0,
+            trajectories_per_input=1,
+            max_steps=2,
+            collect_intermediates=False,
+        ),
+    )
+
+    assert records == []
+
+
 def test_dataset_build_splits_cli_processes_each_split_independently(tmp_path):
     raw_path = tmp_path / "raw.jsonl"
     train_path = tmp_path / "train.jsonl"

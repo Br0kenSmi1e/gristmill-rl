@@ -80,6 +80,7 @@ def generate_raw_candidates(
         for _trajectory in range(config.trajectories_per_input):
             comp = _clone_comp(input_comp)
             trajectory_records: list[dict[str, Any]] = []
+            final_record: dict[str, Any] | None = None
             for _step in range(config.max_steps):
                 spaces = _actionable_spaces(comp)
                 if not spaces:
@@ -91,20 +92,22 @@ def generate_raw_candidates(
                     apply_decision(comp, space, decision)
                     candidate_json = comp.to_json_string()
                     if candidate_json == initial_json:
+                        final_record = None
                         continue
-                    trajectory_records.append({
+                    final_record = {
                         "input_computation": initial_json,
                         "candidate_computation": candidate_json,
                         "outputs": outputs,
                         "initial_log_flops": initial_log_flops,
                         "candidate_log_flops": _finite_cost(comp.log_total_flops()),
-                    })
+                    }
+                    trajectory_records.append(final_record)
                 except Exception:
                     break
             if config.collect_intermediates:
                 records.extend(trajectory_records)
-            elif trajectory_records:
-                records.append(trajectory_records[-1])
+            elif final_record is not None:
+                records.append(final_record)
 
     return records
 
