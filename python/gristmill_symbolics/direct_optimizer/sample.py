@@ -30,7 +30,8 @@ def optimize_with_model(
     temperature: float,
     seed: int,
 ) -> tuple[TensorComputation | None, dict[str, Any]]:
-    del params
+    if params is not None:
+        raise ValueError("params must be None because the NNX model owns state")
     _validate_positive_int(num_samples, "num_samples")
     _validate_positive_int(sample_batch_size, "sample_batch_size")
     _validate_positive_int(source_len, "source_len")
@@ -107,8 +108,11 @@ def _candidate_from_tokens(
         return None, None
 
     try:
-        target_text_to_definitions(target_text)
+        definitions = target_text_to_definitions(target_text)
     except ValueError:
+        metrics["parse_failures"] += 1
+        return None, None
+    if not definitions:
         metrics["parse_failures"] += 1
         return None, None
 

@@ -116,6 +116,55 @@ def test_sampler_ignores_padded_extra_rows(monkeypatch):
     assert metrics["parse_failures"] == 0
 
 
+def test_sampler_rejects_non_none_params(monkeypatch):
+    valid_text = computation_to_target_text(source_comp())
+    model = FakeModel([_token_row(valid_text)])
+    monkeypatch.setattr(
+        "gristmill_symbolics.direct_optimizer.sample.sample_tokens",
+        fake_sample_tokens,
+    )
+
+    with pytest.raises(ValueError, match="params"):
+        optimize_with_model(
+            model,
+            {"state": object()},
+            source_comp(),
+            [1],
+            num_samples=1,
+            sample_batch_size=1,
+            source_len=128,
+            target_len=64,
+            temperature=1.0,
+            seed=0,
+        )
+
+
+def test_sampler_counts_empty_decoded_output_as_parse_failure(monkeypatch):
+    model = FakeModel([_token_row("")])
+    monkeypatch.setattr(
+        "gristmill_symbolics.direct_optimizer.sample.sample_tokens",
+        fake_sample_tokens,
+    )
+
+    candidate, metrics = optimize_with_model(
+        model,
+        None,
+        source_comp(),
+        [1],
+        num_samples=1,
+        sample_batch_size=1,
+        source_len=128,
+        target_len=64,
+        temperature=1.0,
+        seed=0,
+    )
+
+    assert candidate is None
+    assert metrics["parse_failures"] == 1
+    assert metrics["verifier_failures"] == 0
+    assert metrics["valid_samples"] == 0
+
+
 @pytest.mark.parametrize(
     "outputs",
     [
