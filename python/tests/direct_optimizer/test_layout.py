@@ -149,3 +149,23 @@ def test_direct_optimizer_modules_do_not_import_forbidden_training_paths():
             )
         }
         assert forbidden == set(), f"{path} imports {sorted(forbidden)}"
+
+
+def test_trainer_does_not_import_symbolic_or_sampler_boundaries():
+    modules = _imported_modules(PACKAGE / "trainer.py")
+
+    assert "gristmill_symbolics" not in modules
+    assert "gristmill_symbolics.direct_optimizer.sample" not in modules
+
+
+def test_sampler_does_not_import_trainer_module():
+    modules = _imported_modules(PACKAGE / "sample.py")
+
+    assert "gristmill_symbolics.direct_optimizer.trainer" not in modules
+
+
+def test_direct_optimizer_does_not_register_existing_cli_checkpoint():
+    modules = _imported_modules(PACKAGE / "checkpoint.py")
+
+    assert "gristmill_symbolics.cli.checkpoint" not in modules
+    assert "gristmill_symbolics.direct_optimizer.trainer" not in modules
