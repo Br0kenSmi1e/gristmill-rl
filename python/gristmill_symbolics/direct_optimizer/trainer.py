@@ -91,8 +91,7 @@ def _collate_row(
         weight = float(row["weight"])
         if not math.isfinite(weight) or weight < 0.0:
             return None
-        candidate_log_flops = float(row["candidate_log_flops"])
-        if not math.isfinite(candidate_log_flops):
+        if not math.isfinite(float(row["candidate_log_flops"])):
             return None
 
         source_tokens = pad_tokens(encode_text(row["source_text"]), length=source_len)
@@ -121,9 +120,6 @@ def _collate_row(
         "target_tokens": target_tokens,
         "target_mask": target_mask,
         "example_weight": np.float32(weight),
-        "input_key": row["input_key"],
-        "candidate_key": row["candidate_key"],
-        "candidate_log_flops": candidate_log_flops,
     }
 
 
@@ -141,15 +137,6 @@ def _batch_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
         "target_mask": np.stack([row["target_mask"] for row in rows]).astype(bool),
         "example_weight": np.asarray(
             [row["example_weight"] for row in rows],
-            dtype=np.float32,
-        ),
-        "input_key": np.asarray([row["input_key"] for row in rows], dtype=object),
-        "candidate_key": np.asarray(
-            [row["candidate_key"] for row in rows],
-            dtype=object,
-        ),
-        "candidate_log_flops": np.asarray(
-            [row["candidate_log_flops"] for row in rows],
             dtype=np.float32,
         ),
     }
