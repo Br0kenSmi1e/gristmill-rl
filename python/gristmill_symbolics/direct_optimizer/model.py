@@ -64,17 +64,25 @@ def token_log_probs(
             ),
         )
 
+    active_mask = target["mask"].astype(bool)
     kind = target["kind"]
-    token_scores = _take_log_probs(jnp.asarray(logits["kind"]), kind)
+    token_scores = jnp.where(
+        active_mask,
+        _take_log_probs(
+            jnp.asarray(logits["kind"]),
+            _safe_index(kind, active_mask),
+        ),
+        0.0,
+    )
 
-    keyword_mask = kind == KIND["KEYWORD"]
+    keyword_mask = active_mask & (kind == KIND["KEYWORD"])
     keyword_scores = _take_log_probs(
         jnp.asarray(logits["keyword"]),
         _safe_index(target["keyword"], keyword_mask),
     )
     token_scores = token_scores + jnp.where(keyword_mask, keyword_scores, 0.0)
 
-    scalar_mask = kind == KIND["SCALAR"]
+    scalar_mask = active_mask & (kind == KIND["SCALAR"])
     scalar_type_scores = _take_log_probs(
         jnp.asarray(logits["scalar_type"]),
         _safe_index(target["scalar_type"], scalar_mask),

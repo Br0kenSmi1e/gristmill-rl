@@ -129,7 +129,33 @@ def test_token_log_probs_scores_relevant_heads_only():
     assert values[0, 1] == pytest.approx(
         -jnp.log(len(KIND)) - jnp.log(len(SCALAR_TYPE)) - jnp.log(11)
     )
-    assert values[0, 2] == pytest.approx(-jnp.log(len(KIND)))
+    assert values[0, 2] == pytest.approx(0.0)
+
+
+def test_token_log_probs_ignores_inactive_out_of_range_scalar_labels():
+    target = {
+        "kind": jnp.asarray([[KIND["SCALAR"]]]),
+        "keyword": jnp.asarray([[-1]]),
+        "scalar_type": jnp.asarray([[SCALAR_TYPE["tensor_id"]]]),
+        "scalar_value": jnp.asarray([[999]]),
+        "mask": jnp.asarray([[False]]),
+    }
+    logits = {
+        "kind": jnp.zeros((1, 1, len(KIND))),
+        "keyword": jnp.zeros((1, 1, len(KEYWORD))),
+        "scalar_type": jnp.zeros((1, 1, len(SCALAR_TYPE))),
+        "scalar_value": jnp.zeros((1, 1, 3)),
+        "scalar_value_min": 0,
+    }
+
+    values = token_log_probs(logits, target)
+    sequence = sequence_log_prob(logits, target, target["mask"])
+
+    assert values.shape == (1, 1)
+    assert jnp.isfinite(values[0, 0])
+    assert values[0, 0] == pytest.approx(0.0)
+    assert jnp.isfinite(sequence[0])
+    assert sequence[0] == pytest.approx(0.0)
 
 
 def test_token_log_probs_uses_shifted_scalar_value_index():
