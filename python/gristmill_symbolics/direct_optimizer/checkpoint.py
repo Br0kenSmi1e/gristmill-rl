@@ -3,7 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import math
+import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any
 
 import optax
@@ -63,7 +66,8 @@ def save_checkpoint(
         last_valid_loss=last_valid_loss,
     )
     checkpoint_dir = Path(path)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = _make_sibling_temp_dir(checkpoint_dir, suffix=".tmp")
     metadata = {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "converter_schema_version": CONVERTER_SCHEMA_VERSION,
@@ -77,23 +81,17 @@ def save_checkpoint(
         ),
     }
 
-    (checkpoint_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    checkpointer = ocp.StandardCheckpointer()
-    checkpointer.save(
-        checkpoint_dir / "model_state",
-        nnx.state(model),
-        force=True,
-    )
-    checkpointer.wait_until_finished()
-    checkpointer.save(
-        checkpoint_dir / "optimizer_state",
-        nnx.state(optimizer),
-        force=True,
-    )
-    checkpointer.wait_until_finished()
+    try:
+        _write_checkpoint_contents(
+            staging_dir,
+            metadata=metadata,
+            model=model,
+            optimizer=optimizer,
+        )
+        _publish_staged_checkpoint(staging_dir, checkpoint_dir)
+    except BaseException:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
 
 
 def load_checkpoint(
@@ -201,6 +199,61 @@ def _restore_optimizer(
     )
     nnx.update(optimizer, restored_state)
     return optimizer
+
+
+def _write_checkpoint_contents(
+    checkpoint_dir: Path,
+    *,
+    metadata: dict[str, Any],
+    model: DirectOptimizerTransformer,
+    optimizer: nnx.Optimizer,
+) -> None:
+    (checkpoint_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    checkpointer = ocp.StandardCheckpointer()
+    checkpointer.save(
+        checkpoint_dir / "model_state",
+        nnx.state(model),
+        force=True,
+    )
+    checkpointer.wait_until_finished()
+    checkpointer.save(
+        checkpoint_dir / "optimizer_state",
+        nnx.state(optimizer),
+        force=True,
+    )
+    checkpointer.wait_until_finished()
+
+
+def _publish_staged_checkpoint(staging_dir: Path, checkpoint_dir: Path) -> None:
+    backup_dir = None
+    try:
+        if checkpoint_dir.exists():
+            backup_dir = _make_sibling_temp_dir(checkpoint_dir, suffix=".bak")
+            shutil.rmtree(backup_dir)
+            os.replace(checkpoint_dir, backup_dir)
+        os.replace(staging_dir, checkpoint_dir)
+    except BaseException:
+        if backup_dir is not None and backup_dir.exists():
+            if checkpoint_dir.exists():
+                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+            os.replace(backup_dir, checkpoint_dir)
+        raise
+    else:
+        if backup_dir is not None:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def _make_sibling_temp_dir(path: Path, *, suffix: str) -> Path:
+    return Path(
+        tempfile.mkdtemp(
+            prefix=f".{path.name}.",
+            suffix=suffix,
+            dir=path.parent,
+        )
+    )
 
 
 def _validate_model_kwargs(

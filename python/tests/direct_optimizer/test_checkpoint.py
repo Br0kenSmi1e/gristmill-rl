@@ -5,6 +5,7 @@ import jax
 import pytest
 from flax import nnx
 
+from gristmill_symbolics.direct_optimizer import checkpoint as checkpoint_module
 from gristmill_symbolics.direct_optimizer.checkpoint import (
     CHECKPOINT_SCHEMA_VERSION,
     load_checkpoint,
@@ -87,6 +88,67 @@ def test_checkpoint_rejects_incompatible_static_model_kwargs(tmp_path):
             tmp_path,
             expected_model_kwargs={**model.model_kwargs(), "source_len": 64},
         )
+
+
+def test_failed_checkpoint_overwrite_leaves_existing_checkpoint_loadable(
+    tmp_path,
+    monkeypatch,
+):
+    model = _model()
+    trainer = DirectOptimizerTrainer(batch_size=2, learning_rate=1.0e-3)
+    optimizer = trainer.init_optimizer(model)
+    save_checkpoint(
+        tmp_path,
+        model=model,
+        optimizer=optimizer,
+        trainer=trainer,
+        epoch=1,
+        updates=2,
+        last_train_loss=3.0,
+    )
+
+    original_checkpointer = checkpoint_module.ocp.StandardCheckpointer
+    save_calls = 0
+
+    class FailingCheckpointer:
+        def __init__(self):
+            self._inner = original_checkpointer()
+
+        def save(self, *args, **kwargs):
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 2:
+                raise RuntimeError("injected checkpoint save failure")
+            return self._inner.save(*args, **kwargs)
+
+        def wait_until_finished(self):
+            return self._inner.wait_until_finished()
+
+        def restore(self, *args, **kwargs):
+            return self._inner.restore(*args, **kwargs)
+
+    monkeypatch.setattr(
+        checkpoint_module.ocp,
+        "StandardCheckpointer",
+        FailingCheckpointer,
+    )
+
+    with pytest.raises(RuntimeError, match="injected checkpoint save failure"):
+        save_checkpoint(
+            tmp_path,
+            model=model,
+            optimizer=optimizer,
+            trainer=trainer,
+            epoch=9,
+            updates=10,
+            last_train_loss=11.0,
+        )
+
+    loaded = load_checkpoint(tmp_path)
+
+    assert loaded.metadata["epoch"] == 1
+    assert loaded.metadata["updates"] == 2
+    assert loaded.metadata["last_train_loss"] == pytest.approx(3.0)
 
 
 def test_load_model_for_inference_ignores_optimizer_state(tmp_path):
