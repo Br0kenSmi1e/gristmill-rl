@@ -1,3 +1,4 @@
+import json
 import math
 
 from flax import nnx
@@ -5,11 +6,14 @@ import jax
 import jax.numpy as jnp
 import pytest
 
+from gristmill_symbolics.direct_optimizer.checkpoint import load_checkpoint
 from gristmill_symbolics.direct_optimizer.dataset import (
     BuildConfig,
     build_processed_dataset,
+    write_processed_jsonl,
 )
 from gristmill_symbolics.direct_optimizer.model import DirectOptimizerTransformer
+from gristmill_symbolics.direct_optimizer.train import main as train_main
 from gristmill_symbolics.direct_optimizer.trainer import (
     DirectOptimizerTrainer,
     collate_processed_rows,
@@ -226,3 +230,107 @@ def test_direct_optimizer_trainer_validates_constructor_and_round_trips_kwargs()
         kwargs = {"batch_size": 4, **overrides}
         with pytest.raises(ValueError):
             DirectOptimizerTrainer(**kwargs)
+
+
+def _tiny_train_args(dataset_path, checkpoint_path, **overrides):
+    args = [
+        "--train-dataset",
+        str(dataset_path),
+        "--checkpoint-out",
+        str(checkpoint_path),
+        "--epochs",
+        "1",
+        "--batch-size",
+        "2",
+        "--learning-rate",
+        "0.001",
+        "--source-len",
+        "128",
+        "--target-len",
+        "128",
+        "--scalar-value-min",
+        "-128",
+        "--scalar-value-max",
+        "128",
+        "--d-model",
+        "16",
+        "--num-layers",
+        "1",
+        "--num-heads",
+        "2",
+        "--seed",
+        "0",
+    ]
+    for flag, value in overrides.items():
+        args.extend([flag.replace("_", "-"), str(value)])
+    return args
+
+
+def test_train_cli_runs_one_tiny_epoch_and_writes_checkpoint(tmp_path, capsys):
+    dataset_path = tmp_path / "train.jsonl"
+    checkpoint_path = tmp_path / "checkpoint"
+    write_processed_jsonl(_processed_rows(4), dataset_path)
+
+    exit_code = train_main(_tiny_train_args(dataset_path, checkpoint_path))
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    metrics = json.loads(lines[-1])
+    loaded = load_checkpoint(checkpoint_path)
+
+    assert exit_code == 0
+    assert math.isfinite(float(metrics["train_loss"]))
+    assert loaded.metadata["epoch"] == 1
+    assert loaded.metadata["updates"] > 0
+
+
+def test_trainer_does_not_split_processed_datasets(tmp_path, capsys):
+    train_path = tmp_path / "train.jsonl"
+    valid_path = tmp_path / "valid.jsonl"
+    checkpoint_path = tmp_path / "checkpoint"
+    write_processed_jsonl(_processed_rows(4), train_path)
+    write_processed_jsonl(_processed_rows(2), valid_path)
+
+    exit_code = train_main(
+        _tiny_train_args(
+            train_path,
+            checkpoint_path,
+            **{"--valid-dataset": valid_path},
+        )
+    )
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    metrics = json.loads(lines[-1])
+
+    assert exit_code == 0
+    assert math.isfinite(float(metrics["valid_loss"]))
+
+
+def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
+    dataset_path = tmp_path / "train.jsonl"
+    checkpoint_path = tmp_path / "checkpoint"
+    write_processed_jsonl(_processed_rows(4), dataset_path)
+
+    train_main(_tiny_train_args(dataset_path, checkpoint_path))
+    train_main(
+        _tiny_train_args(
+            dataset_path,
+            checkpoint_path,
+            **{"--checkpoint-in": checkpoint_path},
+        )
+    )
+
+    loaded = load_checkpoint(checkpoint_path)
+    assert loaded.metadata["epoch"] == 2
+    assert loaded.metadata["updates"] > 2
+
+    with pytest.raises(ValueError, match="source_len"):
+        train_main(
+            _tiny_train_args(
+                dataset_path,
+                checkpoint_path,
+                **{
+                    "--checkpoint-in": checkpoint_path,
+                    "--source-len": 64,
+                },
+            )
+        )

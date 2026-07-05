@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import math
+from pathlib import Path
 from typing import Any
 
 import jax
@@ -10,6 +11,7 @@ import numpy as np
 import optax
 from flax import nnx
 
+from .checkpoint import save_checkpoint
 from .model import DirectOptimizerTransformer, make_decoder_inputs, sequence_log_prob
 from .tokens import encode_text, pad_tokens, validate_scalar_bounds
 
@@ -127,6 +129,129 @@ def weighted_sequence_loss(
     weights = jnp.asarray(example_weight, dtype=jnp.float32)
     nll = -jnp.asarray(sequence_logp, dtype=jnp.float32)
     return jnp.sum(weights * nll) / jnp.maximum(jnp.sum(weights), epsilon)
+
+
+def train_epochs(
+    *,
+    train_rows: Sequence[dict[str, Any]],
+    valid_rows: Sequence[dict[str, Any]] | None,
+    test_rows: Sequence[dict[str, Any]] | None,
+    model: DirectOptimizerTransformer,
+    trainer: DirectOptimizerTrainer,
+    optimizer: nnx.Optimizer,
+    epochs: int,
+    source_len: int,
+    target_len: int,
+    scalar_value_min: int,
+    scalar_value_max: int,
+    seed: int,
+    checkpoint_out: Path | None,
+    start_epoch: int = 0,
+    start_updates: int = 0,
+) -> dict[str, float]:
+    epochs = _validate_positive_int("epochs", epochs)
+    seed = _validate_int("seed", seed)
+    start_epoch = _validate_nonnegative_int("start_epoch", start_epoch)
+    updates = _validate_nonnegative_int("start_updates", start_updates)
+
+    train_batches = collate_processed_rows(
+        train_rows,
+        batch_size=trainer.batch_size,
+        source_len=source_len,
+        target_len=target_len,
+        scalar_value_min=scalar_value_min,
+        scalar_value_max=scalar_value_max,
+    )
+    valid_batches = (
+        None
+        if valid_rows is None
+        else collate_processed_rows(
+            valid_rows,
+            batch_size=trainer.batch_size,
+            source_len=source_len,
+            target_len=target_len,
+            scalar_value_min=scalar_value_min,
+            scalar_value_max=scalar_value_max,
+        )
+    )
+    test_batches = (
+        None
+        if test_rows is None
+        else collate_processed_rows(
+            test_rows,
+            batch_size=trainer.batch_size,
+            source_len=source_len,
+            target_len=target_len,
+            scalar_value_min=scalar_value_min,
+            scalar_value_max=scalar_value_max,
+        )
+    )
+
+    final_metrics: dict[str, float] = {}
+    for epoch in range(start_epoch + 1, start_epoch + epochs + 1):
+        order = np.random.default_rng(seed + epoch).permutation(len(train_batches))
+        train_losses = [
+            float(
+                trainer.train_step(model, optimizer, train_batches[index])[
+                    "train_loss"
+                ]
+            )
+            for index in order
+        ]
+        updates += len(train_batches)
+
+        train_loss = float(np.mean(train_losses))
+        final_metrics = {
+            "train_loss": train_loss,
+            "epoch": int(epoch),
+            "updates": int(updates),
+        }
+
+        valid_loss = None
+        if valid_batches is not None:
+            valid_loss = _mean_eval_loss(
+                trainer,
+                model,
+                valid_batches,
+                metric_name="valid_loss",
+            )
+            final_metrics["valid_loss"] = valid_loss
+
+        if test_batches is not None:
+            final_metrics["test_loss"] = _mean_eval_loss(
+                trainer,
+                model,
+                test_batches,
+                metric_name="test_loss",
+            )
+
+        if checkpoint_out is not None:
+            save_checkpoint(
+                checkpoint_out,
+                model=model,
+                optimizer=optimizer,
+                trainer=trainer,
+                epoch=epoch,
+                updates=updates,
+                last_train_loss=train_loss,
+                last_valid_loss=valid_loss,
+            )
+
+    return final_metrics
+
+
+def _mean_eval_loss(
+    trainer: DirectOptimizerTrainer,
+    model: DirectOptimizerTransformer,
+    batches: Sequence[Mapping[str, Any]],
+    *,
+    metric_name: str,
+) -> float:
+    losses = [
+        float(trainer.eval_step(model, batch, metric_name=metric_name)[metric_name])
+        for batch in batches
+    ]
+    return float(np.mean(losses))
 
 
 @nnx.jit
@@ -265,6 +390,18 @@ def _validate_positive_int(name: str, value: int) -> int:
         raise ValueError(f"{name} must be a positive integer")
     if value <= 0:
         raise ValueError(f"{name} must be positive")
+    return int(value)
+
+
+def _validate_int(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    return int(value)
+
+
+def _validate_nonnegative_int(name: str, value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a nonnegative integer")
     return int(value)
 
 
