@@ -178,12 +178,17 @@ def _processed_row_without_weight(
     input_comp = _parse_comp(raw_record["input_computation"])
     candidate_comp = _parse_comp(raw_record["candidate_computation"])
     outputs = _validate_outputs(raw_record["outputs"])
-    initial_log_flops = _finite_cost(
-        raw_record.get("initial_log_flops", input_comp.log_total_flops())
-    )
-    candidate_log_flops = _finite_cost(
-        raw_record.get("candidate_log_flops", candidate_comp.log_total_flops())
-    )
+    if "initial_log_flops" in raw_record:
+        initial_log_flops_value = raw_record["initial_log_flops"]
+    else:
+        initial_log_flops_value = input_comp.log_total_flops()
+    initial_log_flops = _finite_cost(initial_log_flops_value)
+
+    if "candidate_log_flops" in raw_record:
+        candidate_log_flops_value = raw_record["candidate_log_flops"]
+    else:
+        candidate_log_flops_value = candidate_comp.log_total_flops()
+    candidate_log_flops = _finite_cost(candidate_log_flops_value)
 
     if verify:
         try:

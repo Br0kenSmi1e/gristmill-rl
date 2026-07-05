@@ -3,6 +3,7 @@ import math
 
 import pytest
 
+from gristmill_symbolics.direct_optimizer import dataset
 from gristmill_symbolics.direct_optimizer.dataset import (
     BuildConfig,
     SplitConfig,
@@ -96,6 +97,32 @@ def test_build_processed_dataset_skips_invalid_candidate_computation():
         )
         == []
     )
+
+
+def test_build_processed_dataset_uses_provided_costs_without_recomputing(monkeypatch):
+    snapshot = json.loads(source_comp_json())
+
+    class FakeTensorComputation:
+        @staticmethod
+        def from_json_string(_text):
+            return FakeTensorComputation()
+
+        def snapshot(self):
+            return snapshot
+
+        def log_total_flops(self):
+            raise AssertionError("log_total_flops should not be called")
+
+    monkeypatch.setattr(dataset, "TensorComputation", FakeTensorComputation)
+
+    rows = build_processed_dataset(
+        [_raw_record(candidate_json=source_comp_json(), candidate_log_flops=2.0)],
+        BuildConfig(),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["initial_log_flops"] == 4.0
+    assert rows[0]["candidate_log_flops"] == 2.0
 
 
 def test_duplicate_candidates_keep_lowest_cost_and_single_weight():
