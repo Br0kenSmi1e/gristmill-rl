@@ -233,6 +233,7 @@ dependencies = [
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optax" },
+    { name = "orbax-checkpoint" },
 ]
 
 [package.dev-dependencies]
@@ -248,6 +249,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "optax", specifier = ">=0.2" },
+    { name = "orbax-checkpoint", specifier = ">=0.11" },
 ]
 
 [package.metadata.requires-dev]
