@@ -316,6 +316,81 @@ def _contains_tracer(value: Any) -> bool:
 
 _NNX_MODULE = nnx.Module
 _TOKEN_HEAD_SIZES = (len(KIND), len(KEYWORD), len(SCALAR_TYPE))
+_CUDNN_ATTENTION_DTYPE = jnp.bfloat16
+
+
+def _attention_implementation() -> str | None:
+    if jax.default_backend() == "gpu":
+        return "cudnn"
+    return None
+
+
+def _sequence_lengths(mask: jax.Array) -> jax.Array:
+    return jnp.atleast_1d(jnp.sum(mask, axis=-1, dtype=jnp.int32))
+
+
+def _attention_mask(
+    query_mask: jax.Array,
+    key_value_mask: jax.Array,
+) -> jax.Array | None:
+    if _attention_implementation() == "cudnn":
+        return None
+    return nnx.make_attention_mask(query_mask, key_value_mask, dtype=bool)
+
+
+def _multi_head_attention(
+    attention,
+    inputs_q: jax.Array,
+    inputs_k: jax.Array | None = None,
+    inputs_v: jax.Array | None = None,
+    *,
+    query_mask: jax.Array,
+    key_value_mask: jax.Array,
+    mask: jax.Array | None,
+    is_causal: bool,
+    deterministic: bool,
+) -> jax.Array:
+    if _attention_implementation() != "cudnn":
+        return attention(
+            inputs_q,
+            inputs_k,
+            inputs_v,
+            mask=mask,
+            deterministic=deterministic,
+        )
+
+    if inputs_k is None:
+        if inputs_v is not None:
+            raise ValueError("inputs_k cannot be None when inputs_v is provided")
+        inputs_k = inputs_q
+    if inputs_v is None:
+        inputs_v = inputs_k
+    if attention.dropout_rate > 0.0 and not deterministic:
+        raise ValueError(
+            "cuDNN attention does not support attention dropout; use dropout=0.0"
+        )
+
+    query = attention.query(inputs_q)
+    key = attention.key(inputs_k)
+    value = attention.value(inputs_v)
+    if attention.normalize_qk:
+        if attention.query_ln is None or attention.key_ln is None:
+            raise ValueError("attention qk normalization is not initialized")
+        query = attention.query_ln(query)
+        key = attention.key_ln(key)
+
+    attended = jax.nn.dot_product_attention(
+        jnp.asarray(query, _CUDNN_ATTENTION_DTYPE),
+        jnp.asarray(key, _CUDNN_ATTENTION_DTYPE),
+        jnp.asarray(value, _CUDNN_ATTENTION_DTYPE),
+        bias=None,
+        mask=None,
+        is_causal=is_causal,
+        query_seq_lengths=_sequence_lengths(query_mask),
+        key_value_seq_lengths=_sequence_lengths(key_value_mask),
+        implementation="cudnn",
+    )
+    return attention.out(attended)
 
 
 class FeedForward(nnx.Module):
@@ -387,14 +462,13 @@ class EncoderLayer(nnx.Module):
         source_mask: jax.Array,
         deterministic: bool,
     ) -> jax.Array:
-        attention_mask = nnx.make_attention_mask(
-            source_mask,
-            source_mask,
-            dtype=bool,
-        )
-        attention = self.self_attention(
+        attention = _multi_head_attention(
+            self.self_attention,
             x,
-            mask=attention_mask,
+            query_mask=source_mask,
+            key_value_mask=source_mask,
+            mask=_attention_mask(source_mask, source_mask),
+            is_causal=False,
             deterministic=deterministic,
         )
         x = self.attention_norm(
@@ -457,20 +531,26 @@ class DecoderLayer(nnx.Module):
         source_mask: jax.Array,
         deterministic: bool,
     ) -> jax.Array:
-        target_attention_mask = nnx.make_attention_mask(
-            target_mask,
-            target_mask,
-            dtype=bool,
-        )
-        causal_mask = nnx.make_causal_mask(target_mask, dtype=bool)
-        self_attention_mask = nnx.combine_masks(
-            target_attention_mask,
-            causal_mask,
-            dtype=bool,
-        )
-        self_attention = self.self_attention(
+        self_attention_mask = None
+        if _attention_implementation() != "cudnn":
+            target_attention_mask = nnx.make_attention_mask(
+                target_mask,
+                target_mask,
+                dtype=bool,
+            )
+            causal_mask = nnx.make_causal_mask(target_mask, dtype=bool)
+            self_attention_mask = nnx.combine_masks(
+                target_attention_mask,
+                causal_mask,
+                dtype=bool,
+            )
+        self_attention = _multi_head_attention(
+            self.self_attention,
             x,
+            query_mask=target_mask,
+            key_value_mask=target_mask,
             mask=self_attention_mask,
+            is_causal=True,
             deterministic=deterministic,
         )
         x = self.self_attention_norm(
@@ -482,15 +562,14 @@ class DecoderLayer(nnx.Module):
         )
         x = _mask_sequence(x, target_mask)
 
-        cross_attention_mask = nnx.make_attention_mask(
-            target_mask,
-            source_mask,
-            dtype=bool,
-        )
-        cross_attention = self.cross_attention(
+        cross_attention = _multi_head_attention(
+            self.cross_attention,
             x,
             source_memory,
-            mask=cross_attention_mask,
+            query_mask=target_mask,
+            key_value_mask=source_mask,
+            mask=_attention_mask(target_mask, source_mask),
+            is_causal=False,
             deterministic=deterministic,
         )
         x = self.cross_attention_norm(

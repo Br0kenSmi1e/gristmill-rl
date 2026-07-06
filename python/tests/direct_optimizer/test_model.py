@@ -320,6 +320,118 @@ def test_nnx_transformer_returns_static_logits():
     assert logits["scalar_value_min"] == -16
 
 
+def test_encoder_layer_gpu_attention_uses_cudnn_lengths_without_dense_mask(
+    monkeypatch,
+):
+    monkeypatch.setattr(direct_model.jax, "default_backend", lambda: "gpu")
+
+    def fail_make_attention_mask(*_args, **_kwargs):
+        raise AssertionError("cuDNN attention must not build dense masks")
+
+    calls = []
+
+    def fake_dot_product_attention(query, key, value, **kwargs):
+        calls.append(kwargs)
+        return query
+
+    monkeypatch.setattr(direct_model.nnx, "make_attention_mask", fail_make_attention_mask)
+    monkeypatch.setattr(
+        direct_model.jax.nn,
+        "dot_product_attention",
+        fake_dot_product_attention,
+    )
+    layer = direct_model.EncoderLayer(
+        d_model=8,
+        num_heads=2,
+        dropout=0.0,
+        kernel_init=jax.nn.initializers.normal(0.02),
+        rngs=nnx.Rngs(0),
+    )
+    source_mask = jnp.asarray(
+        [
+            [True, True, False, False],
+            [True, True, True, False],
+        ]
+    )
+
+    out = layer(
+        jnp.ones((2, 4, 8)),
+        source_mask=source_mask,
+        deterministic=True,
+    )
+
+    assert out.shape == (2, 4, 8)
+    assert len(calls) == 1
+    assert calls[0]["implementation"] == "cudnn"
+    assert calls[0]["mask"] is None
+    assert calls[0]["bias"] is None
+    assert not calls[0]["is_causal"]
+    assert calls[0]["query_seq_lengths"].tolist() == [2, 3]
+    assert calls[0]["key_value_seq_lengths"].tolist() == [2, 3]
+
+
+def test_decoder_layer_gpu_attention_uses_cudnn_for_self_and_cross_attention(
+    monkeypatch,
+):
+    monkeypatch.setattr(direct_model.jax, "default_backend", lambda: "gpu")
+
+    def fail_dense_mask(*_args, **_kwargs):
+        raise AssertionError("cuDNN attention must not build dense masks")
+
+    calls = []
+
+    def fake_dot_product_attention(query, key, value, **kwargs):
+        calls.append(kwargs)
+        return query
+
+    monkeypatch.setattr(direct_model.nnx, "make_attention_mask", fail_dense_mask)
+    monkeypatch.setattr(direct_model.nnx, "make_causal_mask", fail_dense_mask)
+    monkeypatch.setattr(direct_model.nnx, "combine_masks", fail_dense_mask)
+    monkeypatch.setattr(
+        direct_model.jax.nn,
+        "dot_product_attention",
+        fake_dot_product_attention,
+    )
+    layer = direct_model.DecoderLayer(
+        d_model=8,
+        num_heads=2,
+        dropout=0.0,
+        kernel_init=jax.nn.initializers.normal(0.02),
+        rngs=nnx.Rngs(1),
+    )
+    target_mask = jnp.asarray(
+        [
+            [True, True, False],
+            [True, True, True],
+        ]
+    )
+    source_mask = jnp.asarray(
+        [
+            [True, True, True, False],
+            [True, False, False, False],
+        ]
+    )
+
+    out = layer(
+        jnp.ones((2, 3, 8)),
+        jnp.ones((2, 4, 8)),
+        target_mask=target_mask,
+        source_mask=source_mask,
+        deterministic=True,
+    )
+
+    assert out.shape == (2, 3, 8)
+    assert len(calls) == 2
+    assert calls[0]["implementation"] == "cudnn"
+    assert calls[0]["is_causal"]
+    assert calls[0]["query_seq_lengths"].tolist() == [2, 3]
+    assert calls[0]["key_value_seq_lengths"].tolist() == [2, 3]
+    assert calls[1]["implementation"] == "cudnn"
+    assert not calls[1]["is_causal"]
+    assert calls[1]["query_seq_lengths"].tolist() == [2, 3]
+    assert calls[1]["key_value_seq_lengths"].tolist() == [3, 1]
+
+
 def test_structured_embedder_distinguishes_same_scalar_value_by_type():
     model = DirectOptimizerTransformer(
         source_len=4,
