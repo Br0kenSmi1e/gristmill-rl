@@ -227,7 +227,7 @@ def train_epochs(
 
         if checkpoint_out is not None:
             save_checkpoint(
-                checkpoint_out,
+                _epoch_checkpoint_path(checkpoint_out, epoch),
                 model=model,
                 optimizer=optimizer,
                 trainer=trainer,
@@ -238,6 +238,10 @@ def train_epochs(
             )
 
     return final_metrics
+
+
+def _epoch_checkpoint_path(checkpoint_root: Path, epoch: int) -> Path:
+    return checkpoint_root / f"epoch_{epoch:06d}"
 
 
 def _mean_eval_loss(

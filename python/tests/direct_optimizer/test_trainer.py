@@ -267,12 +267,12 @@ def test_direct_optimizer_trainer_validates_constructor_and_round_trips_kwargs()
             DirectOptimizerTrainer(**kwargs)
 
 
-def _tiny_train_args(dataset_path, checkpoint_path, **overrides):
+def _tiny_train_args(dataset_path, checkpoint_out, **overrides):
     args = [
         "--train-dataset",
         str(dataset_path),
         "--checkpoint-out",
-        str(checkpoint_path),
+        str(checkpoint_out),
         "--epochs",
         "1",
         "--batch-size",
@@ -312,27 +312,54 @@ def _without_flag(args, flag):
     return filtered
 
 
-def test_train_cli_runs_one_tiny_epoch_and_writes_checkpoint(tmp_path, capsys):
+def test_train_cli_writes_epoch_checkpoint_directory(tmp_path, capsys):
     dataset_path = tmp_path / "train.jsonl"
-    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_dir = tmp_path / "checkpoints"
     write_processed_jsonl(_processed_rows(4), dataset_path)
 
-    exit_code = train_main(_tiny_train_args(dataset_path, checkpoint_path))
+    exit_code = train_main(_tiny_train_args(dataset_path, checkpoint_dir))
 
     lines = capsys.readouterr().out.strip().splitlines()
     metrics = json.loads(lines[-1])
-    loaded = load_checkpoint(checkpoint_path)
+    loaded = load_checkpoint(checkpoint_dir / "epoch_000001")
 
     assert exit_code == 0
     assert math.isfinite(float(metrics["train_loss"]))
+    assert not (checkpoint_dir / "metadata.json").exists()
     assert loaded.metadata["epoch"] == 1
     assert loaded.metadata["updates"] > 0
+
+
+def test_train_cli_writes_one_checkpoint_per_epoch(tmp_path, capsys):
+    dataset_path = tmp_path / "train.jsonl"
+    checkpoint_dir = tmp_path / "checkpoints"
+    write_processed_jsonl(_processed_rows(4), dataset_path)
+
+    exit_code = train_main(
+        _tiny_train_args(
+            dataset_path,
+            checkpoint_dir,
+            **{"--epochs": 2},
+        )
+    )
+
+    lines = capsys.readouterr().out.strip().splitlines()
+    metrics = json.loads(lines[-1])
+
+    assert exit_code == 0
+    assert metrics["epoch"] == 2
+    assert sorted(path.name for path in checkpoint_dir.iterdir()) == [
+        "epoch_000001",
+        "epoch_000002",
+    ]
+    assert load_checkpoint(checkpoint_dir / "epoch_000001").metadata["epoch"] == 1
+    assert load_checkpoint(checkpoint_dir / "epoch_000002").metadata["epoch"] == 2
 
 
 def test_trainer_does_not_split_processed_datasets(tmp_path, capsys, monkeypatch):
     train_path = tmp_path / "train.jsonl"
     valid_path = tmp_path / "valid.jsonl"
-    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_dir = tmp_path / "checkpoints"
     write_processed_jsonl(_processed_rows(4), train_path)
     write_processed_jsonl(_processed_rows(2), valid_path)
     captured = {}
@@ -353,7 +380,7 @@ def test_trainer_does_not_split_processed_datasets(tmp_path, capsys, monkeypatch
     exit_code = train_main(
         _tiny_train_args(
             train_path,
-            checkpoint_path,
+            checkpoint_dir,
             **{"--valid-dataset": valid_path},
         )
     )
@@ -370,19 +397,19 @@ def test_trainer_does_not_split_processed_datasets(tmp_path, capsys, monkeypatch
 
 def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
     dataset_path = tmp_path / "train.jsonl"
-    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_dir = tmp_path / "checkpoints"
     write_processed_jsonl(_processed_rows(4), dataset_path)
 
-    train_main(_tiny_train_args(dataset_path, checkpoint_path))
+    train_main(_tiny_train_args(dataset_path, checkpoint_dir))
     train_main(
         _tiny_train_args(
             dataset_path,
-            checkpoint_path,
-            **{"--checkpoint-in": checkpoint_path},
+            checkpoint_dir,
+            **{"--checkpoint-in": checkpoint_dir / "epoch_000001"},
         )
     )
 
-    loaded = load_checkpoint(checkpoint_path)
+    loaded = load_checkpoint(checkpoint_dir / "epoch_000002")
     assert loaded.metadata["epoch"] == 2
     assert loaded.metadata["updates"] > 2
 
@@ -390,9 +417,9 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
         train_main(
             _tiny_train_args(
                 dataset_path,
-                checkpoint_path,
+                checkpoint_dir,
                 **{
-                    "--checkpoint-in": checkpoint_path,
+                    "--checkpoint-in": checkpoint_dir / "epoch_000001",
                     "--source-len": 64,
                 },
             )
@@ -402,9 +429,9 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
         train_main(
             _tiny_train_args(
                 dataset_path,
-                checkpoint_path,
+                checkpoint_dir,
                 **{
-                    "--checkpoint-in": checkpoint_path,
+                    "--checkpoint-in": checkpoint_dir / "epoch_000001",
                     "--batch-size": 4,
                 },
             )
@@ -414,9 +441,9 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
         train_main(
             _tiny_train_args(
                 dataset_path,
-                checkpoint_path,
+                checkpoint_dir,
                 **{
-                    "--checkpoint-in": checkpoint_path,
+                    "--checkpoint-in": checkpoint_dir / "epoch_000001",
                     "--learning-rate": 0.002,
                 },
             )
@@ -425,13 +452,13 @@ def test_train_cli_resumes_checkpoint_and_rejects_static_mismatch(tmp_path):
 
 def test_train_cli_resume_requires_explicit_seed(tmp_path):
     dataset_path = tmp_path / "train.jsonl"
-    checkpoint_path = tmp_path / "checkpoint"
+    checkpoint_dir = tmp_path / "checkpoints"
     write_processed_jsonl(_processed_rows(4), dataset_path)
 
     train_main(
         _tiny_train_args(
             dataset_path,
-            checkpoint_path,
+            checkpoint_dir,
             **{"--seed": 123},
         )
     )
@@ -439,8 +466,8 @@ def test_train_cli_resume_requires_explicit_seed(tmp_path):
     resume_args = _without_flag(
         _tiny_train_args(
             dataset_path,
-            checkpoint_path,
-            **{"--checkpoint-in": checkpoint_path},
+            checkpoint_dir,
+            **{"--checkpoint-in": checkpoint_dir / "epoch_000001"},
         ),
         "--seed",
     )
