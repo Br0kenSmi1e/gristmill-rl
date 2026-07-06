@@ -12,8 +12,8 @@ import optax
 from flax import nnx
 
 from .checkpoint import save_checkpoint
-from .model import DirectOptimizerTransformer, make_decoder_inputs, sequence_log_prob
-from .tokens import encode_text, pad_tokens, validate_scalar_bounds
+from .model import DirectOptimizerTransformer, sequence_log_prob
+from .tokens import KIND, SENTINEL, encode_text, pad_tokens, validate_scalar_bounds
 
 
 _TOKEN_FIELDS = ("kind", "keyword", "scalar_type", "scalar_value", "mask")
@@ -317,16 +317,15 @@ def _collate_row(
         if not math.isfinite(float(row["candidate_log_flops"])):
             return None
 
-        source_tokens = pad_tokens(encode_text(row["source_text"]), length=source_len)
-        target_row = pad_tokens(encode_text(row["target_text"]), length=target_len)
-        decoder_input_tokens, target_tokens, target_mask = make_decoder_inputs(
+        source_tokens = _numpy_token_row(
+            pad_tokens(encode_text(row["source_text"]), length=source_len)
+        )
+        target_row = _numpy_token_row(
+            pad_tokens(encode_text(row["target_text"]), length=target_len)
+        )
+        decoder_input_tokens, target_tokens, target_mask = _make_decoder_inputs_numpy(
             target_row
         )
-
-        source_tokens = _numpy_token_row(source_tokens)
-        decoder_input_tokens = _numpy_token_row(decoder_input_tokens)
-        target_tokens = _numpy_token_row(target_tokens)
-        target_mask = np.asarray(target_mask, dtype=bool)
 
         for tokens in (source_tokens, decoder_input_tokens, target_tokens):
             validate_scalar_bounds(
@@ -369,6 +368,45 @@ def _stack_token_rows(rows: Sequence[dict[str, np.ndarray]]) -> dict[str, np.nda
     return {
         field: np.stack([row[field] for row in rows]).astype(_dtype_for_field(field))
         for field in _TOKEN_FIELDS
+    }
+
+
+def _make_decoder_inputs_numpy(
+    target_row: Mapping[str, Any],
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], np.ndarray]:
+    target = _numpy_token_row(target_row)
+    for field, array in target.items():
+        if array.ndim != 1:
+            raise ValueError(f"expected {field} to be a 1D encoded token row")
+
+    target_len = target["kind"].shape[0]
+    real_length = int(np.sum(target["mask"]))
+    if real_length < 2:
+        raise ValueError("encoded target row must contain at least BOS and EOS")
+    if int(target["kind"][0]) != KIND["BOS"]:
+        raise ValueError("encoded target row must start with BOS")
+    if int(target["kind"][real_length - 1]) != KIND["EOS"]:
+        raise ValueError("encoded target row must end with EOS")
+
+    decoder_input = _numpy_pad_row(target_len)
+    labels = _numpy_pad_row(target_len)
+    label_length = real_length - 1
+
+    for field in ("kind", "keyword", "scalar_type", "scalar_value"):
+        decoder_input[field][:label_length] = target[field][:label_length]
+        labels[field][:label_length] = target[field][1:real_length]
+    decoder_input["mask"][:label_length] = True
+    labels["mask"][:label_length] = True
+    return decoder_input, labels, labels["mask"]
+
+
+def _numpy_pad_row(length: int) -> dict[str, np.ndarray]:
+    return {
+        "kind": np.full(length, KIND["PAD"], dtype=np.int32),
+        "keyword": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_type": np.full(length, SENTINEL, dtype=np.int32),
+        "scalar_value": np.full(length, SENTINEL, dtype=np.int32),
+        "mask": np.zeros(length, dtype=bool),
     }
 
 

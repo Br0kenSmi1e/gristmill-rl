@@ -13,6 +13,7 @@ from gristmill_symbolics.direct_optimizer.dataset import (
     read_processed_jsonl,
     write_processed_jsonl,
 )
+from gristmill_symbolics.direct_optimizer import trainer as trainer_module
 from gristmill_symbolics.direct_optimizer.model import DirectOptimizerTransformer
 from gristmill_symbolics.direct_optimizer import train as train_module
 from gristmill_symbolics.direct_optimizer.train import main as train_main
@@ -21,6 +22,7 @@ from gristmill_symbolics.direct_optimizer.trainer import (
     collate_processed_rows,
     weighted_sequence_loss,
 )
+from gristmill_symbolics.direct_optimizer.tokens import KIND
 from tests.direct_optimizer.fixtures import source_comp_json
 
 
@@ -117,6 +119,37 @@ def test_collate_processed_rows_uses_static_shapes_and_drops_remainder():
     assert jax.jit(lambda value: value["example_weight"].sum())(batch) == pytest.approx(
         sum(row["weight"] for row in rows[:2])
     )
+
+
+def test_collate_processed_rows_does_not_call_jax_decoder_input_helper(monkeypatch):
+    def fail_make_decoder_inputs(_target_row):
+        raise AssertionError("collation must build decoder inputs without JAX")
+
+    monkeypatch.setattr(
+        trainer_module,
+        "make_decoder_inputs",
+        fail_make_decoder_inputs,
+        raising=False,
+    )
+
+    batch = collate_processed_rows(
+        _processed_rows(2),
+        batch_size=2,
+        source_len=128,
+        target_len=128,
+        scalar_value_min=-128,
+        scalar_value_max=128,
+    )[0]
+
+    for row_index in range(2):
+        label_length = int(batch["target_mask"][row_index].sum())
+        assert label_length > 0
+        assert batch["decoder_input_tokens"]["kind"][row_index, 0] == KIND["BOS"]
+        assert (
+            batch["target_tokens"]["kind"][row_index, label_length - 1]
+            == KIND["EOS"]
+        )
+        assert not bool(batch["target_mask"][row_index, label_length])
 
 
 def test_collate_processed_rows_rejects_dataset_smaller_than_batch_size():
