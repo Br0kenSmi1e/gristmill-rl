@@ -13,6 +13,7 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "optax>=0.2",
+    "orbax-checkpoint>=0.11",
 ]
 
 [dependency-groups]
