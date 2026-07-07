@@ -17,13 +17,15 @@ Deliverables:
 - Raw round-trip: definition snapshot dict -> list[int] -> equivalent
   definition snapshot dict.
 - Focused tests for valid round trips, vocabulary lookup, raw-only API, and
-  rejection cases.
+  tokenizer-owned rejection cases.
 
 Non-goals:
 - TensorComputation-level round-trip.
 - Action-space or candidate-pair tokenization.
 - State tokenization across all definitions.
 - Padded encode/decode APIs, masks, or NumPy array conversion.
+- Full TensorDef snapshot schema validation; CLI or data-loading code should
+  own user-facing schema validation when that layer exists.
 - JAX arrays, jax.jit, vmap, tracing, or model compilation.
 - Model, trainer, CLI, checkpoint, batching, or training-loop work.
 - Restoring the old columnar tokenizer or structure-heavy role tokens.
@@ -44,8 +46,10 @@ Acceptance criteria:
   rejects pad tokens and the tokenizer exposes no padded encode/decode methods.
 - Unsupported tensor/range/index IDs and unsupported coefficient
   numerator/denominator values are rejected with clear errors.
-- Malformed definition dicts and malformed token streams are rejected with clear
-  errors.
+- Malformed raw token streams are rejected with clear errors.
+- Encode accepts snapshot-like mappings and iterables when the fields it needs
+  are present; it does not police extra keys, exact concrete container types,
+  or the full TensorDef snapshot schema.
 - Tests run on refactor/python-ml-rebuild without adding model/trainer
   dependencies.
 
@@ -55,6 +59,8 @@ Constraints:
   or NumPy dependency in this layer.
 - Public API should be a tokenizer class because vocabulary bounds and
   coefficient sets are tokenizer configuration.
+- The tokenizer is not a general input validator; schema-level checks belong in
+  CLI or data-loading code.
 - Input/output definition shape matches entries from
   TensorComputation.snapshot()["definitions"].
 
@@ -87,7 +93,10 @@ Implementation hints:
   - decode_definition(ids) -> dict
   - pad_token_id -> int
   - token_name(token_id) -> str
-- Keep the parser strict and explicit so invalid token order fails early.
+- Keep the raw token-stream parser strict and explicit so invalid token order
+  fails early.
+- Keep encode direct and minimal; it should fail only when values cannot be
+  mapped into the configured vocabulary or normal field access fails.
 - Keep batching and padding outside this tokenizer until a later integration
   story needs them.
 

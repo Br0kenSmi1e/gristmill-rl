@@ -90,7 +90,7 @@ def test_definition_round_trips_through_raw_integer_tokens():
     assert decoded == definition
 
 
-def test_encode_rejects_unsupported_values_and_malformed_definitions():
+def test_encode_rejects_values_outside_configured_vocabulary():
     tokenizer = _tokenizer()
     definition = _definition()
 
@@ -110,68 +110,46 @@ def test_encode_rejects_unsupported_values_and_malformed_definitions():
     with pytest.raises(TokenizerError, match="coeff_num7"):
         tokenizer.encode_definition(unsupported_coeff)
 
-    missing_terms = {
-        "base": 3,
-        "ext_indices": [],
-    }
-    with pytest.raises(TokenizerError, match="missing key.*terms"):
-        tokenizer.encode_definition(missing_terms)
 
-    malformed_coeff = {
-        **definition,
-        "terms": [
-            {
-                **definition["terms"][0],
-                "coeff": [1, 1],
-            }
-        ],
-    }
-    with pytest.raises(TokenizerError, match="coeff.*dict"):
-        tokenizer.encode_definition(malformed_coeff)
-
-    unsupported_key = {**definition, 1: "extra"}
-    with pytest.raises(TokenizerError, match="unsupported key"):
-        tokenizer.encode_definition(unsupported_key)
-
-
-def test_encode_rejects_non_list_snapshot_fields():
+def test_encode_accepts_snapshot_like_iterables_and_ignores_extra_keys():
     tokenizer = _tokenizer()
-    definition = _definition()
-
-    tuple_external_indices = {
-        **definition,
-        "ext_indices": tuple(definition["ext_indices"]),
+    definition = {
+        "base": 3,
+        "ext_indices": (
+            {"id": 0, "range": 0, "unused": "ignored"},
+        ),
+        "terms": (
+            {
+                "coeff": {"numer": 1, "denom": 1, "unused": "ignored"},
+                "sum_indices": (
+                    {"id": 2, "range": 0, "unused": "ignored"},
+                ),
+                "factors": (
+                    {
+                        "tensor": 0,
+                        "indices": range(2),
+                        "unused": "ignored",
+                    },
+                ),
+                "unused": "ignored",
+            },
+        ),
+        "unused": "ignored",
     }
-    with pytest.raises(TokenizerError, match="must be a list"):
-        tokenizer.encode_definition(tuple_external_indices)
 
-    range_factor_indices = {
-        **definition,
+    ids = tokenizer.encode_definition(definition)
+
+    assert tokenizer.decode_definition(ids) == {
+        "base": 3,
+        "ext_indices": [{"id": 0, "range": 0}],
         "terms": [
             {
-                **definition["terms"][0],
-                "factors": [
-                    {
-                        **definition["terms"][0]["factors"][0],
-                        "indices": range(2),
-                    }
-                ],
-            }
+                "coeff": {"numer": 1, "denom": 1},
+                "sum_indices": [{"id": 2, "range": 0}],
+                "factors": [{"tensor": 0, "indices": [0, 1]}],
+            },
         ],
     }
-    with pytest.raises(TokenizerError, match="must be a list"):
-        tokenizer.encode_definition(range_factor_indices)
-
-
-def test_constructor_rejects_non_iterable_coefficient_vocabulary():
-    with pytest.raises(TokenizerError, match="coeff_nums.*sequence"):
-        FlatDefinitionTokenizer(
-            max_range_id=3,
-            max_tensor_id=4,
-            max_index_id=5,
-            coeff_nums=1,
-            coeff_dens=(1,),
-        )
 
 
 def test_decode_rejects_malformed_raw_streams():

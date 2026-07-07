@@ -4,16 +4,22 @@
 
 **Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs and round-trips TensorDef snapshot dicts through raw token streams.
 
-**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer owns its configured vocabulary bounds and coefficient sets, performs strict Python parsing for raw streams, reserves `pad` as token id 0, and leaves batching/padding outside this layer.
+**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer owns its configured vocabulary bounds and coefficient sets, performs strict parsing for raw token streams, assumes snapshot-like encode input, reserves `pad` as token id 0, and leaves batching/padding and full schema validation outside this layer.
 
 **Tech Stack:** Python 3.11, pytest, uv.
 
 ---
 
+Scope note: Task 4 supersedes any earlier initial-implementation snippets that
+show exact dictionary-key or list-only validation in `encode_definition`. The
+current accepted boundary is vocabulary and raw token-stream validation in the
+tokenizer, with full snapshot schema validation deferred to CLI/data-loading
+work.
+
 ## File Structure
 
 - Create `python/gristmill_symbolics/tokenizer.py`: public tokenizer class, tokenizer-specific error type, fixed-vocabulary construction, raw encode/decode, reserved pad token, and token-name lookup.
-- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, strict raw validation, raw-only API surface, and rejection cases.
+- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, token-stream grammar validation, vocabulary rejection, permissive snapshot-like encode input, and raw-only API surface.
 - Leave `python/gristmill_symbolics/__init__.py` unchanged so the existing thin rewrite-binding root export test remains valid.
 
 ## Task 1: Raw Tokenizer Tests
@@ -200,7 +206,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from numbers import Integral
+from operator import index as _index
 
 
 __all__ = ("FlatDefinitionTokenizer", "TokenizerError")
@@ -227,11 +233,18 @@ class FlatDefinitionTokenizer:
         coeff_nums: Sequence[int],
         coeff_dens: Sequence[int],
     ):
-        self.max_range_id = _nonnegative_int("max_range_id", max_range_id)
-        self.max_tensor_id = _nonnegative_int("max_tensor_id", max_tensor_id)
-        self.max_index_id = _nonnegative_int("max_index_id", max_index_id)
-        self.coeff_nums = _unique_int_tuple("coeff_nums", coeff_nums)
-        self.coeff_dens = _unique_positive_int_tuple("coeff_dens", coeff_dens)
+        self.max_range_id = _integer("max_range_id", max_range_id)
+        self.max_tensor_id = _integer("max_tensor_id", max_tensor_id)
+        self.max_index_id = _integer("max_index_id", max_index_id)
+        for name, value in (
+            ("max_range_id", self.max_range_id),
+            ("max_tensor_id", self.max_tensor_id),
+            ("max_index_id", self.max_index_id),
+        ):
+            if value < 0:
+                raise TokenizerError(f"{name} must be nonnegative")
+        self.coeff_nums = tuple(_integer("coeff_nums", value) for value in coeff_nums)
+        self.coeff_dens = tuple(_integer("coeff_dens", value) for value in coeff_dens)
 
         self._token_specs: list[_TokenSpec] = []
         self._token_ids: dict[str, int] = {}
@@ -261,18 +274,13 @@ class FlatDefinitionTokenizer:
         return self._spec_for_token_id("token_id", token_id).name
 
     def encode_definition(self, definition: Mapping[str, object]) -> list[int]:
-        definition = _mapping_with_keys(
-            "definition",
-            definition,
-            ("base", "ext_indices", "terms"),
-        )
         ids = [
             self._token_ids["def_start"],
             self._tensor_token_id("base", definition["base"]),
         ]
-        for index in _sequence("definition.ext_indices", definition["ext_indices"]):
+        for index in definition["ext_indices"]:
             ids.extend(self._encode_index("external index", index))
-        for term in _sequence("definition.terms", definition["terms"]):
+        for term in definition["terms"]:
             ids.extend(self._encode_term(term))
         ids.append(self._token_ids["def_end"])
         return ids
@@ -374,7 +382,7 @@ class FlatDefinitionTokenizer:
             raise TokenizerError(f"unsupported token {name}") from exc
 
     def _spec_for_token_id(self, name: str, token_id: int) -> _TokenSpec:
-        token_id = _strict_int(name, token_id)
+        token_id = _integer(name, token_id)
         if token_id < 0 or token_id >= len(self._token_specs):
             raise TokenizerError(f"unknown token id {token_id}")
         return self._token_specs[token_id]
@@ -405,37 +413,26 @@ class FlatDefinitionTokenizer:
         return specs
 
     def _encode_term(self, term: object) -> list[int]:
-        term = _mapping_with_keys(
-            "term",
-            term,
-            ("coeff", "sum_indices", "factors"),
-        )
-        coeff = _mapping_with_keys(
-            "term.coeff",
-            term["coeff"],
-            ("numer", "denom"),
-        )
+        coeff = term["coeff"]
         ids = [
             self._coeff_num_token_id(coeff["numer"]),
             self._coeff_den_token_id(coeff["denom"]),
         ]
-        for index in _sequence("term.sum_indices", term["sum_indices"]):
+        for index in term["sum_indices"]:
             ids.extend(self._encode_index("sum index", index))
-        for factor in _sequence("term.factors", term["factors"]):
+        for factor in term["factors"]:
             ids.extend(self._encode_factor(factor))
         return ids
 
     def _encode_index(self, name: str, index: object) -> list[int]:
-        index = _mapping_with_keys(name, index, ("id", "range"))
         return [
             self._index_token_id(f"{name}.id", index["id"]),
             self._range_token_id(f"{name}.range", index["range"]),
         ]
 
     def _encode_factor(self, factor: object) -> list[int]:
-        factor = _mapping_with_keys("factor", factor, ("tensor", "indices"))
         ids = [self._tensor_token_id("factor.tensor", factor["tensor"])]
-        for index in _sequence("factor.indices", factor["indices"]):
+        for index in factor["indices"]:
             ids.append(self._index_token_id("factor index", index))
         return ids
 
@@ -452,13 +449,13 @@ class FlatDefinitionTokenizer:
         return self._token_id(f"indexid{value}")
 
     def _coeff_num_token_id(self, value: object) -> int:
-        value = _strict_int("coeff.numer", value)
+        value = _integer("coeff.numer", value)
         if value not in self.coeff_nums:
             raise TokenizerError(f"unsupported coefficient numerator coeff_num{value}")
         return self._token_id(f"coeff_num{value}")
 
     def _coeff_den_token_id(self, value: object) -> int:
-        value = _strict_int("coeff.denom", value)
+        value = _integer("coeff.denom", value)
         if value not in self.coeff_dens:
             raise TokenizerError(
                 f"unsupported coefficient denominator coeff_den{value}"
@@ -466,66 +463,17 @@ class FlatDefinitionTokenizer:
         return self._token_id(f"coeff_den{value}")
 
 
-def _strict_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise TokenizerError(f"{name} must be an integer")
-    return int(value)
-
-
-def _nonnegative_int(name: str, value: object) -> int:
-    value = _strict_int(name, value)
-    if value < 0:
-        raise TokenizerError(f"{name} must be nonnegative")
-    return value
+def _integer(name: str, value: object) -> int:
+    try:
+        return _index(value)
+    except TypeError as exc:
+        raise TokenizerError(f"{name} must be an integer") from exc
 
 
 def _bounded_int(name: str, value: object, *, upper: int) -> int:
-    value = _strict_int(name, value)
+    value = _integer(name, value)
     if value < 0 or value > upper:
         raise TokenizerError(f"{name} value {value} is outside supported range 0..{upper}")
-    return value
-
-
-def _unique_int_tuple(name: str, values: Sequence[int]) -> tuple[int, ...]:
-    if isinstance(values, (str, bytes)):
-        raise TokenizerError(f"{name} must be a sequence of integers")
-    result = tuple(_strict_int(f"{name}[{index}]", value) for index, value in enumerate(values))
-    if not result:
-        raise TokenizerError(f"{name} must not be empty")
-    if len(set(result)) != len(result):
-        raise TokenizerError(f"{name} contains duplicate values")
-    return result
-
-
-def _unique_positive_int_tuple(name: str, values: Sequence[int]) -> tuple[int, ...]:
-    result = _unique_int_tuple(name, values)
-    for value in result:
-        if value <= 0:
-            raise TokenizerError(f"{name} values must be positive")
-    return result
-
-
-def _mapping_with_keys(
-    name: str,
-    value: object,
-    expected_keys: tuple[str, ...],
-) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TokenizerError(f"{name} must be a dict")
-    actual = set(value)
-    expected = set(expected_keys)
-    missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
-    if missing:
-        raise TokenizerError(f"{name} missing key(s): {', '.join(missing)}")
-    if extra:
-        raise TokenizerError(f"{name} has unsupported key(s): {', '.join(extra)}")
-    return value
-
-
-def _sequence(name: str, value: object) -> Sequence[object]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
-        raise TokenizerError(f"{name} must be a list")
     return value
 ```
 
@@ -604,7 +552,52 @@ uv run pytest tests/test_flat_definition_tokenizer.py -q
 
 Expected: PASS for raw tokenizer tests.
 
-## Task 4: Final Verification
+## Task 4: Validation Boundary Revision
+
+**Files:**
+- Modify: `python/gristmill_symbolics/tokenizer.py`
+- Modify: `python/tests/test_flat_definition_tokenizer.py`
+- Modify: `docs/superpowers/specs/2026-07-07-flat-definition-tokenizer-story.md`
+- Modify: `docs/superpowers/plans/2026-07-07-flat-definition-tokenizer.md`
+
+- [ ] **Step 1: Add a permissive encode regression test**
+
+Add a focused test showing that `encode_definition` accepts snapshot-like
+mappings with extra keys and iterable fields such as tuples/ranges, then
+normalizes through raw decode.
+
+- [ ] **Step 2: Run the tokenizer tests to verify schema policing is caught**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected before implementation: FAIL because the current helper rejects an
+extra snapshot key before tokenization.
+
+- [ ] **Step 3: Remove schema-level encode helpers**
+
+Remove exact-key and list-only helper usage from `encode_definition` and its
+encode helpers. Keep vocabulary bounds and raw token-stream grammar checks.
+
+- [ ] **Step 4: Update story and plan docs**
+
+Revise this story to state that full TensorDef snapshot schema validation is a
+future CLI/data-loading concern, not a tokenizer responsibility.
+
+- [ ] **Step 5: Run the tokenizer tests**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected: PASS for raw tokenizer tests.
+
+## Task 5: Final Verification
 
 **Files:**
 - Verify: `python/gristmill_symbolics/tokenizer.py`
@@ -640,4 +633,4 @@ git status --short --branch
 ```
 
 Expected: clean `refactor/python-ml-rebuild` branch after the implementation
-and raw-only revision commits.
+and revision commits.

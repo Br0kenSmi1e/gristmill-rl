@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from numbers import Integral
+from operator import index as _index
 
 
 __all__ = ("FlatDefinitionTokenizer", "TokenizerError")
@@ -29,11 +29,18 @@ class FlatDefinitionTokenizer:
         coeff_nums: Sequence[int],
         coeff_dens: Sequence[int],
     ):
-        self.max_range_id = _nonnegative_int("max_range_id", max_range_id)
-        self.max_tensor_id = _nonnegative_int("max_tensor_id", max_tensor_id)
-        self.max_index_id = _nonnegative_int("max_index_id", max_index_id)
-        self.coeff_nums = _unique_int_tuple("coeff_nums", coeff_nums)
-        self.coeff_dens = _unique_positive_int_tuple("coeff_dens", coeff_dens)
+        self.max_range_id = _integer("max_range_id", max_range_id)
+        self.max_tensor_id = _integer("max_tensor_id", max_tensor_id)
+        self.max_index_id = _integer("max_index_id", max_index_id)
+        for name, value in (
+            ("max_range_id", self.max_range_id),
+            ("max_tensor_id", self.max_tensor_id),
+            ("max_index_id", self.max_index_id),
+        ):
+            if value < 0:
+                raise TokenizerError(f"{name} must be nonnegative")
+        self.coeff_nums = tuple(_integer("coeff_nums", value) for value in coeff_nums)
+        self.coeff_dens = tuple(_integer("coeff_dens", value) for value in coeff_dens)
 
         self._token_specs: list[_TokenSpec] = []
         self._token_ids: dict[str, int] = {}
@@ -63,18 +70,13 @@ class FlatDefinitionTokenizer:
         return self._spec_for_token_id("token_id", token_id).name
 
     def encode_definition(self, definition: Mapping[str, object]) -> list[int]:
-        definition = _mapping_with_keys(
-            "definition",
-            definition,
-            ("base", "ext_indices", "terms"),
-        )
         ids = [
             self._token_ids["def_start"],
             self._tensor_token_id("base", definition["base"]),
         ]
-        for index in _sequence("definition.ext_indices", definition["ext_indices"]):
+        for index in definition["ext_indices"]:
             ids.extend(self._encode_index("external index", index))
-        for term in _sequence("definition.terms", definition["terms"]):
+        for term in definition["terms"]:
             ids.extend(self._encode_term(term))
         ids.append(self._token_ids["def_end"])
         return ids
@@ -169,7 +171,7 @@ class FlatDefinitionTokenizer:
             raise TokenizerError(f"unsupported token {name}") from exc
 
     def _spec_for_token_id(self, name: str, token_id: int) -> _TokenSpec:
-        token_id = _strict_int(name, token_id)
+        token_id = _integer(name, token_id)
         if token_id < 0 or token_id >= len(self._token_specs):
             raise TokenizerError(f"unknown token id {token_id}")
         return self._token_specs[token_id]
@@ -195,37 +197,26 @@ class FlatDefinitionTokenizer:
         return specs
 
     def _encode_term(self, term: object) -> list[int]:
-        term = _mapping_with_keys(
-            "term",
-            term,
-            ("coeff", "sum_indices", "factors"),
-        )
-        coeff = _mapping_with_keys(
-            "term.coeff",
-            term["coeff"],
-            ("numer", "denom"),
-        )
+        coeff = term["coeff"]
         ids = [
             self._coeff_num_token_id(coeff["numer"]),
             self._coeff_den_token_id(coeff["denom"]),
         ]
-        for index in _sequence("term.sum_indices", term["sum_indices"]):
+        for index in term["sum_indices"]:
             ids.extend(self._encode_index("sum index", index))
-        for factor in _sequence("term.factors", term["factors"]):
+        for factor in term["factors"]:
             ids.extend(self._encode_factor(factor))
         return ids
 
     def _encode_index(self, name: str, index: object) -> list[int]:
-        index = _mapping_with_keys(name, index, ("id", "range"))
         return [
             self._index_token_id(f"{name}.id", index["id"]),
             self._range_token_id(f"{name}.range", index["range"]),
         ]
 
     def _encode_factor(self, factor: object) -> list[int]:
-        factor = _mapping_with_keys("factor", factor, ("tensor", "indices"))
         ids = [self._tensor_token_id("factor.tensor", factor["tensor"])]
-        for index in _sequence("factor.indices", factor["indices"]):
+        for index in factor["indices"]:
             ids.append(self._index_token_id("factor index", index))
         return ids
 
@@ -242,13 +233,13 @@ class FlatDefinitionTokenizer:
         return self._token_id(f"indexid{value}")
 
     def _coeff_num_token_id(self, value: object) -> int:
-        value = _strict_int("coeff.numer", value)
+        value = _integer("coeff.numer", value)
         if value not in self.coeff_nums:
             raise TokenizerError(f"unsupported coefficient numerator coeff_num{value}")
         return self._token_id(f"coeff_num{value}")
 
     def _coeff_den_token_id(self, value: object) -> int:
-        value = _strict_int("coeff.denom", value)
+        value = _integer("coeff.denom", value)
         if value not in self.coeff_dens:
             raise TokenizerError(
                 f"unsupported coefficient denominator coeff_den{value}"
@@ -256,73 +247,17 @@ class FlatDefinitionTokenizer:
         return self._token_id(f"coeff_den{value}")
 
 
-def _strict_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise TokenizerError(f"{name} must be an integer")
-    return int(value)
-
-
-def _nonnegative_int(name: str, value: object) -> int:
-    value = _strict_int(name, value)
-    if value < 0:
-        raise TokenizerError(f"{name} must be nonnegative")
-    return value
+def _integer(name: str, value: object) -> int:
+    try:
+        return _index(value)
+    except TypeError as exc:
+        raise TokenizerError(f"{name} must be an integer") from exc
 
 
 def _bounded_int(name: str, value: object, *, upper: int) -> int:
-    value = _strict_int(name, value)
+    value = _integer(name, value)
     if value < 0 or value > upper:
         raise TokenizerError(
             f"{name} value {value} is outside supported range 0..{upper}"
         )
-    return value
-
-
-def _unique_int_tuple(name: str, values: Sequence[int]) -> tuple[int, ...]:
-    if isinstance(values, (str, bytes)):
-        raise TokenizerError(f"{name} must be a sequence of integers")
-    try:
-        result = tuple(
-            _strict_int(f"{name}[{index}]", value)
-            for index, value in enumerate(values)
-        )
-    except TypeError as exc:
-        raise TokenizerError(f"{name} must be a sequence of integers") from exc
-    if not result:
-        raise TokenizerError(f"{name} must not be empty")
-    if len(set(result)) != len(result):
-        raise TokenizerError(f"{name} contains duplicate values")
-    return result
-
-
-def _unique_positive_int_tuple(name: str, values: Sequence[int]) -> tuple[int, ...]:
-    result = _unique_int_tuple(name, values)
-    for value in result:
-        if value <= 0:
-            raise TokenizerError(f"{name} values must be positive")
-    return result
-
-
-def _mapping_with_keys(
-    name: str,
-    value: object,
-    expected_keys: tuple[str, ...],
-) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TokenizerError(f"{name} must be a dict")
-    actual = set(value)
-    expected = set(expected_keys)
-    missing = sorted(expected - actual)
-    extra = sorted(actual - expected, key=str)
-    if missing:
-        raise TokenizerError(f"{name} missing key(s): {', '.join(missing)}")
-    if extra:
-        formatted = ", ".join(str(key) for key in extra)
-        raise TokenizerError(f"{name} has unsupported key(s): {formatted}")
-    return value
-
-
-def _sequence(name: str, value: object) -> list[object]:
-    if not isinstance(value, list):
-        raise TokenizerError(f"{name} must be a list")
     return value
