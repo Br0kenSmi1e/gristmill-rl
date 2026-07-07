@@ -6,9 +6,20 @@ import jax.numpy as jnp
 from .grammar import FlatDefinitionGrammar
 
 __all__ = (
+    "constrained_next_token_log_probs",
     "constrained_sequence_log_prob",
     "constrained_token_log_probs",
 )
+
+
+def constrained_next_token_log_probs(
+    logits: jax.Array,
+    valid_next: jax.Array,
+) -> jax.Array:
+    valid_any = jnp.any(valid_next, axis=-1, keepdims=True)
+    masked_logits = jnp.where(valid_next, logits, -jnp.inf)
+    safe_logits = jnp.where(valid_any, masked_logits, jnp.zeros_like(masked_logits))
+    return jax.nn.log_softmax(safe_logits, axis=-1)
 
 
 def constrained_token_log_probs(
@@ -19,10 +30,7 @@ def constrained_token_log_probs(
     grammar: FlatDefinitionGrammar,
 ) -> jax.Array:
     valid_next = grammar.valid_next_masks_for_decoder_input(decoder_input_ids)
-    valid_any = jnp.any(valid_next, axis=-1, keepdims=True)
-    masked_logits = jnp.where(valid_next, logits, -jnp.inf)
-    safe_logits = jnp.where(valid_any, masked_logits, jnp.zeros_like(masked_logits))
-    log_probs = jax.nn.log_softmax(safe_logits, axis=-1)
+    log_probs = constrained_next_token_log_probs(logits, valid_next)
 
     safe_labels = jnp.where(label_mask, labels, 0)
     selected = jnp.take_along_axis(

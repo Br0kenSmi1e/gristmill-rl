@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from .grammar import FlatDefinitionGrammar
+from .scoring import constrained_next_token_log_probs
 
 __all__ = ("sample_token_ids",)
 
@@ -38,12 +39,11 @@ def sample_token_ids(
         logits = model(source_ids, prefix, deterministic=True)
         step_logits = logits[:, t, :]
         valid_next = jnp.take(grammar.allowed_by_state, state, axis=0)
-        masked_logits = jnp.where(valid_next, step_logits, -jnp.inf)
-        sampled_ids = jax.random.categorical(sample_rng, masked_logits, axis=-1)
+        step_log_probs = constrained_next_token_log_probs(step_logits, valid_next)
+        sampled_ids = jax.random.categorical(sample_rng, step_log_probs, axis=-1)
         sampled_ids = sampled_ids.astype(jnp.int32)
 
         next_ids = jnp.where(finished, grammar.pad_token_id, sampled_ids)
-        step_log_probs = jax.nn.log_softmax(masked_logits, axis=-1)
         selected_logps = jnp.take_along_axis(
             step_log_probs,
             sampled_ids[:, None],
