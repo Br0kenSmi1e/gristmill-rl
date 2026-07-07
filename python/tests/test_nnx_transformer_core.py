@@ -72,6 +72,43 @@ def test_encoder_and_decoder_return_vector_shapes():
     assert decoded.shape == target.shape
 
 
+def test_encoder_and_decoder_accept_dtype_fields():
+    source = _source_vectors()
+    target = _target_vectors()
+    source_mask = jnp.ones(source.shape[:2], dtype=bool)
+    target_mask = jnp.ones(target.shape[:2], dtype=bool)
+    encoder = TransformerEncoder(
+        d_model=8,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        dtype=jnp.bfloat16,
+        param_dtype=jnp.float32,
+        rngs=nnx.Rngs(12),
+    )
+    decoder = TransformerDecoder(
+        d_model=8,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        dtype=jnp.bfloat16,
+        param_dtype=jnp.float32,
+        rngs=nnx.Rngs(13),
+    )
+
+    memory = encoder(source, source_mask, deterministic=True)
+    decoded = decoder(
+        target,
+        memory,
+        target_mask=target_mask,
+        source_mask=source_mask,
+        deterministic=True,
+    )
+
+    assert memory.shape == source.shape
+    assert decoded.shape == target.shape
+
+
 def test_blocks_return_vector_shapes():
     source = _source_vectors()
     target = _target_vectors()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -26,6 +26,8 @@ class TransformerEncoder(nnx.Module):
         mlp_hidden_dim: int | None = None,
         dropout: float = 0.0,
         attention_implementation: AttentionImplementation = None,
+        dtype: Any = jnp.bfloat16,
+        param_dtype: Any = jnp.float32,
         rngs: nnx.Rngs,
     ):
         self.d_model = d_model
@@ -34,6 +36,8 @@ class TransformerEncoder(nnx.Module):
         self.mlp_hidden_dim = mlp_hidden_dim or 4 * d_model
         self.dropout = dropout
         self.attention_implementation = attention_implementation
+        self.dtype = dtype
+        self.param_dtype = param_dtype
         self.layers = nnx.List(
             EncoderBlock(
                 d_model=d_model,
@@ -41,11 +45,18 @@ class TransformerEncoder(nnx.Module):
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 dropout=dropout,
                 attention_implementation=attention_implementation,
+                dtype=dtype,
+                param_dtype=param_dtype,
                 rngs=rngs,
             )
             for _ in range(num_layers)
         )
-        self.final_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.final_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
 
     def __call__(
         self,
@@ -70,6 +81,8 @@ class TransformerDecoder(nnx.Module):
         mlp_hidden_dim: int | None = None,
         dropout: float = 0.0,
         attention_implementation: AttentionImplementation = None,
+        dtype: Any = jnp.bfloat16,
+        param_dtype: Any = jnp.float32,
         rngs: nnx.Rngs,
     ):
         self.d_model = d_model
@@ -78,6 +91,8 @@ class TransformerDecoder(nnx.Module):
         self.mlp_hidden_dim = mlp_hidden_dim or 4 * d_model
         self.dropout = dropout
         self.attention_implementation = attention_implementation
+        self.dtype = dtype
+        self.param_dtype = param_dtype
         self.layers = nnx.List(
             DecoderBlock(
                 d_model=d_model,
@@ -85,11 +100,18 @@ class TransformerDecoder(nnx.Module):
                 mlp_hidden_dim=self.mlp_hidden_dim,
                 dropout=dropout,
                 attention_implementation=attention_implementation,
+                dtype=dtype,
+                param_dtype=param_dtype,
                 rngs=rngs,
             )
             for _ in range(num_layers)
         )
-        self.final_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.final_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
 
     def __call__(
         self,
@@ -121,21 +143,37 @@ class EncoderBlock(nnx.Module):
         mlp_hidden_dim: int | None = None,
         dropout: float = 0.0,
         attention_implementation: AttentionImplementation = None,
+        dtype: Any = jnp.bfloat16,
+        param_dtype: Any = jnp.float32,
         rngs: nnx.Rngs,
     ):
-        self.self_attention_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.self_attention_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.self_attention = _MultiHeadAttention(
             d_model=d_model,
             num_heads=num_heads,
             dropout=dropout,
             attention_implementation=attention_implementation,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=rngs,
         )
-        self.feed_forward_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.feed_forward_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.feed_forward = _FeedForward(
             d_model=d_model,
             hidden_dim=mlp_hidden_dim or 4 * d_model,
             dropout=dropout,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=rngs,
         )
 
@@ -169,29 +207,52 @@ class DecoderBlock(nnx.Module):
         mlp_hidden_dim: int | None = None,
         dropout: float = 0.0,
         attention_implementation: AttentionImplementation = None,
+        dtype: Any = jnp.bfloat16,
+        param_dtype: Any = jnp.float32,
         rngs: nnx.Rngs,
     ):
-        self.self_attention_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.self_attention_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.self_attention = _MultiHeadAttention(
             d_model=d_model,
             num_heads=num_heads,
             dropout=dropout,
             attention_implementation=attention_implementation,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=rngs,
         )
-        self.cross_attention_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.cross_attention_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.cross_attention = _MultiHeadAttention(
             d_model=d_model,
             num_heads=num_heads,
             dropout=dropout,
             attention_implementation=attention_implementation,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=rngs,
         )
-        self.feed_forward_norm = nnx.LayerNorm(d_model, rngs=rngs)
+        self.feed_forward_norm = nnx.LayerNorm(
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.feed_forward = _FeedForward(
             d_model=d_model,
             hidden_dim=mlp_hidden_dim or 4 * d_model,
             dropout=dropout,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=rngs,
         )
 
@@ -234,6 +295,8 @@ class _MultiHeadAttention(nnx.Module):
         num_heads: int,
         dropout: float,
         attention_implementation: AttentionImplementation,
+        dtype: Any,
+        param_dtype: Any,
         rngs: nnx.Rngs,
     ):
         if num_heads <= 0 or d_model % num_heads != 0:
@@ -243,10 +306,34 @@ class _MultiHeadAttention(nnx.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attention_implementation = attention_implementation
-        self.query = nnx.Linear(d_model, d_model, rngs=rngs)
-        self.key = nnx.Linear(d_model, d_model, rngs=rngs)
-        self.value = nnx.Linear(d_model, d_model, rngs=rngs)
-        self.output = nnx.Linear(d_model, d_model, rngs=rngs)
+        self.query = nnx.Linear(
+            d_model,
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
+        self.key = nnx.Linear(
+            d_model,
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
+        self.value = nnx.Linear(
+            d_model,
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
+        self.output = nnx.Linear(
+            d_model,
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.dropout = nnx.Dropout(dropout, rngs=rngs)
 
     def __call__(
@@ -289,10 +376,24 @@ class _FeedForward(nnx.Module):
         d_model: int,
         hidden_dim: int,
         dropout: float,
+        dtype: Any,
+        param_dtype: Any,
         rngs: nnx.Rngs,
     ):
-        self.input = nnx.Linear(d_model, hidden_dim, rngs=rngs)
-        self.output = nnx.Linear(hidden_dim, d_model, rngs=rngs)
+        self.input = nnx.Linear(
+            d_model,
+            hidden_dim,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
+        self.output = nnx.Linear(
+            hidden_dim,
+            d_model,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
+        )
         self.dropout = nnx.Dropout(dropout, rngs=rngs)
 
     def __call__(self, x: jax.Array, *, deterministic: bool = True) -> jax.Array:
