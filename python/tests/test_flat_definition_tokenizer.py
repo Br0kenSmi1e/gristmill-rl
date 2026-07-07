@@ -106,6 +106,42 @@ def test_token_names_are_inspectable_for_configured_vocabulary():
     ]
 
 
+def test_token_kinds_are_inspectable_for_configured_vocabulary():
+    tokenizer = _tokenizer()
+
+    assert [tokenizer.token_kind(token_id) for token_id in range(5)] == [
+        "pad",
+        "bos",
+        "eos",
+        "def_start",
+        "def_end",
+    ]
+    assert [
+        tokenizer.token_kind(token_id)
+        for token_id in tokenizer.token_ids_for_kind("tensorid")
+    ] == ["tensorid"] * 5
+    assert [
+        tokenizer.token_name(token_id)
+        for token_id in tokenizer.token_ids_for_kind("indexid")
+    ] == [
+        "indexid0",
+        "indexid1",
+        "indexid2",
+        "indexid3",
+        "indexid4",
+        "indexid5",
+    ]
+    assert [
+        tokenizer.token_name(token_id)
+        for token_id in tokenizer.token_ids_for_kind("coeff_num")
+    ] == [
+        "coeff_num-1",
+        "coeff_num1",
+        "coeff_num2",
+    ]
+    assert tokenizer.token_ids_for_kind("not_a_kind") == ()
+
+
 def test_constructor_preserves_configuration_inputs():
     max_range_id = _IntLike(3)
     max_tensor_id = _IntLike(4)

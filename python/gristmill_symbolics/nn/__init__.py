@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .flat_seq2seq import FlatDefinitionSeq2SeqTransformer
 from .transformer import (
     DecoderBlock,
     EncoderBlock,
@@ -10,6 +11,7 @@ from .transformer import (
 __all__ = (
     "DecoderBlock",
     "EncoderBlock",
+    "FlatDefinitionSeq2SeqTransformer",
     "TransformerDecoder",
     "TransformerEncoder",
 )

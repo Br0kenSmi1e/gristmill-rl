@@ -72,6 +72,16 @@ class FlatDefinitionTokenizer:
     def token_name(self, token_id: int) -> str:
         return self._spec_for_token_id("token_id", token_id).name
 
+    def token_kind(self, token_id: int) -> str:
+        return self._spec_for_token_id("token_id", token_id).kind
+
+    def token_ids_for_kind(self, kind: str) -> tuple[int, ...]:
+        return tuple(
+            token_id
+            for token_id, spec in enumerate(self._token_specs)
+            if spec.kind == kind
+        )
+
     def encode_definition(self, definition: Mapping[str, object]) -> list[int]:
         ids = [
             self._token_ids["def_start"],
