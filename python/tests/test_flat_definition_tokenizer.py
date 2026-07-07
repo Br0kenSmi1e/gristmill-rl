@@ -122,10 +122,57 @@ def test_encode_rejects_unsupported_values_and_malformed_definitions():
     with pytest.raises(TokenizerError, match="coeff.*dict"):
         tokenizer.encode_definition(malformed_coeff)
 
+    unsupported_key = {**definition, 1: "extra"}
+    with pytest.raises(TokenizerError, match="unsupported key"):
+        tokenizer.encode_definition(unsupported_key)
+
+
+def test_encode_rejects_non_list_snapshot_fields():
+    tokenizer = _tokenizer()
+    definition = _definition()
+
+    tuple_external_indices = {
+        **definition,
+        "ext_indices": tuple(definition["ext_indices"]),
+    }
+    with pytest.raises(TokenizerError, match="must be a list"):
+        tokenizer.encode_definition(tuple_external_indices)
+
+    range_factor_indices = {
+        **definition,
+        "terms": [
+            {
+                **definition["terms"][0],
+                "factors": [
+                    {
+                        **definition["terms"][0]["factors"][0],
+                        "indices": range(2),
+                    }
+                ],
+            }
+        ],
+    }
+    with pytest.raises(TokenizerError, match="must be a list"):
+        tokenizer.encode_definition(range_factor_indices)
+
+
+def test_constructor_rejects_non_iterable_coefficient_vocabulary():
+    with pytest.raises(TokenizerError, match="coeff_nums.*sequence"):
+        FlatDefinitionTokenizer(
+            max_range_id=3,
+            max_tensor_id=4,
+            max_index_id=5,
+            coeff_nums=1,
+            coeff_dens=(1,),
+        )
+
 
 def test_decode_rejects_malformed_raw_streams():
     tokenizer = _tokenizer()
     valid = tokenizer.encode_definition(_definition())
+
+    with pytest.raises(TokenizerError, match="sequence of integer IDs"):
+        tokenizer.decode_definition({valid[0]: None})
 
     with pytest.raises(TokenizerError, match="def_start"):
         tokenizer.decode_definition(valid[1:])

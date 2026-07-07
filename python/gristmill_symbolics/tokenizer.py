@@ -180,14 +180,9 @@ class FlatDefinitionTokenizer:
         *,
         allow_pad: bool,
     ) -> list[_TokenSpec]:
-        if isinstance(ids, (str, bytes)):
+        if isinstance(ids, (str, bytes, Mapping)) or not isinstance(ids, Sequence):
             raise TokenizerError("token stream must be a sequence of integer IDs")
-        try:
-            raw_ids = list(ids)
-        except TypeError as exc:
-            raise TokenizerError(
-                "token stream must be a sequence of integer IDs"
-            ) from exc
+        raw_ids = list(ids)
         if not raw_ids:
             raise TokenizerError("token stream must not be empty")
 
@@ -286,9 +281,13 @@ def _bounded_int(name: str, value: object, *, upper: int) -> int:
 def _unique_int_tuple(name: str, values: Sequence[int]) -> tuple[int, ...]:
     if isinstance(values, (str, bytes)):
         raise TokenizerError(f"{name} must be a sequence of integers")
-    result = tuple(
-        _strict_int(f"{name}[{index}]", value) for index, value in enumerate(values)
-    )
+    try:
+        result = tuple(
+            _strict_int(f"{name}[{index}]", value)
+            for index, value in enumerate(values)
+        )
+    except TypeError as exc:
+        raise TokenizerError(f"{name} must be a sequence of integers") from exc
     if not result:
         raise TokenizerError(f"{name} must not be empty")
     if len(set(result)) != len(result):
@@ -314,15 +313,16 @@ def _mapping_with_keys(
     actual = set(value)
     expected = set(expected_keys)
     missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
+    extra = sorted(actual - expected, key=str)
     if missing:
         raise TokenizerError(f"{name} missing key(s): {', '.join(missing)}")
     if extra:
-        raise TokenizerError(f"{name} has unsupported key(s): {', '.join(extra)}")
+        formatted = ", ".join(str(key) for key in extra)
+        raise TokenizerError(f"{name} has unsupported key(s): {formatted}")
     return value
 
 
-def _sequence(name: str, value: object) -> Sequence[object]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+def _sequence(name: str, value: object) -> list[object]:
+    if not isinstance(value, list):
         raise TokenizerError(f"{name} must be a list")
     return value
