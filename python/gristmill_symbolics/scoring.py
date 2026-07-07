@@ -6,21 +6,10 @@ import jax.numpy as jnp
 from .grammar import FlatDefinitionGrammar
 
 __all__ = (
-    "constrained_next_token_log_probs",
     "constrained_next_token_step",
     "constrained_sequence_log_prob",
     "constrained_token_log_probs",
 )
-
-
-def constrained_next_token_log_probs(
-    logits: jax.Array,
-    valid_next: jax.Array,
-) -> jax.Array:
-    valid_any = jnp.any(valid_next, axis=-1, keepdims=True)
-    masked_logits = jnp.where(valid_next, logits, -jnp.inf)
-    safe_logits = jnp.where(valid_any, masked_logits, jnp.zeros_like(masked_logits))
-    return jax.nn.log_softmax(safe_logits, axis=-1)
 
 
 def constrained_next_token_step(
@@ -31,7 +20,12 @@ def constrained_next_token_step(
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     next_state = grammar.advance_state(grammar_state, input_token_ids)
     valid_next = jnp.take(grammar.allowed_by_state, next_state, axis=0)
-    log_probs = constrained_next_token_log_probs(logits, valid_next)
+
+    valid_any = jnp.any(valid_next, axis=-1, keepdims=True)
+    masked_logits = jnp.where(valid_next, logits, -jnp.inf)
+    safe_logits = jnp.where(valid_any, masked_logits, jnp.zeros_like(masked_logits))
+    log_probs = jax.nn.log_softmax(safe_logits, axis=-1)
+
     return next_state, log_probs, valid_next
 
 

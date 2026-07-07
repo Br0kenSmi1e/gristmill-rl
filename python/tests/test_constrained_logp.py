@@ -3,7 +3,6 @@ import jax.numpy as jnp
 
 from gristmill_symbolics.grammar import FlatDefinitionGrammar
 from gristmill_symbolics.scoring import (
-    constrained_next_token_log_probs,
     constrained_next_token_step,
     constrained_sequence_log_prob,
     constrained_token_log_probs,
@@ -25,25 +24,22 @@ def _id(tokenizer: FlatDefinitionTokenizer, kind: str, offset: int = 0) -> int:
     return tokenizer.token_ids_for_kind(kind)[offset]
 
 
-def test_constrained_next_token_log_probs_masks_invalid_logits():
-    logits = jnp.asarray([[1.0, 2.0, 100.0]], dtype=jnp.float32)
-    valid_next = jnp.asarray([[True, True, False]])
+def test_constrained_next_token_step_keeps_all_invalid_rows_finite():
+    tokenizer = _tokenizer()
+    grammar = FlatDefinitionGrammar(tokenizer)
+    state = grammar.initial_state((1,))
+    invalid_input = jnp.asarray([_id(tokenizer, "tensorid")], dtype=jnp.int32)
+    logits = jnp.asarray([[1.0] * tokenizer.vocab_size], dtype=jnp.float32)
 
-    log_probs = constrained_next_token_log_probs(logits, valid_next)
-
-    expected = jax.nn.log_softmax(jnp.asarray([1.0, 2.0], dtype=jnp.float32))
-    assert log_probs.shape == logits.shape
-    assert jnp.allclose(log_probs[0, :2], expected)
-    assert bool(jnp.isneginf(log_probs[0, 2]))
-
-
-def test_constrained_next_token_log_probs_keeps_all_invalid_rows_finite():
-    logits = jnp.asarray([[1.0, 2.0, 3.0]], dtype=jnp.float32)
-    valid_next = jnp.asarray([[False, False, False]])
-
-    log_probs = constrained_next_token_log_probs(logits, valid_next)
+    _next_state, log_probs, valid_next = constrained_next_token_step(
+        state,
+        invalid_input,
+        logits,
+        grammar,
+    )
 
     assert log_probs.shape == logits.shape
+    assert not bool(jnp.any(valid_next))
     assert jnp.all(jnp.isfinite(log_probs))
 
 
