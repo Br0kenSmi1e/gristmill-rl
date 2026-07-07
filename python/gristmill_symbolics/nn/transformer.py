@@ -348,7 +348,14 @@ class _MultiHeadAttention(nnx.Module):
         query = self._split_heads(self.query(x))
         key = self._split_heads(self.key(memory))
         value = self._split_heads(self.value(memory))
-        attention_mask = mask[:, None, None, :] if mask is not None else None
+        attention_mask = (
+            jnp.broadcast_to(
+                mask[:, None, None, :],
+                (query.shape[0], query.shape[2], query.shape[1], key.shape[1]),
+            )
+            if mask is not None
+            else None
+        )
         attended = jax.nn.dot_product_attention(
             query,
             key,
