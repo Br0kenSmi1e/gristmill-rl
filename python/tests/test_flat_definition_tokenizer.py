@@ -72,6 +72,15 @@ def test_token_names_are_inspectable_for_configured_vocabulary():
     ids = tokenizer.encode_definition(_definition())
 
     assert tokenizer.pad_token_id == 0
+    assert tokenizer.bos_token_id == 1
+    assert tokenizer.eos_token_id == 2
+    assert [tokenizer.token_name(token_id) for token_id in range(5)] == [
+        "pad",
+        "bos",
+        "eos",
+        "def_start",
+        "def_end",
+    ]
     assert [tokenizer.token_name(token_id) for token_id in ids] == [
         "def_start",
         "tensorid3",
@@ -152,7 +161,7 @@ def test_definition_sequence_round_trips_as_concatenated_raw_tokens():
     assert tokenizer.decode_definitions([]) == []
 
 
-def test_padded_definition_sequence_uses_right_padding_and_decodes():
+def test_padded_definition_sequence_uses_right_padding():
     tokenizer = _tokenizer()
     definitions = [_definition(), _second_definition()]
     raw = tokenizer.encode_definitions(definitions)
@@ -165,16 +174,35 @@ def test_padded_definition_sequence_uses_right_padding_and_decodes():
         tokenizer.pad_token_id,
         tokenizer.pad_token_id,
     ]
-    assert tokenizer.decode_definitions_padded(padded) == definitions
     assert tokenizer.encode_definitions_padded([], length=2) == [
         tokenizer.pad_token_id,
         tokenizer.pad_token_id,
     ]
-    assert tokenizer.decode_definitions_padded([tokenizer.pad_token_id] * 2) == []
-    assert tokenizer.decode_definitions_padded([]) == []
 
 
-def test_padded_definition_sequence_rejects_overlong_and_non_right_padding():
+def test_generated_definition_sequence_decodes_bos_content_eos_pad():
+    tokenizer = _tokenizer()
+    definitions = [_definition(), _second_definition()]
+    raw = tokenizer.encode_definitions(definitions)
+
+    generated = [
+        tokenizer.bos_token_id,
+        *raw,
+        tokenizer.eos_token_id,
+        tokenizer.pad_token_id,
+        tokenizer.pad_token_id,
+    ]
+
+    assert tokenizer.decode_definitions_generated(generated) == definitions
+    assert tokenizer.decode_definitions_generated([
+        tokenizer.bos_token_id,
+        tokenizer.eos_token_id,
+        tokenizer.pad_token_id,
+    ]) == []
+    assert not hasattr(tokenizer, "decode_definitions_padded")
+
+
+def test_generated_definition_sequence_rejects_malformed_framing():
     tokenizer = _tokenizer()
     definitions = [_definition(), _second_definition()]
     raw = tokenizer.encode_definitions(definitions)
@@ -183,13 +211,33 @@ def test_padded_definition_sequence_rejects_overlong_and_non_right_padding():
         tokenizer.encode_definitions_padded(definitions, length=len(raw) - 1)
 
     with pytest.raises(TokenizerError, match="sequence of integer IDs"):
-        tokenizer.decode_definitions_padded({})
+        tokenizer.decode_definitions_generated({})
 
-    with pytest.raises(TokenizerError, match="raw token stream cannot contain pad"):
-        tokenizer.decode_definitions_padded([
-            raw[0],
+    with pytest.raises(TokenizerError, match="must start with bos"):
+        tokenizer.decode_definitions_generated([*raw, tokenizer.eos_token_id])
+
+    with pytest.raises(TokenizerError, match="must contain eos"):
+        tokenizer.decode_definitions_generated([tokenizer.bos_token_id, *raw])
+
+    with pytest.raises(TokenizerError, match="pad before eos"):
+        tokenizer.decode_definitions_generated([
+            tokenizer.bos_token_id,
             tokenizer.pad_token_id,
-            *raw[1:],
+            tokenizer.eos_token_id,
+        ])
+
+    with pytest.raises(TokenizerError, match="nested bos"):
+        tokenizer.decode_definitions_generated([
+            tokenizer.bos_token_id,
+            tokenizer.bos_token_id,
+            tokenizer.eos_token_id,
+        ])
+
+    with pytest.raises(TokenizerError, match="only pad after eos"):
+        tokenizer.decode_definitions_generated([
+            tokenizer.bos_token_id,
+            tokenizer.eos_token_id,
+            raw[0],
         ])
 
 
@@ -265,6 +313,12 @@ def test_decode_rejects_malformed_raw_streams():
     with pytest.raises(TokenizerError, match="def_start"):
         tokenizer.decode_definition(valid[1:])
 
+    with pytest.raises(TokenizerError, match="def_start"):
+        tokenizer.decode_definition([tokenizer.bos_token_id, *valid])
+
+    with pytest.raises(TokenizerError, match="def_start"):
+        tokenizer.decode_definition([tokenizer.eos_token_id, *valid])
+
     with pytest.raises(TokenizerError, match="raw token stream cannot contain pad"):
         tokenizer.decode_definition([tokenizer.pad_token_id, *valid])
 
@@ -291,6 +345,12 @@ def test_decode_definitions_rejects_malformed_concatenated_streams():
 
     with pytest.raises(TokenizerError, match="def_start"):
         tokenizer.decode_definitions(valid[1:])
+
+    with pytest.raises(TokenizerError, match="def_start"):
+        tokenizer.decode_definitions([tokenizer.bos_token_id, *valid])
+
+    with pytest.raises(TokenizerError, match="def_start"):
+        tokenizer.decode_definitions([tokenizer.eos_token_id, *valid])
 
     missing_final_end = valid[:-1]
     with pytest.raises(TokenizerError, match="def_end"):

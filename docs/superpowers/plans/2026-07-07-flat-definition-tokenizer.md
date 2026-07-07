@@ -697,7 +697,7 @@ uv run pytest tests/test_flat_definition_tokenizer.py -q
 
 Expected: PASS for raw tokenizer tests.
 
-## Task 7: Padded Definition Sequence Wrappers
+## Task 7: Padded Definition Sequence Encode Wrapper
 
 **Files:**
 - Modify: `python/gristmill_symbolics/tokenizer.py`
@@ -709,10 +709,8 @@ Expected: PASS for raw tokenizer tests.
 
 Add focused tests showing that `encode_definitions_padded` calls the raw
 sequence encoder and right-pads with `pad_token_id` to the requested length,
-`decode_definitions_padded` strips trailing pads and decodes the remaining raw
-sequence, empty and all-pad inputs decode as empty lists, overlong encode
-requests are rejected, non-sequence padded decode inputs are rejected, and
-non-right padding is rejected by the raw decoder.
+and that overlong encode requests are rejected. Generated-sequence decode with
+BOS/EOS is covered by the later tokenizer generated-sequence boundary story.
 
 - [ ] **Step 2: Run the tokenizer tests to verify the methods are missing**
 
@@ -725,18 +723,15 @@ uv run pytest tests/test_flat_definition_tokenizer.py -q
 Expected before implementation: FAIL because `FlatDefinitionTokenizer` has no
 `encode_definitions_padded` method.
 
-- [ ] **Step 3: Add the padded sequence wrappers**
+- [ ] **Step 3: Add the padded sequence encode wrapper**
 
 Implement `encode_definitions_padded(definitions, *, length)` by delegating to
 `encode_definitions`, rejecting raw sequences longer than `length`, and
-right-padding the returned list with `pad_token_id`. Implement
-`decode_definitions_padded(ids)` by rejecting non-sequence inputs, stripping
-trailing pad token IDs, returning `[]` for empty or all-pad inputs, and
-delegating the remaining stream to `decode_definitions`.
+right-padding the returned list with `pad_token_id`.
 
 - [ ] **Step 4: Update story and plan docs**
 
-Revise this story to include the padded definition-sequence wrappers while
+Revise this story to include the padded definition-sequence encode wrapper while
 keeping single-definition padded APIs, model batching, masks, NumPy conversion,
 and TensorComputation-level state APIs out of scope.
 

@@ -11,15 +11,16 @@ snapshot dicts.
 
 Deliverables:
 - Public tokenizer object for definition-level encode/decode.
-- Fixed integer vocabulary containing pad, def_start, def_end, rangeid*,
-  tensorid*, indexid*, coeff_num*, and coeff_den* tokens.
+- Fixed integer vocabulary containing pad, bos, eos, def_start, def_end,
+  rangeid*, tensorid*, indexid*, coeff_num*, and coeff_den* tokens.
 - Debug token-name lookup for inspecting integer IDs.
 - Raw round-trip: definition snapshot dict -> list[int] -> equivalent
   definition snapshot dict.
 - Raw sequence round-trip: sequence of definition snapshot dicts ->
   concatenated list[int] -> equivalent sequence of definition snapshot dicts.
-- Thin padded sequence wrappers that right-pad concatenated definition tokens
-  to a requested length and decode right-padded definition token sequences.
+- Thin padded sequence wrapper that right-pads concatenated definition tokens
+  to a requested length.
+- Generated sequence decode for `bos content eos pad...` model-output streams.
 - Focused tests for valid round trips, vocabulary lookup,
   single-definition raw-only API, and tokenizer-owned rejection cases.
 
@@ -48,9 +49,13 @@ Acceptance criteria:
   length by right-padding the concatenated raw token stream with pad token IDs.
 - Padded sequence encode rejects requested lengths shorter than the raw
   concatenated token stream.
-- Padded sequence decode strips trailing pad token IDs, decodes the remaining
-  raw sequence, returns an empty list for empty or all-pad inputs, and rejects
-  non-sequence inputs or non-right padding.
+- Global sequence tokens have fixed IDs: `pad=0`, `bos=1`, `eos=2`,
+  `def_start=3`, and `def_end=4`.
+- Raw definition encode remains content-only and emits `def_start ... def_end`,
+  not BOS/EOS.
+- Generated sequence decode accepts `bos content eos pad...`, returns an empty
+  list for `bos eos pad...`, and rejects missing BOS, missing EOS, PAD before
+  EOS, nested BOS inside content, or non-PAD tokens after EOS.
 - Tokenization follows the flat positional grammar:
   - def_start begins a definition and def_end ends it.
   - first tensorid after def_start is the base tensor.
@@ -61,15 +66,14 @@ Acceptance criteria:
   - following indexid tokens are factor arguments until the next tensorid,
     coeff_num, or def_end.
 - The reserved pad token remains token id 0 for future batching. Raw decode
-  rejects pad tokens; only the definition-sequence padded wrappers consume or
-  produce padding.
+  rejects pad tokens; only generated sequence decode consumes padding after EOS.
 - Unsupported tensor/range/index IDs and unsupported coefficient
   numerator/denominator values are rejected with clear errors.
 - Malformed raw token streams are rejected with clear errors.
 - Malformed concatenated definition streams are rejected when input is not a
   token sequence, a token appears before def_start, def_end is missing, pad
-  appears, a token id is unknown, or a sliced definition violates the
-  single-definition grammar.
+  appears, BOS/EOS appears, a token id is unknown, or a sliced definition
+  violates the single-definition grammar.
 - Encode accepts snapshot-like mappings and iterables when the fields it needs
   are present; it does not police extra keys, exact concrete container types,
   or the full TensorDef snapshot schema.
@@ -121,8 +125,10 @@ Implementation hints:
   - encode_definitions(defns) -> list[int]
   - decode_definitions(ids) -> list[dict]
   - encode_definitions_padded(defns, length=...) -> list[int]
-  - decode_definitions_padded(ids) -> list[dict]
+  - decode_definitions_generated(ids) -> list[dict]
   - pad_token_id -> int
+  - bos_token_id -> int
+  - eos_token_id -> int
   - token_name(token_id) -> str
 - Keep the raw token-stream parser strict and explicit so invalid token order
   fails early.

@@ -38,6 +38,8 @@ class FlatDefinitionTokenizer:
         self._token_specs: list[_TokenSpec] = []
         self._token_ids: dict[str, int] = {}
         self._add_token("pad", "pad")
+        self._add_token("bos", "bos")
+        self._add_token("eos", "eos")
         self._add_token("def_start", "def_start")
         self._add_token("def_end", "def_end")
         for value in range(self.max_range_id + 1):
@@ -54,6 +56,14 @@ class FlatDefinitionTokenizer:
     @property
     def pad_token_id(self) -> int:
         return self._token_ids["pad"]
+
+    @property
+    def bos_token_id(self) -> int:
+        return self._token_ids["bos"]
+
+    @property
+    def eos_token_id(self) -> int:
+        return self._token_ids["eos"]
 
     @property
     def vocab_size(self) -> int:
@@ -192,7 +202,7 @@ class FlatDefinitionTokenizer:
             raise TokenizerError("expected def_end, reached end of token stream")
         return definitions
 
-    def decode_definitions_padded(
+    def decode_definitions_generated(
         self,
         ids: Sequence[int],
     ) -> list[dict[str, object]]:
@@ -200,11 +210,40 @@ class FlatDefinitionTokenizer:
             raise TokenizerError("token stream must be a sequence of integer IDs")
 
         raw_ids = list(ids)
-        while raw_ids and raw_ids[-1] == self.pad_token_id:
-            raw_ids.pop()
-        if not raw_ids:
+        specs = [
+            self._spec_for_token_id(f"token[{pos}]", token_id)
+            for pos, token_id in enumerate(raw_ids)
+        ]
+        if not specs or specs[0].kind != "bos":
+            raise TokenizerError("generated token stream must start with bos")
+
+        content_ids: list[int] = []
+        saw_eos = False
+        for pos, spec in enumerate(specs[1:], start=1):
+            if saw_eos:
+                if spec.kind != "pad":
+                    raise TokenizerError(
+                        "generated token stream must contain only pad after eos"
+                    )
+                continue
+            if spec.kind == "eos":
+                saw_eos = True
+                continue
+            if spec.kind == "pad":
+                raise TokenizerError(
+                    "generated token stream cannot contain pad before eos"
+                )
+            if spec.kind == "bos":
+                raise TokenizerError(
+                    "generated token stream cannot contain nested bos"
+                )
+            content_ids.append(raw_ids[pos])
+
+        if not saw_eos:
+            raise TokenizerError("generated token stream must contain eos")
+        if not content_ids:
             return []
-        return self.decode_definitions(raw_ids)
+        return self.decode_definitions(content_ids)
 
     def _add_token(
         self,
