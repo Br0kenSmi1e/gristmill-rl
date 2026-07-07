@@ -7,6 +7,7 @@ from .grammar import FlatDefinitionGrammar
 
 __all__ = (
     "constrained_next_token_log_probs",
+    "constrained_next_token_step",
     "constrained_sequence_log_prob",
     "constrained_token_log_probs",
 )
@@ -22,6 +23,18 @@ def constrained_next_token_log_probs(
     return jax.nn.log_softmax(safe_logits, axis=-1)
 
 
+def constrained_next_token_step(
+    grammar_state: jax.Array,
+    input_token_ids: jax.Array,
+    logits: jax.Array,
+    grammar: FlatDefinitionGrammar,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    next_state = grammar.advance_state(grammar_state, input_token_ids)
+    valid_next = jnp.take(grammar.allowed_by_state, next_state, axis=0)
+    log_probs = constrained_next_token_log_probs(logits, valid_next)
+    return next_state, log_probs, valid_next
+
+
 def constrained_token_log_probs(
     logits: jax.Array,
     decoder_input_ids: jax.Array,
@@ -29,22 +42,47 @@ def constrained_token_log_probs(
     label_mask: jax.Array,
     grammar: FlatDefinitionGrammar,
 ) -> jax.Array:
-    valid_next = grammar.valid_next_masks_for_decoder_input(decoder_input_ids)
-    log_probs = constrained_next_token_log_probs(logits, valid_next)
+    batch_size = decoder_input_ids.shape[0]
+    init_state = grammar.initial_state((batch_size,))
 
-    safe_labels = jnp.where(label_mask, labels, 0)
-    selected = jnp.take_along_axis(
-        log_probs,
-        safe_labels[..., None],
-        axis=-1,
-    )[..., 0]
-    label_is_valid = jnp.take_along_axis(
-        valid_next,
-        safe_labels[..., None],
-        axis=-1,
-    )[..., 0]
-    active_logp = jnp.where(label_is_valid, selected, -jnp.inf)
-    return jnp.where(label_mask, active_logp, 0.0)
+    def step(
+        state: jax.Array,
+        xs: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array]:
+        input_token_ids_t, logits_t, labels_t, label_mask_t = xs
+        next_state, log_probs_t, valid_next_t = constrained_next_token_step(
+            state,
+            input_token_ids_t,
+            logits_t,
+            grammar,
+        )
+
+        safe_labels_t = jnp.where(label_mask_t, labels_t, 0)
+        selected_t = jnp.take_along_axis(
+            log_probs_t,
+            safe_labels_t[:, None],
+            axis=-1,
+        )[:, 0]
+        label_is_valid_t = jnp.take_along_axis(
+            valid_next_t,
+            safe_labels_t[:, None],
+            axis=-1,
+        )[:, 0]
+        active_logp_t = jnp.where(label_is_valid_t, selected_t, -jnp.inf)
+        token_logp_t = jnp.where(label_mask_t, active_logp_t, 0.0)
+        return next_state, token_logp_t
+
+    _final_state, token_logp_t_b = jax.lax.scan(
+        step,
+        init_state,
+        (
+            jnp.swapaxes(decoder_input_ids, 0, 1),
+            jnp.swapaxes(logits, 0, 1),
+            jnp.swapaxes(labels, 0, 1),
+            jnp.swapaxes(label_mask, 0, 1),
+        ),
+    )
+    return jnp.swapaxes(token_logp_t_b, 0, 1)
 
 
 def constrained_sequence_log_prob(

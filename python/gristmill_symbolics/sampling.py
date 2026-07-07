@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from .grammar import FlatDefinitionGrammar
-from .scoring import constrained_next_token_log_probs
+from .scoring import constrained_next_token_step
 
 __all__ = ("sample_token_ids",)
 
@@ -26,10 +26,7 @@ def sample_token_ids(
     generated_ids = generated_ids.at[:, 0].set(grammar.bos_token_id)
     token_log_probs = jnp.zeros((batch_size, target_len), dtype=jnp.float32)
 
-    init_state = grammar.advance_state(
-        grammar.initial_state((batch_size,)),
-        jnp.full((batch_size,), grammar.bos_token_id, dtype=jnp.int32),
-    )
+    init_state = grammar.initial_state((batch_size,))
     init_finished = jnp.zeros((batch_size,), dtype=bool)
 
     def step(carry, t: jax.Array):
@@ -38,8 +35,12 @@ def sample_token_ids(
 
         logits = model(source_ids, prefix, deterministic=True)
         step_logits = logits[:, t, :]
-        valid_next = jnp.take(grammar.allowed_by_state, state, axis=0)
-        step_log_probs = constrained_next_token_log_probs(step_logits, valid_next)
+        next_state, step_log_probs, _valid_next = constrained_next_token_step(
+            state,
+            prefix[:, t],
+            step_logits,
+            grammar,
+        )
         sampled_ids = jax.random.categorical(sample_rng, step_log_probs, axis=-1)
         sampled_ids = sampled_ids.astype(jnp.int32)
 
@@ -51,7 +52,6 @@ def sample_token_ids(
         )[:, 0]
         selected_logps = jnp.where(finished, 0.0, selected_logps)
 
-        next_state = grammar.advance_state(state, next_ids)
         next_finished = finished | (next_ids == grammar.eos_token_id)
         next_pos = t + 1
         prefix = prefix.at[:, next_pos].set(next_ids)

@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from gristmill_symbolics.grammar import FlatDefinitionGrammar
 from gristmill_symbolics.scoring import (
     constrained_next_token_log_probs,
+    constrained_next_token_step,
     constrained_sequence_log_prob,
     constrained_token_log_probs,
 )
@@ -44,6 +45,37 @@ def test_constrained_next_token_log_probs_keeps_all_invalid_rows_finite():
 
     assert log_probs.shape == logits.shape
     assert jnp.all(jnp.isfinite(log_probs))
+
+
+def test_constrained_next_token_step_advances_state_before_masking_logits():
+    tokenizer = _tokenizer()
+    grammar = FlatDefinitionGrammar(tokenizer)
+    bos = tokenizer.bos_token_id
+    def_start = _id(tokenizer, "def_start")
+    eos = tokenizer.eos_token_id
+    tensor0 = _id(tokenizer, "tensorid")
+    state = grammar.initial_state((1,))
+    input_token_ids = jnp.asarray([bos], dtype=jnp.int32)
+    logits = jnp.zeros((1, tokenizer.vocab_size), dtype=jnp.float32)
+    logits = logits.at[0, def_start].set(1.0)
+    logits = logits.at[0, eos].set(2.0)
+    logits = logits.at[0, tensor0].set(100.0)
+
+    next_state, log_probs, valid_next = constrained_next_token_step(
+        state,
+        input_token_ids,
+        logits,
+        grammar,
+    )
+
+    expected_state = grammar.advance_state(state, input_token_ids)
+    expected = jax.nn.log_softmax(jnp.asarray([1.0, 2.0], dtype=jnp.float32))
+    assert jnp.array_equal(next_state, expected_state)
+    assert bool(valid_next[0, def_start])
+    assert bool(valid_next[0, eos])
+    assert not bool(valid_next[0, tensor0])
+    assert jnp.allclose(log_probs[0, jnp.asarray([def_start, eos])], expected)
+    assert bool(jnp.isneginf(log_probs[0, tensor0]))
 
 
 def test_constrained_token_log_probs_score_only_grammar_valid_logits():
