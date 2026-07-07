@@ -16,7 +16,7 @@ Deliverables:
   - `grammar: FlatDefinitionGrammar`
   - `rng: jax.Array`
   - `target_len: int`
-- Outputs:
+- Output is a plain 3-tuple:
   - `generated_ids: int32[B, target_len]`
   - `token_log_probs: float[B, target_len]`
   - `sequence_log_prob: float[B]`

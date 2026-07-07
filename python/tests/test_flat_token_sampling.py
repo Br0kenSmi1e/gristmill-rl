@@ -66,6 +66,8 @@ def test_sample_token_ids_generates_grammar_valid_sequence_with_logp():
         grammar,
         target_len=6,
     )
+    assert type(result) is tuple
+    generated_ids, token_log_probs, sequence_log_prob = result
 
     expected = jnp.asarray(
         [
@@ -88,17 +90,17 @@ def test_sample_token_ids_generates_grammar_valid_sequence_with_logp():
         ],
         dtype=jnp.int32,
     )
-    assert result.generated_ids.shape == (2, 6)
-    assert result.token_log_probs.shape == (2, 6)
-    assert result.sequence_log_prob.shape == (2,)
-    assert jnp.array_equal(result.generated_ids, expected)
-    assert jnp.allclose(result.token_log_probs[:, 0], 0.0)
-    assert jnp.allclose(result.token_log_probs[:, 5], 0.0)
+    assert generated_ids.shape == (2, 6)
+    assert token_log_probs.shape == (2, 6)
+    assert sequence_log_prob.shape == (2,)
+    assert jnp.array_equal(generated_ids, expected)
+    assert jnp.allclose(token_log_probs[:, 0], 0.0)
+    assert jnp.allclose(token_log_probs[:, 5], 0.0)
     assert jnp.allclose(
-        result.sequence_log_prob,
-        jnp.sum(result.token_log_probs, axis=-1),
+        sequence_log_prob,
+        jnp.sum(token_log_probs, axis=-1),
     )
-    for row in result.generated_ids:
+    for row in generated_ids:
         _assert_grammar_valid_prefix(grammar, row)
 
 
@@ -114,7 +116,7 @@ def test_sample_token_ids_does_not_force_eos_at_max_length():
     ]
     source_ids = jnp.asarray([[1, 0, 0]], dtype=jnp.int32)
 
-    result = sample_token_ids(
+    generated_ids, _token_log_probs, _sequence_log_prob = sample_token_ids(
         _scripted_model(tokenizer, choices),
         jax.random.key(1),
         source_ids,
@@ -122,10 +124,10 @@ def test_sample_token_ids_does_not_force_eos_at_max_length():
         target_len=6,
     )
 
-    assert result.generated_ids[0, 0] == tokenizer.bos_token_id
-    assert tokenizer.eos_token_id not in set(map(int, result.generated_ids[0]))
-    assert result.generated_ids[0, -1] == choices[-1]
-    _assert_grammar_valid_prefix(grammar, result.generated_ids[0])
+    assert generated_ids[0, 0] == tokenizer.bos_token_id
+    assert tokenizer.eos_token_id not in set(map(int, generated_ids[0]))
+    assert generated_ids[0, -1] == choices[-1]
+    _assert_grammar_valid_prefix(grammar, generated_ids[0])
 
 
 def test_sample_token_ids_is_jittable_for_fixed_shapes():
@@ -148,7 +150,7 @@ def test_sample_token_ids_is_jittable_for_fixed_shapes():
             source,
             grammar,
             target_len=6,
-        ).generated_ids
+        )[0]
 
     generated = run(jax.random.key(2), source_ids)
 
@@ -169,14 +171,14 @@ def test_sampled_logp_is_differentiable_to_logits():
             assert deterministic is True
             return x
 
-        result = sample_token_ids(
+        _generated_ids, _token_log_probs, sequence_log_prob = sample_token_ids(
             model,
             jax.random.key(3),
             source_ids,
             grammar,
             target_len=4,
         )
-        return result.sequence_log_prob[0]
+        return sequence_log_prob[0]
 
     grad = jax.grad(score)(logits)
 

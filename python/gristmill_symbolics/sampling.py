@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-from typing import NamedTuple
-
 import jax
 import jax.numpy as jnp
 
 from .grammar import FlatDefinitionGrammar
 
-__all__ = ("FlatTokenSamplingResult", "sample_token_ids")
-
-
-class FlatTokenSamplingResult(NamedTuple):
-    generated_ids: jax.Array
-    token_log_probs: jax.Array
-    sequence_log_prob: jax.Array
+__all__ = ("sample_token_ids",)
 
 
 def sample_token_ids(
@@ -23,7 +15,7 @@ def sample_token_ids(
     grammar: FlatDefinitionGrammar,
     *,
     target_len: int,
-) -> FlatTokenSamplingResult:
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     batch_size = source_ids.shape[0]
     generated_ids = jnp.full(
         (batch_size, target_len),
@@ -74,8 +66,4 @@ def sample_token_ids(
     )
     sequence_log_prob = jnp.sum(token_log_probs, axis=-1)
 
-    return FlatTokenSamplingResult(
-        generated_ids=generated_ids,
-        token_log_probs=token_log_probs,
-        sequence_log_prob=sequence_log_prob,
-    )
+    return generated_ids, token_log_probs, sequence_log_prob
