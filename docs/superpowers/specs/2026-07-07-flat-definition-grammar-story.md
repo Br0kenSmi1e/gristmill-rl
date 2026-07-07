@@ -21,7 +21,6 @@ Deliverables:
   - `advance_state(state, token_id) -> int32[...]`
   - `valid_next_masks_for_decoder_input(decoder_input_ids) -> bool[B, T, V]`
   - `valid_next_mask_from_prefix(prefix_ids) -> bool[B, V]`
-  - `apply_grammar_mask(logits, valid_next) -> logits`
 - Focused tests.
 
 Grammar:

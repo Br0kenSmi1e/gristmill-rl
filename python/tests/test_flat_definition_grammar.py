@@ -1,7 +1,8 @@
 import jax
 import jax.numpy as jnp
+import pytest
 
-from gristmill_symbolics.grammar import FlatDefinitionGrammar, apply_grammar_mask
+from gristmill_symbolics.grammar import FlatDefinitionGrammar
 from gristmill_symbolics.tokenizer import FlatDefinitionTokenizer
 
 
@@ -202,12 +203,10 @@ def test_grammar_methods_are_jittable_for_fixed_shapes():
     assert bool(masks[0, 3, tokenizer.eos_token_id])
 
 
-def test_apply_grammar_mask_preserves_valid_logits_and_masks_invalid_logits():
-    logits = jnp.asarray([[1.0, 2.0, 3.0]], dtype=jnp.float32)
-    valid_next = jnp.asarray([[True, False, True]])
+def test_grammar_requires_integer_token_id_arrays():
+    tokenizer = _tokenizer()
+    grammar = FlatDefinitionGrammar(tokenizer)
+    decoder_input_ids = jnp.asarray([[tokenizer.bos_token_id]], dtype=jnp.float32)
 
-    masked = apply_grammar_mask(logits, valid_next)
-
-    assert float(masked[0, 0]) == 1.0
-    assert float(masked[0, 2]) == 3.0
-    assert float(masked[0, 1]) < -1.0e20
+    with pytest.raises((TypeError, ValueError)):
+        grammar.valid_next_masks_for_decoder_input(decoder_input_ids)

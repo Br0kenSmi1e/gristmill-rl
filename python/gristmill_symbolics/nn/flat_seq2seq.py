@@ -105,8 +105,6 @@ class FlatDefinitionSeq2SeqTransformer(nnx.Module):
         *,
         deterministic: bool = True,
     ) -> jax.Array:
-        source_ids = jnp.asarray(source_ids, dtype=jnp.int32)
-        decoder_input_ids = jnp.asarray(decoder_input_ids, dtype=jnp.int32)
         source_mask = source_ids != self.pad_token_id
         target_mask = decoder_input_ids != self.pad_token_id
 
@@ -143,7 +141,6 @@ class FlatDefinitionSeq2SeqTransformer(nnx.Module):
         *,
         deterministic: bool,
     ) -> jax.Array:
-        ids = jnp.asarray(ids, dtype=jnp.int32)
         length = ids.shape[-1]
         positions = jnp.arange(length, dtype=jnp.int32)
         x = self.token_embed(ids) + position_embed(positions)[None, :, :]

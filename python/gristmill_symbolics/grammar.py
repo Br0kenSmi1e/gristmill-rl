@@ -7,7 +7,7 @@ import jax.numpy as jnp
 
 from .tokenizer import FlatDefinitionTokenizer
 
-__all__ = ("FlatDefinitionGrammar", "apply_grammar_mask")
+__all__ = ("FlatDefinitionGrammar",)
 
 _CAT_PAD = 0
 _CAT_BOS = 1
@@ -74,8 +74,6 @@ class FlatDefinitionGrammar:
         state: jax.Array,
         token_id: jax.Array,
     ) -> jax.Array:
-        state = jnp.asarray(state, dtype=jnp.int32)
-        token_id = jnp.asarray(token_id, dtype=jnp.int32)
         cat = jnp.take(self.category_by_id, token_id)
 
         next_state = jnp.full_like(state, _S_ERROR)
@@ -191,7 +189,6 @@ class FlatDefinitionGrammar:
         self,
         decoder_input_ids: jax.Array,
     ) -> jax.Array:
-        decoder_input_ids = jnp.asarray(decoder_input_ids, dtype=jnp.int32)
         batch_size = decoder_input_ids.shape[0]
         init_state = self.initial_state((batch_size,))
 
@@ -208,7 +205,6 @@ class FlatDefinitionGrammar:
         return jnp.swapaxes(masks_t_b_v, 0, 1)
 
     def valid_next_mask_from_prefix(self, prefix_ids: jax.Array) -> jax.Array:
-        prefix_ids = jnp.asarray(prefix_ids, dtype=jnp.int32)
         batch_size = prefix_ids.shape[0]
         init_state = self.initial_state((batch_size,))
 
@@ -221,13 +217,6 @@ class FlatDefinitionGrammar:
             jnp.swapaxes(prefix_ids, 0, 1),
         )
         return jnp.take(self.allowed_by_state, final_state, axis=0)
-
-
-def apply_grammar_mask(logits: jax.Array, valid_next: jax.Array) -> jax.Array:
-    logits = jnp.asarray(logits)
-    neg_large = jnp.asarray(-1.0e30, dtype=logits.dtype)
-    return jnp.where(valid_next, logits, neg_large)
-
 
 def _build_allowed_by_state(categories: Sequence[int]) -> jax.Array:
     rows = [[False] * len(categories) for _ in range(_NUM_STATES)]

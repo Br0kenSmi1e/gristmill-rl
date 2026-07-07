@@ -2,6 +2,7 @@ import importlib
 import sys
 
 import jax.numpy as jnp
+import pytest
 from flax import nnx
 
 from gristmill_symbolics.nn import FlatDefinitionSeq2SeqTransformer
@@ -128,6 +129,15 @@ def test_deterministic_calls_are_repeatable_with_dropout_disabled():
     second = model(source_ids, decoder_input_ids, deterministic=True)
 
     assert jnp.allclose(first, second)
+
+
+def test_flat_seq2seq_requires_integer_token_id_arrays():
+    model = _model(source_len=2, target_len=2, rng_seed=3)
+    source_ids = jnp.asarray([[1.0, 0.0]], dtype=jnp.float32)
+    decoder_input_ids = jnp.asarray([[1, 0]], dtype=jnp.int32)
+
+    with pytest.raises((TypeError, ValueError)):
+        model(source_ids, decoder_input_ids, deterministic=True)
 
 
 def test_flat_seq2seq_module_does_not_import_tokenizer_or_grammar():
