@@ -4,8 +4,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from numbers import Integral
 
-import numpy as np
-
 
 __all__ = ("FlatDefinitionTokenizer", "TokenizerError")
 
@@ -153,59 +151,6 @@ class FlatDefinitionTokenizer:
             "terms": terms,
         }
 
-    def encode_definition_padded(
-        self,
-        definition: Mapping[str, object],
-        *,
-        max_len: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        max_len = _positive_int("max_len", max_len)
-        raw_ids = self.encode_definition(definition)
-        if len(raw_ids) > max_len:
-            raise TokenizerError(
-                f"encoded definition length {len(raw_ids)} exceeds max_len {max_len}"
-            )
-
-        ids = np.full((max_len,), self.pad_token_id, dtype=np.int32)
-        mask = np.zeros((max_len,), dtype=np.bool_)
-        ids[: len(raw_ids)] = np.asarray(raw_ids, dtype=np.int32)
-        mask[: len(raw_ids)] = True
-        return ids, mask
-
-    def decode_definition_padded(
-        self,
-        ids: Sequence[int],
-        mask: Sequence[bool],
-    ) -> dict[str, object]:
-        ids_array = np.asarray(ids)
-        mask_array = np.asarray(mask)
-        if ids_array.ndim != 1:
-            raise TokenizerError("padded ids must be a 1D array")
-        if mask_array.ndim != 1:
-            raise TokenizerError("padding mask must be a 1D array")
-        if ids_array.shape != mask_array.shape:
-            raise TokenizerError("padded ids and mask must have the same shape")
-        if not np.issubdtype(ids_array.dtype, np.integer):
-            raise TokenizerError("padded ids must have integer dtype")
-        if mask_array.dtype != np.bool_:
-            raise TokenizerError("padding mask must have boolean dtype")
-
-        mask_list = mask_array.tolist()
-        first_padding = len(mask_list)
-        for index, active in enumerate(mask_list):
-            if not active:
-                first_padding = index
-                break
-        if any(mask_list[first_padding:]):
-            raise TokenizerError("padding mask must describe right-padding")
-
-        padding_ids = ids_array[first_padding:]
-        if padding_ids.size and not bool(np.all(padding_ids == self.pad_token_id)):
-            raise TokenizerError("masked padding ids must equal pad_token_id")
-
-        raw_ids = ids_array[:first_padding].astype(np.int64).tolist()
-        return self.decode_definition(raw_ids)
-
     def _add_token(
         self,
         name: str,
@@ -321,13 +266,6 @@ def _nonnegative_int(name: str, value: object) -> int:
     value = _strict_int(name, value)
     if value < 0:
         raise TokenizerError(f"{name} must be nonnegative")
-    return value
-
-
-def _positive_int(name: str, value: object) -> int:
-    value = _strict_int(name, value)
-    if value <= 0:
-        raise TokenizerError(f"{name} must be positive")
     return value
 
 

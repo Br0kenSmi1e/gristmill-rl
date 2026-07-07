@@ -6,8 +6,8 @@ Outcome:
 
 Build the first Python ML rebuild piece: a definition-level tokenizer that
 converts a TensorDef snapshot dict into a flat, fixed-vocabulary integer token
-sequence, supports right-padded NumPy arrays for ML input, and can decode valid
-token streams back into equivalent definition snapshot dicts.
+sequence and can decode valid raw token streams back into equivalent definition
+snapshot dicts.
 
 Deliverables:
 - Public tokenizer object for definition-level encode/decode.
@@ -16,14 +16,14 @@ Deliverables:
 - Debug token-name lookup for inspecting integer IDs.
 - Raw round-trip: definition snapshot dict -> list[int] -> equivalent
   definition snapshot dict.
-- Right-padded encode/decode support returning NumPy arrays for ids and mask.
-- Focused tests for valid round trips, padding, vocabulary lookup, and
+- Focused tests for valid round trips, vocabulary lookup, raw-only API, and
   rejection cases.
 
 Non-goals:
 - TensorComputation-level round-trip.
 - Action-space or candidate-pair tokenization.
 - State tokenization across all definitions.
+- Padded encode/decode APIs, masks, or NumPy array conversion.
 - JAX arrays, jax.jit, vmap, tracing, or model compilation.
 - Model, trainer, CLI, checkpoint, batching, or training-loop work.
 - Restoring the old columnar tokenizer or structure-heavy role tokens.
@@ -40,11 +40,8 @@ Acceptance criteria:
   - tensorid inside a term starts a factor.
   - following indexid tokens are factor arguments until the next tensorid,
     coeff_num, or def_end.
-- Padded encode uses right padding only, emits fixed-length NumPy int32 ids and
-  boolean mask arrays, and rejects definitions whose raw encoded length exceeds
-  max_len.
-- Padded decode accepts only valid padding/mask combinations and reconstructs
-  the same definition as raw decode.
+- The reserved pad token remains token id 0 for future batching, but raw decode
+  rejects pad tokens and the tokenizer exposes no padded encode/decode methods.
 - Unsupported tensor/range/index IDs and unsupported coefficient
   numerator/denominator values are rejected with clear errors.
 - Malformed definition dicts and malformed token streams are rejected with clear
@@ -54,8 +51,8 @@ Acceptance criteria:
 
 Constraints:
 - Primary ML-facing representation is integer IDs, not string tokens.
-- Tokenizer and padding must use plain Python/NumPy, not JAX, to avoid
-  variable-length recompilation behavior.
+- Tokenizer raw encode/decode must use plain Python sequence APIs, with no JAX
+  or NumPy dependency in this layer.
 - Public API should be a tokenizer class because vocabulary bounds and
   coefficient sets are tokenizer configuration.
 - Input/output definition shape matches entries from
@@ -88,12 +85,11 @@ Implementation hints:
   - FlatDefinitionTokenizer(...)
   - encode_definition(defn) -> list[int]
   - decode_definition(ids) -> dict
-  - encode_definition_padded(defn, max_len) -> tuple[np.ndarray, np.ndarray]
-  - decode_definition_padded(ids, mask) -> dict
+  - pad_token_id -> int
   - token_name(token_id) -> str
 - Keep the parser strict and explicit so invalid token order fails early.
-- Keep NumPy conversion at the padded boundary; raw encode/decode can stay
-  Python sequence based.
+- Keep batching and padding outside this tokenizer until a later integration
+  story needs them.
 
 Follow-up stories:
 - TensorComputation state tokenization by concatenating encoded definitions.

@@ -2,18 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs, round-trips TensorDef snapshot dicts, and returns right-padded NumPy arrays for ML input.
+**Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs and round-trips TensorDef snapshot dicts through raw token streams.
 
-**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer owns its configured vocabulary bounds and coefficient sets, performs strict Python parsing for raw streams, and uses NumPy only at the padded encode/decode boundary.
+**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer owns its configured vocabulary bounds and coefficient sets, performs strict Python parsing for raw streams, reserves `pad` as token id 0, and leaves batching/padding outside this layer.
 
-**Tech Stack:** Python 3.11, NumPy, pytest, uv.
+**Tech Stack:** Python 3.11, pytest, uv.
 
 ---
 
 ## File Structure
 
-- Create `python/gristmill_symbolics/tokenizer.py`: public tokenizer class, tokenizer-specific error type, fixed-vocabulary construction, raw encode/decode, padded NumPy encode/decode, and token-name lookup.
-- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, strict raw validation, right padding, padded decode validation, and overlong sequence rejection.
+- Create `python/gristmill_symbolics/tokenizer.py`: public tokenizer class, tokenizer-specific error type, fixed-vocabulary construction, raw encode/decode, reserved pad token, and token-name lookup.
+- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, strict raw validation, raw-only API surface, and rejection cases.
 - Leave `python/gristmill_symbolics/__init__.py` unchanged so the existing thin rewrite-binding root export test remains valid.
 
 ## Task 1: Raw Tokenizer Tests
@@ -537,7 +537,7 @@ Run from `python/`:
 uv run pytest tests/test_flat_definition_tokenizer.py -q
 ```
 
-Expected: PASS for the four raw tokenizer tests.
+Expected: PASS for the raw tokenizer tests.
 
 - [ ] **Step 3: Run the existing binding smoke tests**
 
@@ -558,171 +558,21 @@ git add python/gristmill_symbolics/tokenizer.py python/tests/test_flat_definitio
 git commit -m "feat: add flat definition tokenizer"
 ```
 
-## Task 3: Padded NumPy Tokenizer Tests
-
-**Files:**
-- Modify: `python/tests/test_flat_definition_tokenizer.py`
-
-- [ ] **Step 1: Add NumPy import and padded-tokenizer tests**
-
-Modify the top of `python/tests/test_flat_definition_tokenizer.py` to include NumPy:
-
-```python
-import numpy as np
-import pytest
-```
-
-Append these tests to `python/tests/test_flat_definition_tokenizer.py`:
-
-```python
-
-def test_padded_encode_uses_right_padding_and_round_trips():
-    tokenizer = _tokenizer()
-    definition = _definition()
-    raw = tokenizer.encode_definition(definition)
-
-    ids, mask = tokenizer.encode_definition_padded(definition, max_len=len(raw) + 3)
-
-    assert ids.dtype == np.int32
-    assert mask.dtype == np.bool_
-    np.testing.assert_array_equal(ids[: len(raw)], np.asarray(raw, dtype=np.int32))
-    np.testing.assert_array_equal(
-        ids[len(raw) :],
-        np.full((3,), tokenizer.pad_token_id, dtype=np.int32),
-    )
-    np.testing.assert_array_equal(mask[: len(raw)], np.ones((len(raw),), dtype=np.bool_))
-    np.testing.assert_array_equal(mask[len(raw) :], np.zeros((3,), dtype=np.bool_))
-    assert tokenizer.decode_definition_padded(ids, mask) == definition
-
-
-def test_padded_encode_rejects_overlong_definition():
-    tokenizer = _tokenizer()
-    definition = _definition()
-    raw = tokenizer.encode_definition(definition)
-
-    with pytest.raises(TokenizerError, match="exceeds max_len"):
-        tokenizer.encode_definition_padded(definition, max_len=len(raw) - 1)
-
-
-def test_padded_decode_rejects_invalid_padding_and_mask():
-    tokenizer = _tokenizer()
-    ids, mask = tokenizer.encode_definition_padded(_definition(), max_len=32)
-
-    non_right_padded_mask = mask.copy()
-    non_right_padded_mask[0] = False
-    non_right_padded_mask[1] = True
-    with pytest.raises(TokenizerError, match="right-padding"):
-        tokenizer.decode_definition_padded(ids, non_right_padded_mask)
-
-    non_pad_tail = ids.copy()
-    non_pad_tail[-1] = ids[0]
-    with pytest.raises(TokenizerError, match="pad_token_id"):
-        tokenizer.decode_definition_padded(non_pad_tail, mask)
-
-    with pytest.raises(TokenizerError, match="same shape"):
-        tokenizer.decode_definition_padded(ids, mask[:-1])
-
-    with pytest.raises(TokenizerError, match="boolean"):
-        tokenizer.decode_definition_padded(ids, mask.astype(np.int32))
-```
-
-- [ ] **Step 2: Run the tokenizer tests to verify padded API fails**
-
-Run from `python/`:
-
-```bash
-uv run pytest tests/test_flat_definition_tokenizer.py -q
-```
-
-Expected: FAIL with `AttributeError: 'FlatDefinitionTokenizer' object has no attribute 'encode_definition_padded'`.
-
-## Task 4: Padded NumPy Tokenizer Implementation
+## Task 3: Raw-Only API Revision
 
 **Files:**
 - Modify: `python/gristmill_symbolics/tokenizer.py`
-- Test: `python/tests/test_flat_definition_tokenizer.py`
+- Modify: `python/tests/test_flat_definition_tokenizer.py`
+- Modify: `docs/superpowers/specs/2026-07-07-flat-definition-tokenizer-story.md`
+- Modify: `docs/superpowers/plans/2026-07-07-flat-definition-tokenizer.md`
 
-- [ ] **Step 1: Import NumPy**
+- [ ] **Step 1: Add a raw-only API regression test**
 
-Add this import near the top of `python/gristmill_symbolics/tokenizer.py`:
+Add a focused test asserting that `FlatDefinitionTokenizer` does not expose
+`encode_definition_padded` or `decode_definition_padded`, while the existing
+vocabulary test continues to assert `pad_token_id == 0`.
 
-```python
-import numpy as np
-```
-
-- [ ] **Step 2: Add padded encode/decode methods**
-
-Add these methods inside `FlatDefinitionTokenizer`, immediately after `decode_definition`:
-
-```python
-    def encode_definition_padded(
-        self,
-        definition: Mapping[str, object],
-        *,
-        max_len: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        max_len = _positive_int("max_len", max_len)
-        raw_ids = self.encode_definition(definition)
-        if len(raw_ids) > max_len:
-            raise TokenizerError(
-                f"encoded definition length {len(raw_ids)} exceeds max_len {max_len}"
-            )
-
-        ids = np.full((max_len,), self.pad_token_id, dtype=np.int32)
-        mask = np.zeros((max_len,), dtype=np.bool_)
-        ids[: len(raw_ids)] = np.asarray(raw_ids, dtype=np.int32)
-        mask[: len(raw_ids)] = True
-        return ids, mask
-
-    def decode_definition_padded(
-        self,
-        ids: Sequence[int],
-        mask: Sequence[bool],
-    ) -> dict[str, object]:
-        ids_array = np.asarray(ids)
-        mask_array = np.asarray(mask)
-        if ids_array.ndim != 1:
-            raise TokenizerError("padded ids must be a 1D array")
-        if mask_array.ndim != 1:
-            raise TokenizerError("padding mask must be a 1D array")
-        if ids_array.shape != mask_array.shape:
-            raise TokenizerError("padded ids and mask must have the same shape")
-        if not np.issubdtype(ids_array.dtype, np.integer):
-            raise TokenizerError("padded ids must have integer dtype")
-        if mask_array.dtype != np.bool_:
-            raise TokenizerError("padding mask must have boolean dtype")
-
-        mask_list = mask_array.tolist()
-        first_padding = len(mask_list)
-        for index, active in enumerate(mask_list):
-            if not active:
-                first_padding = index
-                break
-        if any(mask_list[first_padding:]):
-            raise TokenizerError("padding mask must describe right-padding")
-
-        padding_ids = ids_array[first_padding:]
-        if padding_ids.size and not bool(np.all(padding_ids == self.pad_token_id)):
-            raise TokenizerError("masked padding ids must equal pad_token_id")
-
-        raw_ids = ids_array[:first_padding].astype(np.int64).tolist()
-        return self.decode_definition(raw_ids)
-```
-
-- [ ] **Step 3: Add positive integer validation helper**
-
-Add this helper below `_nonnegative_int`:
-
-```python
-
-def _positive_int(name: str, value: object) -> int:
-    value = _strict_int(name, value)
-    if value <= 0:
-        raise TokenizerError(f"{name} must be positive")
-    return value
-```
-
-- [ ] **Step 4: Run the tokenizer tests**
+- [ ] **Step 2: Run the tokenizer tests to verify the old API is caught**
 
 Run from `python/`:
 
@@ -730,18 +580,31 @@ Run from `python/`:
 uv run pytest tests/test_flat_definition_tokenizer.py -q
 ```
 
-Expected: PASS for raw and padded tokenizer tests.
+Expected before implementation: FAIL because the padded methods still exist.
 
-- [ ] **Step 5: Commit padded tokenization**
+- [ ] **Step 3: Remove padded encode/decode implementation**
 
-Run from the repository worktree root:
+Remove `encode_definition_padded`, `decode_definition_padded`, the NumPy import,
+the now-unused positive integer helper, and padded tests. Do not remove the
+reserved `pad` token or `pad_token_id`.
+
+- [ ] **Step 4: Update story and plan docs**
+
+Revise this story to describe raw definition encode/decode only. Record that
+padding and batching are outside this tokenizer, while `pad` remains reserved
+for future batching.
+
+- [ ] **Step 5: Run the tokenizer tests**
+
+Run from `python/`:
 
 ```bash
-git add python/gristmill_symbolics/tokenizer.py python/tests/test_flat_definition_tokenizer.py
-git commit -m "feat: add padded definition tokenization"
+uv run pytest tests/test_flat_definition_tokenizer.py -q
 ```
 
-## Task 5: Final Verification
+Expected: PASS for raw tokenizer tests.
+
+## Task 4: Final Verification
 
 **Files:**
 - Verify: `python/gristmill_symbolics/tokenizer.py`
@@ -776,4 +639,5 @@ Run from the repository worktree root:
 git status --short --branch
 ```
 
-Expected: clean `refactor/python-ml-rebuild` branch after the two implementation commits.
+Expected: clean `refactor/python-ml-rebuild` branch after the implementation
+and raw-only revision commits.

@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 
 from gristmill_symbolics.tokenizer import (
@@ -71,6 +70,13 @@ def test_token_names_are_inspectable_for_configured_vocabulary():
         "indexid0",
         "def_end",
     ]
+
+
+def test_tokenizer_exposes_raw_definition_api_only():
+    tokenizer = _tokenizer()
+
+    assert not hasattr(tokenizer, "encode_definition_padded")
+    assert not hasattr(tokenizer, "decode_definition_padded")
 
 
 def test_definition_round_trips_through_raw_integer_tokens():
@@ -193,53 +199,3 @@ def test_decode_rejects_malformed_raw_streams():
     denominator_where_term_should_start[6] = valid[7]
     with pytest.raises(TokenizerError, match="coeff_num or def_end"):
         tokenizer.decode_definition(denominator_where_term_should_start)
-
-
-def test_padded_encode_uses_right_padding_and_round_trips():
-    tokenizer = _tokenizer()
-    definition = _definition()
-    raw = tokenizer.encode_definition(definition)
-
-    ids, mask = tokenizer.encode_definition_padded(definition, max_len=len(raw) + 3)
-
-    assert ids.dtype == np.int32
-    assert mask.dtype == np.bool_
-    np.testing.assert_array_equal(ids[: len(raw)], np.asarray(raw, dtype=np.int32))
-    np.testing.assert_array_equal(
-        ids[len(raw) :],
-        np.full((3,), tokenizer.pad_token_id, dtype=np.int32),
-    )
-    np.testing.assert_array_equal(mask[: len(raw)], np.ones((len(raw),), dtype=np.bool_))
-    np.testing.assert_array_equal(mask[len(raw) :], np.zeros((3,), dtype=np.bool_))
-    assert tokenizer.decode_definition_padded(ids, mask) == definition
-
-
-def test_padded_encode_rejects_overlong_definition():
-    tokenizer = _tokenizer()
-    definition = _definition()
-    raw = tokenizer.encode_definition(definition)
-
-    with pytest.raises(TokenizerError, match="exceeds max_len"):
-        tokenizer.encode_definition_padded(definition, max_len=len(raw) - 1)
-
-
-def test_padded_decode_rejects_invalid_padding_and_mask():
-    tokenizer = _tokenizer()
-    ids, mask = tokenizer.encode_definition_padded(_definition(), max_len=32)
-
-    non_right_padded_mask = mask.copy()
-    non_right_padded_mask[0] = False
-    non_right_padded_mask[1] = True
-    with pytest.raises(TokenizerError, match="right-padding"):
-        tokenizer.decode_definition_padded(ids, non_right_padded_mask)
-
-    non_pad_tail = ids.copy()
-    non_pad_tail[-1] = ids[0]
-    with pytest.raises(TokenizerError, match="pad_token_id"):
-        tokenizer.decode_definition_padded(non_pad_tail, mask)
-
-    with pytest.raises(TokenizerError, match="same shape"):
-        tokenizer.decode_definition_padded(ids, mask[:-1])
-
-    with pytest.raises(TokenizerError, match="boolean"):
-        tokenizer.decode_definition_padded(ids, mask.astype(np.int32))
