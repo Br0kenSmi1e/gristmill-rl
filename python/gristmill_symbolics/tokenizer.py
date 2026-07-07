@@ -83,6 +83,20 @@ class FlatDefinitionTokenizer:
             ids.extend(self.encode_definition(definition))
         return ids
 
+    def encode_definitions_padded(
+        self,
+        definitions: Sequence[Mapping[str, object]],
+        *,
+        length: int,
+    ) -> list[int]:
+        length = _integer("length", length)
+        ids = self.encode_definitions(definitions)
+        if len(ids) > length:
+            raise TokenizerError(
+                f"encoded definitions length {len(ids)} exceeds length {length}"
+            )
+        return [*ids, *([self.pad_token_id] * (length - len(ids)))]
+
     def decode_definition(self, ids: Sequence[int]) -> dict[str, object]:
         specs = self._token_specs_for_stream(ids, allow_pad=False)
         pos = 0
@@ -177,6 +191,20 @@ class FlatDefinitionTokenizer:
         if start is not None:
             raise TokenizerError("expected def_end, reached end of token stream")
         return definitions
+
+    def decode_definitions_padded(
+        self,
+        ids: Sequence[int],
+    ) -> list[dict[str, object]]:
+        if isinstance(ids, (str, bytes, Mapping)) or not isinstance(ids, Sequence):
+            raise TokenizerError("token stream must be a sequence of integer IDs")
+
+        raw_ids = list(ids)
+        while raw_ids and raw_ids[-1] == self.pad_token_id:
+            raw_ids.pop()
+        if not raw_ids:
+            return []
+        return self.decode_definitions(raw_ids)
 
     def _add_token(
         self,

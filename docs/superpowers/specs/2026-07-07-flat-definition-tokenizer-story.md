@@ -18,15 +18,17 @@ Deliverables:
   definition snapshot dict.
 - Raw sequence round-trip: sequence of definition snapshot dicts ->
   concatenated list[int] -> equivalent sequence of definition snapshot dicts.
-- Focused tests for valid round trips, vocabulary lookup, raw-only API, and
-  tokenizer-owned rejection cases.
+- Thin padded sequence wrappers that right-pad concatenated definition tokens
+  to a requested length and decode right-padded definition token sequences.
+- Focused tests for valid round trips, vocabulary lookup,
+  single-definition raw-only API, and tokenizer-owned rejection cases.
 
 Non-goals:
 - TensorComputation-level round-trip.
 - Action-space or candidate-pair tokenization.
 - TensorComputation state wrapper or model-facing batching around definition
   sequences.
-- Padded encode/decode APIs, masks, or NumPy array conversion.
+- Padded single-definition APIs, masks, or NumPy array conversion.
 - Full TensorDef snapshot schema validation; CLI or data-loading code should
   own user-facing schema validation when that layer exists.
 - Constructor argument validation or normalization; configuration objects are
@@ -42,6 +44,13 @@ Acceptance criteria:
 - A valid sequence of definition snapshot dicts encodes as the concatenation of
   individual definition encodings and decodes by splitting on def_start/def_end.
 - Empty definition sequences encode and decode as empty lists.
+- A sequence of definition snapshot dicts can be encoded to an exact requested
+  length by right-padding the concatenated raw token stream with pad token IDs.
+- Padded sequence encode rejects requested lengths shorter than the raw
+  concatenated token stream.
+- Padded sequence decode strips trailing pad token IDs, decodes the remaining
+  raw sequence, returns an empty list for empty or all-pad inputs, and rejects
+  non-sequence inputs or non-right padding.
 - Tokenization follows the flat positional grammar:
   - def_start begins a definition and def_end ends it.
   - first tensorid after def_start is the base tensor.
@@ -51,8 +60,9 @@ Acceptance criteria:
   - tensorid inside a term starts a factor.
   - following indexid tokens are factor arguments until the next tensorid,
     coeff_num, or def_end.
-- The reserved pad token remains token id 0 for future batching, but raw decode
-  rejects pad tokens and the tokenizer exposes no padded encode/decode methods.
+- The reserved pad token remains token id 0 for future batching. Raw decode
+  rejects pad tokens; only the definition-sequence padded wrappers consume or
+  produce padding.
 - Unsupported tensor/range/index IDs and unsupported coefficient
   numerator/denominator values are rejected with clear errors.
 - Malformed raw token streams are rejected with clear errors.
@@ -69,8 +79,8 @@ Acceptance criteria:
 
 Constraints:
 - Primary ML-facing representation is integer IDs, not string tokens.
-- Tokenizer raw encode/decode must use plain Python sequence APIs, with no JAX
-  or NumPy dependency in this layer.
+- Tokenizer raw and padded-wrapper encode/decode must use plain Python
+  sequence APIs, with no JAX or NumPy dependency in this layer.
 - Public API should be a tokenizer class because vocabulary bounds and
   coefficient sets are tokenizer configuration.
 - The tokenizer is not a general input validator; schema-level checks belong in
@@ -110,14 +120,16 @@ Implementation hints:
   - decode_definition(ids) -> dict
   - encode_definitions(defns) -> list[int]
   - decode_definitions(ids) -> list[dict]
+  - encode_definitions_padded(defns, length=...) -> list[int]
+  - decode_definitions_padded(ids) -> list[dict]
   - pad_token_id -> int
   - token_name(token_id) -> str
 - Keep the raw token-stream parser strict and explicit so invalid token order
   fails early.
 - Keep encode direct and minimal; it should fail only when values cannot be
   mapped into the configured vocabulary or normal field access fails.
-- Keep batching and padding outside this tokenizer until a later integration
-  story needs them.
+- Keep model-facing batching, masks, and array conversion outside this
+  tokenizer until a later integration story needs them.
 
 Follow-up stories:
 - TensorComputation state tokenization that passes snapshot definitions through

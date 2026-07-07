@@ -119,7 +119,7 @@ def test_constructor_preserves_configuration_inputs():
     assert tokenizer.coeff_dens is coeff_dens
 
 
-def test_tokenizer_exposes_raw_definition_api_only():
+def test_tokenizer_exposes_no_single_definition_padded_api():
     tokenizer = _tokenizer()
 
     assert not hasattr(tokenizer, "encode_definition_padded")
@@ -150,6 +150,47 @@ def test_definition_sequence_round_trips_as_concatenated_raw_tokens():
     assert tokenizer.decode_definitions(ids) == definitions
     assert tokenizer.encode_definitions([]) == []
     assert tokenizer.decode_definitions([]) == []
+
+
+def test_padded_definition_sequence_uses_right_padding_and_decodes():
+    tokenizer = _tokenizer()
+    definitions = [_definition(), _second_definition()]
+    raw = tokenizer.encode_definitions(definitions)
+
+    padded = tokenizer.encode_definitions_padded(definitions, length=len(raw) + 3)
+
+    assert padded == [
+        *raw,
+        tokenizer.pad_token_id,
+        tokenizer.pad_token_id,
+        tokenizer.pad_token_id,
+    ]
+    assert tokenizer.decode_definitions_padded(padded) == definitions
+    assert tokenizer.encode_definitions_padded([], length=2) == [
+        tokenizer.pad_token_id,
+        tokenizer.pad_token_id,
+    ]
+    assert tokenizer.decode_definitions_padded([tokenizer.pad_token_id] * 2) == []
+    assert tokenizer.decode_definitions_padded([]) == []
+
+
+def test_padded_definition_sequence_rejects_overlong_and_non_right_padding():
+    tokenizer = _tokenizer()
+    definitions = [_definition(), _second_definition()]
+    raw = tokenizer.encode_definitions(definitions)
+
+    with pytest.raises(TokenizerError, match="exceeds length"):
+        tokenizer.encode_definitions_padded(definitions, length=len(raw) - 1)
+
+    with pytest.raises(TokenizerError, match="sequence of integer IDs"):
+        tokenizer.decode_definitions_padded({})
+
+    with pytest.raises(TokenizerError, match="raw token stream cannot contain pad"):
+        tokenizer.decode_definitions_padded([
+            raw[0],
+            tokenizer.pad_token_id,
+            *raw[1:],
+        ])
 
 
 def test_encode_rejects_values_outside_configured_vocabulary():

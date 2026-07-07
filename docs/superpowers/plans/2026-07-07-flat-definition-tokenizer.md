@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs and round-trips TensorDef snapshot dicts, individually or as raw concatenated sequences.
+**Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs and round-trips TensorDef snapshot dicts, individually, as raw concatenated sequences, or as right-padded concatenated definition sequences.
 
-**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer stores vocabulary configuration as provided, builds its fixed vocabulary from those values, performs strict parsing for raw token streams, assumes snapshot-like encode input, reserves `pad` as token id 0, and leaves batching/padding, TensorComputation wrapping, and full schema validation outside this layer.
+**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer stores vocabulary configuration as provided, builds its fixed vocabulary from those values, performs strict parsing for raw token streams, assumes snapshot-like encode input, reserves `pad` as token id 0, includes thin list-based right-padding wrappers for definition sequences, and leaves model-facing batching, masks, array conversion, TensorComputation wrapping, and full schema validation outside this layer.
 
 **Tech Stack:** Python 3.11, pytest, uv.
 
@@ -25,10 +25,15 @@ Scope note: Task 6 adds raw definition-sequence encode/decode. This is not a
 TensorComputation-level state API; it only concatenates already snapshot-like
 definition dicts and splits concatenated raw token streams on def_start/def_end.
 
+Scope note: Task 7 adds thin padded definition-sequence wrappers. This is not a
+model-facing batch collation API; it only right-pads `encode_definitions` output
+to a requested list length and strips trailing pad tokens before
+`decode_definitions`.
+
 ## File Structure
 
-- Create `python/gristmill_symbolics/tokenizer.py`: public tokenizer class, tokenizer-specific error type, fixed-vocabulary construction, raw single-definition and definition-sequence encode/decode, reserved pad token, and token-name lookup.
-- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, sequence round-trip, token-stream grammar validation, vocabulary rejection, permissive snapshot-like encode input, and raw-only API surface.
+- Create `python/gristmill_symbolics/tokenizer.py`: public tokenizer class, tokenizer-specific error type, fixed-vocabulary construction, raw single-definition and definition-sequence encode/decode, thin padded sequence wrappers, reserved pad token, and token-name lookup.
+- Create `python/tests/test_flat_definition_tokenizer.py`: focused tokenizer tests for vocabulary names, raw round-trip, sequence round-trip, padded sequence wrappers, token-stream grammar validation, vocabulary rejection, permissive snapshot-like encode input, and single-definition raw-only API surface.
 - Leave `python/gristmill_symbolics/__init__.py` unchanged so the existing thin rewrite-binding root export test remains valid.
 
 ## Task 1: Raw Tokenizer Tests
@@ -516,7 +521,7 @@ git commit -m "feat: add flat definition tokenizer"
 - Modify: `docs/superpowers/specs/2026-07-07-flat-definition-tokenizer-story.md`
 - Modify: `docs/superpowers/plans/2026-07-07-flat-definition-tokenizer.md`
 
-- [ ] **Step 1: Add a raw-only API regression test**
+- [ ] **Step 1: Add a single-definition raw-only API regression test**
 
 Add a focused test asserting that `FlatDefinitionTokenizer` does not expose
 `encode_definition_padded` or `decode_definition_padded`, while the existing
@@ -535,14 +540,14 @@ Expected before implementation: FAIL because the padded methods still exist.
 - [ ] **Step 3: Remove padded encode/decode implementation**
 
 Remove `encode_definition_padded`, `decode_definition_padded`, the NumPy import,
-the now-unused positive integer helper, and padded tests. Do not remove the
-reserved `pad` token or `pad_token_id`.
+the now-unused positive integer helper, and single-definition padded tests. Do
+not remove the reserved `pad` token or `pad_token_id`.
 
 - [ ] **Step 4: Update story and plan docs**
 
-Revise this story to describe raw definition encode/decode only. Record that
-padding and batching are outside this tokenizer, while `pad` remains reserved
-for future batching.
+Revise this story to describe raw single-definition encode/decode only. Record
+that single-definition padding and model batching are outside this tokenizer,
+while `pad` remains reserved for future batching.
 
 - [ ] **Step 5: Run the tokenizer tests**
 
@@ -692,7 +697,60 @@ uv run pytest tests/test_flat_definition_tokenizer.py -q
 
 Expected: PASS for raw tokenizer tests.
 
-## Task 7: Final Verification
+## Task 7: Padded Definition Sequence Wrappers
+
+**Files:**
+- Modify: `python/gristmill_symbolics/tokenizer.py`
+- Modify: `python/tests/test_flat_definition_tokenizer.py`
+- Modify: `docs/superpowers/specs/2026-07-07-flat-definition-tokenizer-story.md`
+- Modify: `docs/superpowers/plans/2026-07-07-flat-definition-tokenizer.md`
+
+- [ ] **Step 1: Add padded sequence wrapper tests**
+
+Add focused tests showing that `encode_definitions_padded` calls the raw
+sequence encoder and right-pads with `pad_token_id` to the requested length,
+`decode_definitions_padded` strips trailing pads and decodes the remaining raw
+sequence, empty and all-pad inputs decode as empty lists, overlong encode
+requests are rejected, non-sequence padded decode inputs are rejected, and
+non-right padding is rejected by the raw decoder.
+
+- [ ] **Step 2: Run the tokenizer tests to verify the methods are missing**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected before implementation: FAIL because `FlatDefinitionTokenizer` has no
+`encode_definitions_padded` method.
+
+- [ ] **Step 3: Add the padded sequence wrappers**
+
+Implement `encode_definitions_padded(definitions, *, length)` by delegating to
+`encode_definitions`, rejecting raw sequences longer than `length`, and
+right-padding the returned list with `pad_token_id`. Implement
+`decode_definitions_padded(ids)` by rejecting non-sequence inputs, stripping
+trailing pad token IDs, returning `[]` for empty or all-pad inputs, and
+delegating the remaining stream to `decode_definitions`.
+
+- [ ] **Step 4: Update story and plan docs**
+
+Revise this story to include the padded definition-sequence wrappers while
+keeping single-definition padded APIs, model batching, masks, NumPy conversion,
+and TensorComputation-level state APIs out of scope.
+
+- [ ] **Step 5: Run the tokenizer tests**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected: PASS for raw and padded-wrapper tokenizer tests.
+
+## Task 8: Final Verification
 
 **Files:**
 - Verify: `python/gristmill_symbolics/tokenizer.py`
