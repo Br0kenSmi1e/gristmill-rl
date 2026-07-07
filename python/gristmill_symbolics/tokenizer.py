@@ -29,18 +29,11 @@ class FlatDefinitionTokenizer:
         coeff_nums: Sequence[int],
         coeff_dens: Sequence[int],
     ):
-        self.max_range_id = _integer("max_range_id", max_range_id)
-        self.max_tensor_id = _integer("max_tensor_id", max_tensor_id)
-        self.max_index_id = _integer("max_index_id", max_index_id)
-        for name, value in (
-            ("max_range_id", self.max_range_id),
-            ("max_tensor_id", self.max_tensor_id),
-            ("max_index_id", self.max_index_id),
-        ):
-            if value < 0:
-                raise TokenizerError(f"{name} must be nonnegative")
-        self.coeff_nums = tuple(_integer("coeff_nums", value) for value in coeff_nums)
-        self.coeff_dens = tuple(_integer("coeff_dens", value) for value in coeff_dens)
+        self.max_range_id = max_range_id
+        self.max_tensor_id = max_tensor_id
+        self.max_index_id = max_index_id
+        self.coeff_nums = coeff_nums
+        self.coeff_dens = coeff_dens
 
         self._token_specs: list[_TokenSpec] = []
         self._token_ids: dict[str, int] = {}

@@ -41,6 +41,17 @@ def _definition() -> dict[str, object]:
     }
 
 
+class _IntLike:
+    def __init__(self, value: int):
+        self.value = value
+
+    def __index__(self) -> int:
+        return self.value
+
+    def __add__(self, value: int) -> int:
+        return self.value + value
+
+
 def test_token_names_are_inspectable_for_configured_vocabulary():
     tokenizer = _tokenizer()
 
@@ -70,6 +81,28 @@ def test_token_names_are_inspectable_for_configured_vocabulary():
         "indexid0",
         "def_end",
     ]
+
+
+def test_constructor_preserves_configuration_inputs():
+    max_range_id = _IntLike(3)
+    max_tensor_id = _IntLike(4)
+    max_index_id = _IntLike(5)
+    coeff_nums = [-1, 1, 2]
+    coeff_dens = [1, 2, 3]
+
+    tokenizer = FlatDefinitionTokenizer(
+        max_range_id=max_range_id,
+        max_tensor_id=max_tensor_id,
+        max_index_id=max_index_id,
+        coeff_nums=coeff_nums,
+        coeff_dens=coeff_dens,
+    )
+
+    assert tokenizer.max_range_id is max_range_id
+    assert tokenizer.max_tensor_id is max_tensor_id
+    assert tokenizer.max_index_id is max_index_id
+    assert tokenizer.coeff_nums is coeff_nums
+    assert tokenizer.coeff_dens is coeff_dens
 
 
 def test_tokenizer_exposes_raw_definition_api_only():

@@ -4,7 +4,7 @@
 
 **Goal:** Build a definition-level flat tokenizer that produces fixed-vocabulary integer IDs and round-trips TensorDef snapshot dicts through raw token streams.
 
-**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer owns its configured vocabulary bounds and coefficient sets, performs strict parsing for raw token streams, assumes snapshot-like encode input, reserves `pad` as token id 0, and leaves batching/padding and full schema validation outside this layer.
+**Architecture:** Add one public Python submodule, `gristmill_symbolics.tokenizer`, containing `FlatDefinitionTokenizer` and `TokenizerError`. Keep the package root rewrite-binding exports unchanged. The tokenizer stores vocabulary configuration as provided, builds its fixed vocabulary from those values, performs strict parsing for raw token streams, assumes snapshot-like encode input, reserves `pad` as token id 0, and leaves batching/padding and full schema validation outside this layer.
 
 **Tech Stack:** Python 3.11, pytest, uv.
 
@@ -15,6 +15,11 @@ show exact dictionary-key or list-only validation in `encode_definition`. The
 current accepted boundary is vocabulary and raw token-stream validation in the
 tokenizer, with full snapshot schema validation deferred to CLI/data-loading
 work.
+
+Scope note: Task 5 supersedes any earlier constructor snippets that show
+coercion, deduplication, or validation of constructor configuration. The current
+accepted boundary stores constructor inputs directly and lets invalid
+configuration fail naturally during vocabulary construction or tokenizer use.
 
 ## File Structure
 
@@ -233,18 +238,11 @@ class FlatDefinitionTokenizer:
         coeff_nums: Sequence[int],
         coeff_dens: Sequence[int],
     ):
-        self.max_range_id = _integer("max_range_id", max_range_id)
-        self.max_tensor_id = _integer("max_tensor_id", max_tensor_id)
-        self.max_index_id = _integer("max_index_id", max_index_id)
-        for name, value in (
-            ("max_range_id", self.max_range_id),
-            ("max_tensor_id", self.max_tensor_id),
-            ("max_index_id", self.max_index_id),
-        ):
-            if value < 0:
-                raise TokenizerError(f"{name} must be nonnegative")
-        self.coeff_nums = tuple(_integer("coeff_nums", value) for value in coeff_nums)
-        self.coeff_dens = tuple(_integer("coeff_dens", value) for value in coeff_dens)
+        self.max_range_id = max_range_id
+        self.max_tensor_id = max_tensor_id
+        self.max_index_id = max_index_id
+        self.coeff_nums = coeff_nums
+        self.coeff_dens = coeff_dens
 
         self._token_specs: list[_TokenSpec] = []
         self._token_ids: dict[str, int] = {}
@@ -597,7 +595,52 @@ uv run pytest tests/test_flat_definition_tokenizer.py -q
 
 Expected: PASS for raw tokenizer tests.
 
-## Task 5: Final Verification
+## Task 5: Constructor Configuration Revision
+
+**Files:**
+- Modify: `python/gristmill_symbolics/tokenizer.py`
+- Modify: `python/tests/test_flat_definition_tokenizer.py`
+- Modify: `docs/superpowers/specs/2026-07-07-flat-definition-tokenizer-story.md`
+- Modify: `docs/superpowers/plans/2026-07-07-flat-definition-tokenizer.md`
+
+- [ ] **Step 1: Add a constructor-preservation regression test**
+
+Add a focused test showing that `FlatDefinitionTokenizer` stores
+`max_range_id`, `max_tensor_id`, `max_index_id`, `coeff_nums`, and
+`coeff_dens` exactly as provided.
+
+- [ ] **Step 2: Run the tokenizer tests to verify constructor coercion is caught**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected before implementation: FAIL because the current constructor coerces
+integer-like bounds and tuple-converts coefficient sequences.
+
+- [ ] **Step 3: Remove constructor coercion and validation**
+
+Assign constructor arguments directly to instance attributes. Keep
+tokenization-time checks in `_integer` and `_bounded_int`.
+
+- [ ] **Step 4: Update story and plan docs**
+
+Revise this story to state that constructor argument validation and
+normalization are outside the tokenizer boundary.
+
+- [ ] **Step 5: Run the tokenizer tests**
+
+Run from `python/`:
+
+```bash
+uv run pytest tests/test_flat_definition_tokenizer.py -q
+```
+
+Expected: PASS for raw tokenizer tests.
+
+## Task 6: Final Verification
 
 **Files:**
 - Verify: `python/gristmill_symbolics/tokenizer.py`

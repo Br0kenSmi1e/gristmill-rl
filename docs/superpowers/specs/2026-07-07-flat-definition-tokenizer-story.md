@@ -26,6 +26,9 @@ Non-goals:
 - Padded encode/decode APIs, masks, or NumPy array conversion.
 - Full TensorDef snapshot schema validation; CLI or data-loading code should
   own user-facing schema validation when that layer exists.
+- Constructor argument validation or normalization; configuration objects are
+  stored as provided and may fail naturally while building or using the
+  vocabulary if invalid.
 - JAX arrays, jax.jit, vmap, tracing, or model compilation.
 - Model, trainer, CLI, checkpoint, batching, or training-loop work.
 - Restoring the old columnar tokenizer or structure-heavy role tokens.
@@ -50,6 +53,7 @@ Acceptance criteria:
 - Encode accepts snapshot-like mappings and iterables when the fields it needs
   are present; it does not police extra keys, exact concrete container types,
   or the full TensorDef snapshot schema.
+- The tokenizer constructor preserves its configuration inputs directly.
 - Tests run on refactor/python-ml-rebuild without adding model/trainer
   dependencies.
 
@@ -61,6 +65,8 @@ Constraints:
   coefficient sets are tokenizer configuration.
 - The tokenizer is not a general input validator; schema-level checks belong in
   CLI or data-loading code.
+- The tokenizer constructor should not coerce, deduplicate, or validate
+  vocabulary configuration arguments.
 - Input/output definition shape matches entries from
   TensorComputation.snapshot()["definitions"].
 
@@ -74,8 +80,9 @@ compatibility, safety, performance, or operational constraints.
 ## Agent-Owned Notes
 
 Assumptions:
-- The tokenizer constructor will own vocabulary limits such as max_range_id,
-  max_tensor_id, max_index_id, supported coeff_nums, and supported coeff_dens.
+- The tokenizer constructor will store vocabulary limits such as max_range_id,
+  max_tensor_id, max_index_id, supported coeff_nums, and supported coeff_dens
+  exactly as passed.
 - Error type choice and exact module/file layout are implementation decisions.
 - Equivalent definition snapshot means the same normalized dict shape and values
   expected by current Python snapshot tests.
