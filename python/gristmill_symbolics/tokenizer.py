@@ -74,6 +74,15 @@ class FlatDefinitionTokenizer:
         ids.append(self._token_ids["def_end"])
         return ids
 
+    def encode_definitions(
+        self,
+        definitions: Sequence[Mapping[str, object]],
+    ) -> list[int]:
+        ids: list[int] = []
+        for definition in definitions:
+            ids.extend(self.encode_definition(definition))
+        return ids
+
     def decode_definition(self, ids: Sequence[int]) -> dict[str, object]:
         specs = self._token_specs_for_stream(ids, allow_pad=False)
         pos = 0
@@ -145,6 +154,29 @@ class FlatDefinitionTokenizer:
             "ext_indices": ext_indices,
             "terms": terms,
         }
+
+    def decode_definitions(self, ids: Sequence[int]) -> list[dict[str, object]]:
+        if isinstance(ids, (str, bytes, Mapping)) or not isinstance(ids, Sequence):
+            raise TokenizerError("token stream must be a sequence of integer IDs")
+        if not ids:
+            return []
+
+        specs = self._token_specs_for_stream(ids, allow_pad=False)
+        raw_ids = list(ids)
+        definitions: list[dict[str, object]] = []
+        start: int | None = None
+        for pos, spec in enumerate(specs):
+            if start is None:
+                if spec.kind != "def_start":
+                    raise TokenizerError(f"expected def_start, got {spec.name}")
+                start = pos
+            elif spec.kind == "def_end":
+                definitions.append(self.decode_definition(raw_ids[start : pos + 1]))
+                start = None
+
+        if start is not None:
+            raise TokenizerError("expected def_end, reached end of token stream")
+        return definitions
 
     def _add_token(
         self,

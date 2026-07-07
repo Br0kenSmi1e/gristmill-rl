@@ -16,13 +16,16 @@ Deliverables:
 - Debug token-name lookup for inspecting integer IDs.
 - Raw round-trip: definition snapshot dict -> list[int] -> equivalent
   definition snapshot dict.
+- Raw sequence round-trip: sequence of definition snapshot dicts ->
+  concatenated list[int] -> equivalent sequence of definition snapshot dicts.
 - Focused tests for valid round trips, vocabulary lookup, raw-only API, and
   tokenizer-owned rejection cases.
 
 Non-goals:
 - TensorComputation-level round-trip.
 - Action-space or candidate-pair tokenization.
-- State tokenization across all definitions.
+- TensorComputation state wrapper or model-facing batching around definition
+  sequences.
 - Padded encode/decode APIs, masks, or NumPy array conversion.
 - Full TensorDef snapshot schema validation; CLI or data-loading code should
   own user-facing schema validation when that layer exists.
@@ -36,6 +39,9 @@ Non-goals:
 Acceptance criteria:
 - A valid definition snapshot dict round-trips through raw integer tokens
   without changing semantic fields.
+- A valid sequence of definition snapshot dicts encodes as the concatenation of
+  individual definition encodings and decodes by splitting on def_start/def_end.
+- Empty definition sequences encode and decode as empty lists.
 - Tokenization follows the flat positional grammar:
   - def_start begins a definition and def_end ends it.
   - first tensorid after def_start is the base tensor.
@@ -50,6 +56,10 @@ Acceptance criteria:
 - Unsupported tensor/range/index IDs and unsupported coefficient
   numerator/denominator values are rejected with clear errors.
 - Malformed raw token streams are rejected with clear errors.
+- Malformed concatenated definition streams are rejected when input is not a
+  token sequence, a token appears before def_start, def_end is missing, pad
+  appears, a token id is unknown, or a sliced definition violates the
+  single-definition grammar.
 - Encode accepts snapshot-like mappings and iterables when the fields it needs
   are present; it does not police extra keys, exact concrete container types,
   or the full TensorDef snapshot schema.
@@ -98,6 +108,8 @@ Implementation hints:
   - FlatDefinitionTokenizer(...)
   - encode_definition(defn) -> list[int]
   - decode_definition(ids) -> dict
+  - encode_definitions(defns) -> list[int]
+  - decode_definitions(ids) -> list[dict]
   - pad_token_id -> int
   - token_name(token_id) -> str
 - Keep the raw token-stream parser strict and explicit so invalid token order
@@ -108,7 +120,8 @@ Implementation hints:
   story needs them.
 
 Follow-up stories:
-- TensorComputation state tokenization by concatenating encoded definitions.
+- TensorComputation state tokenization that passes snapshot definitions through
+  the raw sequence API.
 - Action-space candidate tokenization for flattened left/right definition pairs.
 - Batch collation and model-facing integration.
 - Trainer/model/CLI rebuild on top of the tokenizer.

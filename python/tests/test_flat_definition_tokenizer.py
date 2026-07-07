@@ -41,6 +41,20 @@ def _definition() -> dict[str, object]:
     }
 
 
+def _second_definition() -> dict[str, object]:
+    return {
+        "base": 2,
+        "ext_indices": [{"id": 0, "range": 0}],
+        "terms": [
+            {
+                "coeff": {"numer": 2, "denom": 3},
+                "sum_indices": [],
+                "factors": [{"tensor": 4, "indices": [0]}],
+            },
+        ],
+    }
+
+
 class _IntLike:
     def __init__(self, value: int):
         self.value = value
@@ -121,6 +135,21 @@ def test_definition_round_trips_through_raw_integer_tokens():
 
     assert all(type(token_id) is int for token_id in ids)
     assert decoded == definition
+
+
+def test_definition_sequence_round_trips_as_concatenated_raw_tokens():
+    tokenizer = _tokenizer()
+    definitions = [_definition(), _second_definition()]
+
+    ids = tokenizer.encode_definitions(definitions)
+
+    assert ids == [
+        *tokenizer.encode_definition(definitions[0]),
+        *tokenizer.encode_definition(definitions[1]),
+    ]
+    assert tokenizer.decode_definitions(ids) == definitions
+    assert tokenizer.encode_definitions([]) == []
+    assert tokenizer.decode_definitions([]) == []
 
 
 def test_encode_rejects_values_outside_configured_vocabulary():
@@ -210,3 +239,24 @@ def test_decode_rejects_malformed_raw_streams():
     denominator_where_term_should_start[6] = valid[7]
     with pytest.raises(TokenizerError, match="coeff_num or def_end"):
         tokenizer.decode_definition(denominator_where_term_should_start)
+
+
+def test_decode_definitions_rejects_malformed_concatenated_streams():
+    tokenizer = _tokenizer()
+    valid = tokenizer.encode_definitions([_definition(), _second_definition()])
+
+    with pytest.raises(TokenizerError, match="sequence of integer IDs"):
+        tokenizer.decode_definitions({})
+
+    with pytest.raises(TokenizerError, match="def_start"):
+        tokenizer.decode_definitions(valid[1:])
+
+    missing_final_end = valid[:-1]
+    with pytest.raises(TokenizerError, match="def_end"):
+        tokenizer.decode_definitions(missing_final_end)
+
+    with pytest.raises(TokenizerError, match="raw token stream cannot contain pad"):
+        tokenizer.decode_definitions([tokenizer.pad_token_id, *valid])
+
+    with pytest.raises(TokenizerError, match="unknown token id"):
+        tokenizer.decode_definitions([10_000])
