@@ -45,6 +45,14 @@ def test_tokenizer_from_metadata_rebuilds_flat_definition_tokenizer():
     assert tokenizer.eos_token_id == metadata["tokenizer"]["eos_token_id"]
 
 
+def test_tokenizer_from_metadata_rejects_vocab_size_mismatch():
+    metadata = _metadata(source_len=12, target_len=14)
+    metadata["vocab_size"] += 1
+
+    with pytest.raises(ValueError, match="vocab_size"):
+        train_supervised._tokenizer_from_metadata(metadata)
+
+
 def test_validate_metadata_accepts_matching_train_and_valid_metadata():
     train = _metadata(source_len=12, target_len=14)
     valid = _metadata(source_len=12, target_len=14)
@@ -54,9 +62,27 @@ def test_validate_metadata_accepts_matching_train_and_valid_metadata():
     assert result is None
 
 
-def test_validate_metadata_rejects_shape_or_tokenizer_mismatch():
+def test_validate_metadata_rejects_target_len_mismatch():
     train = _metadata(source_len=12, target_len=14)
     valid = _metadata(source_len=12, target_len=15)
 
     with pytest.raises(ValueError, match="target_len"):
         train_supervised._validate_compatible_metadata(train, valid)
+
+
+def test_validate_metadata_rejects_tokenizer_mismatch():
+    train = _metadata(source_len=12, target_len=14)
+    valid = _metadata(source_len=12, target_len=14)
+    valid["tokenizer"]["max_tensor_id"] += 1
+
+    with pytest.raises(ValueError, match="tokenizer"):
+        train_supervised._validate_compatible_metadata(train, valid)
+
+
+def test_attention_from_name_accepts_only_supported_attention_names():
+    assert train_supervised._attention_from_name("default") is None
+    assert train_supervised._attention_from_name("xla") == "xla"
+    assert train_supervised._attention_from_name("cudnn") == "cudnn"
+
+    with pytest.raises(ValueError, match="unsupported attention"):
+        train_supervised._attention_from_name("flash")

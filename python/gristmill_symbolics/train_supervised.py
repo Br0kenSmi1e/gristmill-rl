@@ -36,6 +36,8 @@ def _tokenizer_from_metadata(metadata: dict[str, Any]) -> FlatDefinitionTokenize
             raise ValueError(
                 f"metadata tokenizer {name} does not match rebuilt tokenizer"
             )
+    if metadata["vocab_size"] != tokenizer.vocab_size:
+        raise ValueError("metadata vocab_size does not match rebuilt tokenizer")
     return tokenizer
 
 
@@ -61,7 +63,9 @@ def _dtype_from_name(name: str):
 def _attention_from_name(name: str):
     if name == "default":
         return None
-    return name
+    if name in ("xla", "cudnn"):
+        return name
+    raise ValueError(f"unsupported attention implementation {name!r}")
 
 
 def _build_model(args: argparse.Namespace, metadata: dict[str, Any], rng_seed: int):
