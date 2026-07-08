@@ -212,6 +212,31 @@ def test_iter_update_groups_drops_trailing_full_microbatch():
     assert groups[0][1]["target_ids"].shape == (2, 4)
 
 
+def test_iter_update_groups_shuffles_training_order_with_provided_rng():
+    dataset = _array_dataset(num_examples=4, source_len=3, target_len=4)
+    expected_order = np.arange(4)
+    np.random.default_rng(123).shuffle(expected_order)
+
+    groups = list(
+        train_supervised._iter_update_groups(
+            dataset,
+            batch_size=2,
+            accumulate_steps=1,
+            rng=np.random.default_rng(123),
+        )
+    )
+    actual_row_starts = [
+        int(row[0])
+        for group in groups
+        for batch in group
+        for row in np.asarray(batch["source_ids"])
+    ]
+
+    assert len(groups) == 2
+    assert actual_row_starts == (expected_order * 3).tolist()
+    assert actual_row_starts != [0, 3, 6, 9]
+
+
 def test_evaluate_dataset_returns_weighted_totals_for_full_batches_only():
     tokenizer = _tokenizer()
     grammar = FlatDefinitionGrammar(tokenizer)
