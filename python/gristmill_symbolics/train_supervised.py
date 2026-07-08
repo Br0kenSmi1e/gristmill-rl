@@ -94,22 +94,25 @@ def _iter_update_groups(
             current = []
 
 
-def _evaluate_dataset(
-    model: nnx.Module,
-    dataset: dict[str, Any],
-    grammar: FlatDefinitionGrammar,
-    *,
-    batch_size: int,
-) -> dict[str, float | int]:
+def _make_eval_step(grammar: FlatDefinitionGrammar):
     def eval_step(model: nnx.Module, batch: dict[str, jax.Array]):
         return weighted_nll(model, batch, grammar, deterministic=True)
 
-    jitted_eval_step = nnx.jit(eval_step)
+    return nnx.jit(eval_step)
+
+
+def _evaluate_dataset(
+    eval_step,
+    model: nnx.Module,
+    dataset: dict[str, Any],
+    *,
+    batch_size: int,
+) -> dict[str, float | int]:
     weighted_nll_sum = 0.0
     weight_sum = 0.0
     num_batches = 0
     for batch in iter_supervised_batches(dataset, batch_size=batch_size):
-        batch_nll, batch_weight = jitted_eval_step(model, _as_jax_batch(batch))
+        batch_nll, batch_weight = eval_step(model, _as_jax_batch(batch))
         weighted_nll_sum += float(batch_nll)
         weight_sum += float(batch_weight)
         num_batches += 1
@@ -283,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
         wrt=nnx.Param,
     )
     trainer = SupervisedTrainer(grammar)
+    eval_step = _make_eval_step(grammar)
 
     last_record: dict[str, float | int] | None = None
     for epoch in range(1, args.epochs + 1):
@@ -296,9 +300,9 @@ def main(argv: list[str] | None = None) -> int:
             rng=np.random.default_rng(args.seed + epoch),
         )
         valid_metrics = _evaluate_dataset(
+            eval_step,
             model,
             valid,
-            grammar,
             batch_size=args.batch_size,
         )
         last_record = _epoch_record(epoch, train_metrics, valid_metrics)

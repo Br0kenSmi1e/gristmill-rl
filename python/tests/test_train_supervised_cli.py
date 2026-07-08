@@ -257,11 +257,12 @@ def test_evaluate_dataset_returns_weighted_totals_for_full_batches_only():
         grammar,
         deterministic=True,
     )
+    eval_step = train_supervised._make_eval_step(grammar)
 
     metrics = train_supervised._evaluate_dataset(
+        eval_step,
         model,
         dataset,
-        grammar,
         batch_size=2,
     )
 
