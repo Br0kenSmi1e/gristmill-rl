@@ -68,6 +68,60 @@ def _attention_from_name(name: str):
     raise ValueError(f"unsupported attention implementation {name!r}")
 
 
+def _as_jax_batch(batch: dict[str, np.ndarray]) -> dict[str, jax.Array]:
+    return {key: jnp.asarray(value) for key, value in batch.items()}
+
+
+def _iter_update_groups(
+    dataset: dict[str, Any],
+    *,
+    batch_size: int,
+    accumulate_steps: int,
+    rng: np.random.Generator,
+):
+    if accumulate_steps <= 0:
+        raise ValueError("accumulate_steps must be positive")
+    current = []
+    for batch in iter_supervised_batches(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        rng=rng,
+    ):
+        current.append(_as_jax_batch(batch))
+        if len(current) == accumulate_steps:
+            yield tuple(current)
+            current = []
+
+
+def _evaluate_dataset(
+    model: nnx.Module,
+    dataset: dict[str, Any],
+    grammar: FlatDefinitionGrammar,
+    *,
+    batch_size: int,
+) -> dict[str, float | int]:
+    def eval_step(model: nnx.Module, batch: dict[str, jax.Array]):
+        return weighted_nll(model, batch, grammar, deterministic=True)
+
+    jitted_eval_step = nnx.jit(eval_step)
+    weighted_nll_sum = 0.0
+    weight_sum = 0.0
+    num_batches = 0
+    for batch in iter_supervised_batches(dataset, batch_size=batch_size):
+        batch_nll, batch_weight = jitted_eval_step(model, _as_jax_batch(batch))
+        weighted_nll_sum += float(batch_nll)
+        weight_sum += float(batch_weight)
+        num_batches += 1
+    mean_nll = weighted_nll_sum / weight_sum if weight_sum else 0.0
+    return {
+        "weighted_nll_sum": weighted_nll_sum,
+        "weight_sum": weight_sum,
+        "mean_nll": mean_nll,
+        "num_batches": num_batches,
+    }
+
+
 def _build_model(args: argparse.Namespace, metadata: dict[str, Any], rng_seed: int):
     dtype = _dtype_from_name(args.dtype)
     return FlatDefinitionSeq2SeqTransformer(
