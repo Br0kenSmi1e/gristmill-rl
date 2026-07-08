@@ -175,8 +175,26 @@ def test_attention_from_name_accepts_only_supported_attention_names():
         train_supervised._attention_from_name("flash")
 
 
-def test_iter_update_groups_drops_partial_microbatch_and_partial_accumulation():
+def test_iter_update_groups_drops_partial_microbatch():
     dataset = _array_dataset(num_examples=5, source_len=3, target_len=4)
+
+    groups = list(
+        train_supervised._iter_update_groups(
+            dataset,
+            batch_size=2,
+            accumulate_steps=2,
+            rng=np.random.default_rng(0),
+        )
+    )
+
+    assert len(groups) == 1
+    assert len(groups[0]) == 2
+    assert groups[0][0]["source_ids"].shape == (2, 3)
+    assert groups[0][1]["target_ids"].shape == (2, 4)
+
+
+def test_iter_update_groups_drops_trailing_full_microbatch():
+    dataset = _array_dataset(num_examples=6, source_len=3, target_len=4)
 
     groups = list(
         train_supervised._iter_update_groups(
