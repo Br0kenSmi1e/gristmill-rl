@@ -6,6 +6,7 @@ from flax import nnx
 
 import gristmill_symbolics.train_supervised as train_supervised
 from gristmill_symbolics.grammar import FlatDefinitionGrammar
+from gristmill_symbolics.supervised import weighted_nll
 from gristmill_symbolics.tokenizer import FlatDefinitionTokenizer
 
 
@@ -220,6 +221,17 @@ def test_evaluate_dataset_returns_weighted_totals_for_full_batches_only():
         target_len=dataset["metadata"]["target_len"],
         vocab_size=tokenizer.vocab_size,
     )
+    first_full_batch = {
+        key: jnp.asarray(value[:2])
+        for key, value in dataset.items()
+        if key != "metadata"
+    }
+    expected_nll, expected_weight = weighted_nll(
+        model,
+        first_full_batch,
+        grammar,
+        deterministic=True,
+    )
 
     metrics = train_supervised._evaluate_dataset(
         model,
@@ -229,8 +241,9 @@ def test_evaluate_dataset_returns_weighted_totals_for_full_batches_only():
     )
 
     assert metrics["num_batches"] == 1
-    assert metrics["weight_sum"] > 0.0
-    assert metrics["weighted_nll_sum"] > 0.0
+    assert metrics["weight_sum"] == 3.0
+    assert metrics["weight_sum"] == pytest.approx(float(expected_weight))
+    assert metrics["weighted_nll_sum"] == pytest.approx(float(expected_nll))
     assert metrics["mean_nll"] == pytest.approx(
-        metrics["weighted_nll_sum"] / metrics["weight_sum"]
+        float(expected_nll) / float(expected_weight)
     )
