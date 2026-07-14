@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Sequence
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 
+from . import TensorComputation, equivalent_computations
 from .grammar import FlatDefinitionGrammar
 from .scoring import constrained_next_token_step
+from .tokenizer import FlatDefinitionTokenizer, TokenizerError
 
-__all__ = ("sample_token_ids",)
+__all__ = (
+    "generated_ids_to_tensor_computation",
+    "sample_tensor_computations",
+    "sample_token_ids",
+)
 
 
 def sample_token_ids(
@@ -16,6 +26,7 @@ def sample_token_ids(
     grammar: FlatDefinitionGrammar,
     *,
     target_len: int,
+    temperature: float = 1.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
     batch_size = source_ids.shape[0]
     generated_ids = jnp.full(
@@ -34,7 +45,7 @@ def sample_token_ids(
         step_rng, sample_rng = jax.random.split(step_rng)
 
         logits = model(source_ids, prefix, deterministic=True)
-        step_logits = logits[:, t, :]
+        step_logits = logits[:, t, :] / temperature
         next_state, step_log_probs, _valid_next = constrained_next_token_step(
             state,
             prefix[:, t],
@@ -67,3 +78,125 @@ def sample_token_ids(
     sequence_log_prob = jnp.sum(token_log_probs, axis=-1)
 
     return generated_ids, token_log_probs, sequence_log_prob
+
+
+def generated_ids_to_tensor_computation(
+    input_computation: TensorComputation,
+    tokenizer: FlatDefinitionTokenizer,
+    generated_ids: Sequence[int],
+) -> TensorComputation:
+    definitions = tokenizer.decode_definitions_generated(generated_ids)
+    input_snapshot = input_computation.snapshot()
+    tensors = list(input_snapshot["tensors"])
+    known_tensors = {int(tensor["id"]) for tensor in tensors}
+
+    generated_bases = {int(definition["base"]) for definition in definitions}
+    for base in sorted(generated_bases - known_tensors):
+        tensors.append({"id": base, "symmetry": []})
+        known_tensors.add(base)
+
+    for definition in definitions:
+        for term in definition["terms"]:
+            for factor in term["factors"]:
+                tensor_id = int(factor["tensor"])
+                if tensor_id not in known_tensors:
+                    raise ValueError(f"factor references unknown tensor_id:{tensor_id}")
+
+    snapshot = {
+        "ranges": list(input_snapshot["ranges"]),
+        "tensors": tensors,
+        "definitions": _definitions_to_constructor_json(definitions),
+    }
+    try:
+        return TensorComputation.from_json_string(json.dumps(snapshot))
+    except Exception as exc:
+        tensor_ids = [int(tensor["id"]) for tensor in tensors]
+        raise ValueError(
+            "sampled reconstruction failed TensorComputation validation "
+            f"for tensor_ids:{tensor_ids}: {exc}"
+        ) from exc
+
+
+def sample_tensor_computations(
+    model,
+    rng: jax.Array,
+    input_computation: TensorComputation,
+    source_ids: jax.Array,
+    tokenizer: FlatDefinitionTokenizer,
+    grammar: FlatDefinitionGrammar,
+    *,
+    target_len: int,
+    outputs: Sequence[int] | None = None,
+    temperature: float = 1.0,
+) -> tuple[list[TensorComputation], dict[str, int]]:
+    generated_ids, _token_log_probs, _sequence_log_prob = sample_token_ids(
+        model,
+        rng,
+        source_ids,
+        grammar,
+        target_len=target_len,
+        temperature=temperature,
+    )
+
+    metrics = {
+        "total_samples": int(generated_ids.shape[0]),
+        "decode_failures": 0,
+        "reconstruction_failures": 0,
+        "verifier_failures": 0,
+        "valid_samples": 0,
+    }
+    candidates: list[TensorComputation] = []
+
+    for row in jax.device_get(generated_ids):
+        token_ids = [int(token_id) for token_id in row]
+        try:
+            candidate = generated_ids_to_tensor_computation(
+                input_computation,
+                tokenizer,
+                token_ids,
+            )
+        except TokenizerError:
+            metrics["decode_failures"] += 1
+            continue
+        except ValueError:
+            metrics["reconstruction_failures"] += 1
+            continue
+
+        if outputs is not None:
+            try:
+                if not equivalent_computations(input_computation, candidate, outputs):
+                    metrics["verifier_failures"] += 1
+                    continue
+            except Exception:
+                metrics["verifier_failures"] += 1
+                continue
+
+        candidates.append(candidate)
+        metrics["valid_samples"] += 1
+
+    return candidates, metrics
+
+
+def _definitions_to_constructor_json(
+    definitions: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    constructor_definitions = []
+    for definition in definitions:
+        constructor_terms = []
+        for term in definition["terms"]:
+            coeff = term["coeff"]
+            constructor_terms.append(
+                {
+                    "coeff": [coeff["numer"], coeff["denom"]],
+                    "sum_indices": list(term["sum_indices"]),
+                    "factors": list(term["factors"]),
+                }
+            )
+        constructor_definitions.append(
+            {
+                "base": definition["base"],
+                "ext_indices": list(definition["ext_indices"]),
+                "terms": constructor_terms,
+            }
+        )
+    return constructor_definitions
