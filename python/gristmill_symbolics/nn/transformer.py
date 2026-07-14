@@ -357,6 +357,7 @@ class _MultiHeadAttention(nnx.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attention_implementation = attention_implementation
+        self.dtype = dtype
         self.attention = nnx.MultiHeadAttention(
             num_heads=num_heads,
             in_features=d_model,
@@ -395,7 +396,11 @@ class _MultiHeadAttention(nnx.Module):
         )
 
     def init_decode_cache(self, *, batch_size: int, target_len: int) -> None:
-        self.attention.init_cache((batch_size, target_len, self.d_model))
+        cache_dtype = self.dtype if self.dtype is not None else jnp.float32
+        self.attention.init_cache(
+            (batch_size, target_len, self.d_model),
+            dtype=cache_dtype,
+        )
 
     def decode_step(
         self,

@@ -163,7 +163,7 @@ def test_sample_token_ids_does_not_force_eos_at_max_length():
     _assert_grammar_valid_prefix(grammar, generated_ids[0])
 
 
-def test_sample_token_ids_runs_with_real_cached_model():
+def test_sample_token_ids_runs_with_real_bfloat16_cached_model():
     tokenizer = FlatDefinitionTokenizer(
         max_range_id=0,
         max_tensor_id=1,
@@ -181,7 +181,7 @@ def test_sample_token_ids_runs_with_real_cached_model():
         num_layers=1,
         num_heads=2,
         dropout=0.0,
-        dtype=jnp.float32,
+        dtype=jnp.bfloat16,
         param_dtype=jnp.float32,
         rngs=nnx.Rngs(4),
     )
