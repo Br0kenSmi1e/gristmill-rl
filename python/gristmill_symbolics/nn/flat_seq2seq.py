@@ -134,6 +134,51 @@ class FlatDefinitionSeq2SeqTransformer(nnx.Module):
         decoded = jnp.where(target_mask[..., None], decoded, 0.0)
         return self.output_head(decoded)
 
+    def encode(
+        self,
+        source_ids: jax.Array,
+        *,
+        deterministic: bool = True,
+    ) -> tuple[jax.Array, jax.Array]:
+        source_mask = source_ids != self.pad_token_id
+        source_vectors = self._embed(
+            source_ids,
+            self.source_position_embed,
+            deterministic=deterministic,
+        )
+        memory = self.encoder(
+            source_vectors,
+            source_mask,
+            deterministic=deterministic,
+        )
+        return memory, source_mask
+
+    def init_decode_cache(self, *, batch_size: int, target_len: int) -> None:
+        self.decoder.init_decode_cache(batch_size=batch_size, target_len=target_len)
+
+    def decode_step(
+        self,
+        token_ids_t: jax.Array,
+        memory: jax.Array,
+        *,
+        source_mask: jax.Array | None = None,
+        step: int | jax.Array,
+        deterministic: bool = True,
+    ) -> jax.Array:
+        x_t = self._embed_step(
+            token_ids_t,
+            step=step,
+            deterministic=deterministic,
+        )
+        decoded = self.decoder.decode_step(
+            x_t,
+            memory,
+            source_mask=source_mask,
+            deterministic=deterministic,
+        )
+        logits = self.output_head(decoded)
+        return logits[:, 0, :]
+
     def _embed(
         self,
         ids: jax.Array,
@@ -146,3 +191,20 @@ class FlatDefinitionSeq2SeqTransformer(nnx.Module):
         x = self.token_embed(ids) + position_embed(positions)[None, :, :]
         x = jnp.where(ids[..., None] == self.pad_token_id, 0.0, x)
         return self.embedding_dropout(x, deterministic=deterministic)
+
+    def _embed_step(
+        self,
+        token_ids_t: jax.Array,
+        *,
+        step: int | jax.Array,
+        deterministic: bool,
+    ) -> jax.Array:
+        token_ids_t = token_ids_t[:, None]
+        position = jnp.asarray(step, dtype=jnp.int32)
+        x_t = self.token_embed(token_ids_t) + self.target_position_embed(position)[
+            None,
+            None,
+            :,
+        ]
+        x_t = jnp.where(token_ids_t[..., None] == self.pad_token_id, 0.0, x_t)
+        return self.embedding_dropout(x_t, deterministic=deterministic)

@@ -1,7 +1,9 @@
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from gristmill_symbolics.grammar import FlatDefinitionGrammar
+from gristmill_symbolics.nn import FlatDefinitionSeq2SeqTransformer
 from gristmill_symbolics.sampling import sample_token_ids
 from gristmill_symbolics.tokenizer import FlatDefinitionTokenizer
 
@@ -20,21 +22,50 @@ def _id(tokenizer: FlatDefinitionTokenizer, kind: str, offset: int = 0) -> int:
     return tokenizer.token_ids_for_kind(kind)[offset]
 
 
-def _scripted_model(tokenizer: FlatDefinitionTokenizer, choices: list[int]):
-    def model(source_ids, decoder_input_ids, *, deterministic=True):
+class _ScriptedCachedModel(nnx.Module):
+    def __init__(
+        self,
+        tokenizer: FlatDefinitionTokenizer,
+        choices: list[int],
+        *,
+        logits: jax.Array | None = None,
+    ):
+        self.vocab_size = tokenizer.vocab_size
+        self.choice_ids = nnx.data(jnp.asarray(choices, dtype=jnp.int32))
+        self.logits = nnx.data(logits)
+
+    def encode(self, source_ids, *, deterministic=True):
         assert deterministic is True
-        batch_size = source_ids.shape[0]
-        target_len = decoder_input_ids.shape[1]
+        return source_ids[..., None].astype(jnp.float32), source_ids != 0
+
+    def init_decode_cache(self, *, batch_size: int, target_len: int):
+        del batch_size, target_len
+
+    def decode_step(
+        self,
+        token_ids_t,
+        memory,
+        *,
+        source_mask=None,
+        step,
+        deterministic=True,
+    ):
+        assert deterministic is True
+        del memory, source_mask
+        if self.logits is not None:
+            return jnp.take(self.logits, step, axis=1)
+
+        batch_size = token_ids_t.shape[0]
         logits = jnp.full(
-            (batch_size, target_len, tokenizer.vocab_size),
+            (batch_size, self.vocab_size),
             -1000.0,
             dtype=jnp.float32,
         )
-        for position, token_id in enumerate(choices):
-            logits = logits.at[:, position, token_id].set(1000.0)
-        return logits
+        token_id = jnp.take(self.choice_ids, step)
+        return logits.at[:, token_id].set(1000.0)
 
-    return model
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("sample_token_ids must not call full model")
 
 
 def _assert_grammar_valid_prefix(grammar: FlatDefinitionGrammar, row: jax.Array):
@@ -59,8 +90,10 @@ def test_sample_token_ids_generates_grammar_valid_sequence_with_logp():
     ]
     source_ids = jnp.asarray([[1, 2, 0], [1, 0, 0]], dtype=jnp.int32)
 
+    model = _ScriptedCachedModel(tokenizer, choices)
+
     result = sample_token_ids(
-        _scripted_model(tokenizer, choices),
+        model,
         jax.random.key(0),
         source_ids,
         grammar,
@@ -117,7 +150,7 @@ def test_sample_token_ids_does_not_force_eos_at_max_length():
     source_ids = jnp.asarray([[1, 0, 0]], dtype=jnp.int32)
 
     generated_ids, _token_log_probs, _sequence_log_prob = sample_token_ids(
-        _scripted_model(tokenizer, choices),
+        _ScriptedCachedModel(tokenizer, choices),
         jax.random.key(1),
         source_ids,
         grammar,
@@ -130,34 +163,41 @@ def test_sample_token_ids_does_not_force_eos_at_max_length():
     _assert_grammar_valid_prefix(grammar, generated_ids[0])
 
 
-def test_sample_token_ids_is_jittable_for_fixed_shapes():
-    tokenizer = _tokenizer()
+def test_sample_token_ids_runs_with_real_cached_model():
+    tokenizer = FlatDefinitionTokenizer(
+        max_range_id=0,
+        max_tensor_id=1,
+        max_index_id=0,
+        coeff_nums=(1,),
+        coeff_dens=(1,),
+    )
     grammar = FlatDefinitionGrammar(tokenizer)
-    choices = [
-        _id(tokenizer, "def_start"),
-        _id(tokenizer, "tensorid"),
-        _id(tokenizer, "def_end"),
-        tokenizer.eos_token_id,
-    ]
-    model = _scripted_model(tokenizer, choices)
-    source_ids = jnp.asarray([[1, 2, 0]], dtype=jnp.int32)
+    model = FlatDefinitionSeq2SeqTransformer(
+        source_len=4,
+        target_len=5,
+        vocab_size=tokenizer.vocab_size,
+        pad_token_id=tokenizer.pad_token_id,
+        d_model=8,
+        num_layers=1,
+        num_heads=2,
+        dropout=0.0,
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
+        rngs=nnx.Rngs(4),
+    )
 
-    @jax.jit
-    def run(rng, source):
-        return sample_token_ids(
-            model,
-            rng,
-            source,
-            grammar,
-            target_len=6,
-        )[0]
+    generated_ids, token_log_probs, sequence_log_prob = sample_token_ids(
+        model,
+        jax.random.key(4),
+        jnp.asarray([[1, 2, 0, 0]], dtype=jnp.int32),
+        grammar,
+        target_len=5,
+    )
 
-    generated = run(jax.random.key(2), source_ids)
-
-    assert generated.shape == (1, 6)
-    assert generated[0, 0] == tokenizer.bos_token_id
-    assert generated[0, 4] == tokenizer.eos_token_id
-    assert generated[0, 5] == tokenizer.pad_token_id
+    assert generated_ids.shape == (1, 5)
+    assert token_log_probs.shape == (1, 5)
+    assert sequence_log_prob.shape == (1,)
+    assert generated_ids[0, 0] == tokenizer.bos_token_id
 
 
 def test_sampled_logp_is_differentiable_to_logits():
@@ -167,9 +207,7 @@ def test_sampled_logp_is_differentiable_to_logits():
     logits = jnp.zeros((1, 4, tokenizer.vocab_size), dtype=jnp.float32)
 
     def score(x):
-        def model(_source_ids, _decoder_input_ids, *, deterministic=True):
-            assert deterministic is True
-            return x
+        model = _ScriptedCachedModel(tokenizer, [], logits=x)
 
         _generated_ids, _token_log_probs, sequence_log_prob = sample_token_ids(
             model,

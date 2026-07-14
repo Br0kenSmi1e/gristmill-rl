@@ -131,6 +131,52 @@ def test_deterministic_calls_are_repeatable_with_dropout_disabled():
     assert jnp.allclose(first, second)
 
 
+def test_flat_seq2seq_exposes_one_token_decode_step():
+    model = _model(source_len=5, target_len=4, rng_seed=4)
+    source_ids = jnp.asarray([[1, 2, 3, 0, 0], [4, 5, 0, 0, 0]], dtype=jnp.int32)
+    token_ids = jnp.asarray([1, 1], dtype=jnp.int32)
+
+    memory, source_mask = model.encode(source_ids, deterministic=True)
+    model.init_decode_cache(batch_size=2, target_len=4)
+    logits = model.decode_step(
+        token_ids,
+        memory,
+        source_mask=source_mask,
+        step=0,
+        deterministic=True,
+    )
+
+    assert memory.shape == (2, 5, 8)
+    assert source_mask.tolist() == [
+        [True, True, True, False, False],
+        [True, True, False, False, False],
+    ]
+    assert logits.shape == (2, 13)
+    assert logits.dtype == jnp.float32
+
+
+def test_decode_step_uses_encoder_memory_without_full_model_call(monkeypatch):
+    model = _model(source_len=3, target_len=3, rng_seed=5)
+    source_ids = jnp.asarray([[1, 2, 0]], dtype=jnp.int32)
+    memory, source_mask = model.encode(source_ids, deterministic=True)
+    model.init_decode_cache(batch_size=1, target_len=3)
+
+    def fail_call(*args, **kwargs):
+        raise AssertionError("decode_step must not call full model")
+
+    monkeypatch.setattr(model, "__call__", fail_call)
+
+    logits = model.decode_step(
+        jnp.asarray([1], dtype=jnp.int32),
+        memory,
+        source_mask=source_mask,
+        step=0,
+        deterministic=True,
+    )
+
+    assert logits.shape == (1, 13)
+
+
 def test_flat_seq2seq_requires_integer_token_id_arrays():
     model = _model(source_len=2, target_len=2, rng_seed=3)
     source_ids = jnp.asarray([[1.0, 0.0]], dtype=jnp.float32)

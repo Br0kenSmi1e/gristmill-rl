@@ -6,6 +6,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+from flax import nnx
 
 from . import TensorComputation, equivalent_computations
 from .grammar import FlatDefinitionGrammar
@@ -28,6 +29,27 @@ def sample_token_ids(
     target_len: int,
     temperature: float = 1.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    model.init_decode_cache(batch_size=source_ids.shape[0], target_len=target_len)
+    return _sample_token_ids_jit(
+        model,
+        rng,
+        source_ids,
+        grammar,
+        target_len=target_len,
+        temperature=jnp.asarray(temperature, dtype=jnp.float32),
+    )
+
+
+@nnx.jit(static_argnames=("grammar", "target_len"))
+def _sample_token_ids_jit(
+    model,
+    rng: jax.Array,
+    source_ids: jax.Array,
+    grammar: FlatDefinitionGrammar,
+    *,
+    target_len: int,
+    temperature: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     batch_size = source_ids.shape[0]
     generated_ids = jnp.full(
         (batch_size, target_len),
@@ -36,19 +58,43 @@ def sample_token_ids(
     )
     generated_ids = generated_ids.at[:, 0].set(grammar.bos_token_id)
     token_log_probs = jnp.zeros((batch_size, target_len), dtype=jnp.float32)
+    memory, source_mask = model.encode(source_ids, deterministic=True)
 
     init_state = grammar.initial_state((batch_size,))
     init_finished = jnp.zeros((batch_size,), dtype=bool)
 
-    def step(carry, t: jax.Array):
-        prefix, logps, state, finished, step_rng = carry
-        step_rng, sample_rng = jax.random.split(step_rng)
+    def step(
+        t: int,
+        carry: tuple[
+            nnx.Module,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+            jax.Array,
+        ],
+    ) -> tuple[nnx.Module, jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
+        (
+            model,
+            generated_ids,
+            token_log_probs,
+            state,
+            finished,
+            step_rng,
+        ) = carry
+        next_step_rng, sample_rng = jax.random.split(step_rng)
 
-        logits = model(source_ids, prefix, deterministic=True)
-        step_logits = logits[:, t, :] / temperature
+        step_logits = model.decode_step(
+            generated_ids[:, t],
+            memory,
+            source_mask=source_mask,
+            step=t,
+            deterministic=True,
+        )
+        step_logits = step_logits / temperature
         next_state, step_log_probs, _valid_next = constrained_next_token_step(
             state,
-            prefix[:, t],
+            generated_ids[:, t],
             step_logits,
             grammar,
         )
@@ -65,16 +111,38 @@ def sample_token_ids(
 
         next_finished = finished | (next_ids == grammar.eos_token_id)
         next_pos = t + 1
-        prefix = prefix.at[:, next_pos].set(next_ids)
-        logps = logps.at[:, next_pos].set(selected_logps)
+        generated_ids = generated_ids.at[:, next_pos].set(next_ids)
+        token_log_probs = token_log_probs.at[:, next_pos].set(selected_logps)
+        return (
+            model,
+            generated_ids,
+            token_log_probs,
+            next_state,
+            next_finished,
+            next_step_rng,
+        )
 
-        return (prefix, logps, next_state, next_finished, step_rng), None
-
-    (generated_ids, token_log_probs, _state, _finished, _rng), _ = jax.lax.scan(
+    (
+        _model,
+        generated_ids,
+        token_log_probs,
+        _state,
+        _finished,
+        _rng,
+    ) = nnx.fori_loop(
+        0,
+        target_len - 1,
         step,
-        (generated_ids, token_log_probs, init_state, init_finished, rng),
-        jnp.arange(target_len - 1),
+        (
+            model,
+            generated_ids,
+            token_log_probs,
+            init_state,
+            init_finished,
+            rng,
+        ),
     )
+
     sequence_log_prob = jnp.sum(token_log_probs, axis=-1)
 
     return generated_ids, token_log_probs, sequence_log_prob

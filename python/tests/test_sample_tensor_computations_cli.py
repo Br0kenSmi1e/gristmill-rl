@@ -98,7 +98,7 @@ def _argv(tmp_path: Path, checkpoint_path: Path, output_path: Path) -> list[str]
         "--output",
         str(output_path),
         "--samples",
-        "3",
+        "4",
         "--sample-batch-size",
         "2",
         "--source-len",
@@ -181,7 +181,7 @@ def test_main_restores_checkpoint_and_writes_candidate_jsonl(
     result = sample_cli.main(_argv(tmp_path, checkpoint_path, output_path))
 
     assert result == 0
-    assert [call["source_shape"] for call in calls] == [(2, 12), (1, 12)]
+    assert [call["source_shape"] for call in calls] == [(2, 12), (2, 12)]
     assert all(call["target_len"] == 12 for call in calls)
     assert all(call["outputs"] == [1] for call in calls)
     assert all(call["temperature"] == 0.5 for call in calls)
@@ -194,10 +194,21 @@ def test_main_restores_checkpoint_and_writes_candidate_jsonl(
     assert json.loads(capsys.readouterr().out) == {
         "decode_failures": 0,
         "reconstruction_failures": 0,
-        "total_samples": 3,
+        "total_samples": 4,
         "valid_samples": 2,
         "verifier_failures": 0,
     }
+
+
+def test_main_rejects_partial_sampling_batch(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint"
+    output_path = tmp_path / "candidates.jsonl"
+    argv = _argv(tmp_path, checkpoint_path, output_path)
+    argv[argv.index("--samples") + 1] = "3"
+    argv[argv.index("--sample-batch-size") + 1] = "2"
+
+    with pytest.raises(ValueError, match="samples must be divisible"):
+        sample_cli.main(argv)
 
 
 def test_main_reports_checkpoint_shape_mismatch(tmp_path, monkeypatch):

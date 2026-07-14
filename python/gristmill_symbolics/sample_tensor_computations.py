@@ -118,6 +118,8 @@ def _normalize_coeff_args(argv: list[str]) -> list[str]:
 def _validate_args(args: argparse.Namespace) -> None:
     _positive_int("samples", args.samples)
     _positive_int("sample_batch_size", args.sample_batch_size)
+    if args.samples % args.sample_batch_size != 0:
+        raise ValueError("samples must be divisible by sample_batch_size")
     _positive_int("source_len", args.source_len)
     _positive_int("target_len", args.target_len)
     _positive_int("d_model", args.d_model)
@@ -275,10 +277,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("w") as output_file:
-        samples_remaining = args.samples
-        while samples_remaining > 0:
-            batch_size = min(args.sample_batch_size, samples_remaining)
-            samples_remaining -= batch_size
+        for _ in range(args.samples // args.sample_batch_size):
+            batch_size = args.sample_batch_size
             rng, batch_rng = jax.random.split(rng)
             source_batch = jnp.asarray([source_row] * batch_size, dtype=jnp.int32)
             candidates, batch_metrics = sample_tensor_computations(

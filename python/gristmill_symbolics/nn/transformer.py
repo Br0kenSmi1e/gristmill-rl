@@ -5,6 +5,7 @@ from typing import Any, Literal
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.nnx.nn.attention import dot_product_attention as _flax_dot_product_attention
 
 AttentionImplementation = Literal["xla", "cudnn"] | None
 
@@ -132,6 +133,27 @@ class TransformerDecoder(nnx.Module):
             )
         x = self.final_norm(x)
         return _zero_masked_queries(x, target_mask)
+
+    def init_decode_cache(self, *, batch_size: int, target_len: int) -> None:
+        for layer in self.layers:
+            layer.init_decode_cache(batch_size=batch_size, target_len=target_len)
+
+    def decode_step(
+        self,
+        x_t: jax.Array,
+        memory: jax.Array,
+        *,
+        source_mask: jax.Array | None = None,
+        deterministic: bool = True,
+    ) -> jax.Array:
+        for layer in self.layers:
+            x_t = layer.decode_step(
+                x_t,
+                memory,
+                source_mask=source_mask,
+                deterministic=deterministic,
+            )
+        return self.final_norm(x_t)
 
 
 class EncoderBlock(nnx.Module):
@@ -286,6 +308,35 @@ class DecoderBlock(nnx.Module):
         )
         return _zero_masked_queries(x, target_mask)
 
+    def init_decode_cache(self, *, batch_size: int, target_len: int) -> None:
+        self.self_attention.init_decode_cache(
+            batch_size=batch_size,
+            target_len=target_len,
+        )
+
+    def decode_step(
+        self,
+        x_t: jax.Array,
+        memory: jax.Array,
+        *,
+        source_mask: jax.Array | None = None,
+        deterministic: bool = True,
+    ) -> jax.Array:
+        x_t = x_t + self.self_attention.decode_step(
+            self.self_attention_norm(x_t),
+            deterministic=deterministic,
+        )
+        x_t = x_t + self.cross_attention(
+            self.cross_attention_norm(x_t),
+            memory,
+            mask=source_mask,
+            deterministic=deterministic,
+        )
+        return x_t + self.feed_forward(
+            self.feed_forward_norm(x_t),
+            deterministic=deterministic,
+        )
+
 
 class _MultiHeadAttention(nnx.Module):
     def __init__(
@@ -306,35 +357,18 @@ class _MultiHeadAttention(nnx.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.attention_implementation = attention_implementation
-        self.query = nnx.Linear(
-            d_model,
-            d_model,
+        self.attention = nnx.MultiHeadAttention(
+            num_heads=num_heads,
+            in_features=d_model,
+            qkv_features=d_model,
+            out_features=d_model,
+            dropout_rate=dropout,
+            attention_fn=_attention_fn(attention_implementation),
+            decode=False,
             dtype=dtype,
             param_dtype=param_dtype,
             rngs=rngs,
         )
-        self.key = nnx.Linear(
-            d_model,
-            d_model,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            rngs=rngs,
-        )
-        self.value = nnx.Linear(
-            d_model,
-            d_model,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            rngs=rngs,
-        )
-        self.output = nnx.Linear(
-            d_model,
-            d_model,
-            dtype=dtype,
-            param_dtype=param_dtype,
-            rngs=rngs,
-        )
-        self.dropout = nnx.Dropout(dropout, rngs=rngs)
 
     def __call__(
         self,
@@ -345,35 +379,35 @@ class _MultiHeadAttention(nnx.Module):
         is_causal: bool = False,
         deterministic: bool = True,
     ) -> jax.Array:
-        query = self._split_heads(self.query(x))
-        key = self._split_heads(self.key(memory))
-        value = self._split_heads(self.value(memory))
-        attention_mask = (
-            jnp.broadcast_to(
-                mask[:, None, None, :],
-                (query.shape[0], query.shape[2], query.shape[1], key.shape[1]),
-            )
-            if mask is not None
-            else None
-        )
-        attended = jax.nn.dot_product_attention(
-            query,
-            key,
-            value,
-            mask=attention_mask,
+        attention_mask = _attention_mask(
+            mask,
+            batch_size=x.shape[0],
+            query_len=x.shape[1],
+            key_len=memory.shape[1],
             is_causal=is_causal,
-            implementation=self.attention_implementation,
         )
-        output = self.output(self._merge_heads(attended))
-        return self.dropout(output, deterministic=deterministic)
+        return self.attention(
+            x,
+            memory,
+            mask=attention_mask,
+            deterministic=deterministic,
+            decode=False,
+        )
 
-    def _split_heads(self, x: jax.Array) -> jax.Array:
-        batch, length, _ = x.shape
-        return x.reshape(batch, length, self.num_heads, self.head_dim)
+    def init_decode_cache(self, *, batch_size: int, target_len: int) -> None:
+        self.attention.init_cache((batch_size, target_len, self.d_model))
 
-    def _merge_heads(self, x: jax.Array) -> jax.Array:
-        batch, length, _, _ = x.shape
-        return x.reshape(batch, length, self.d_model)
+    def decode_step(
+        self,
+        x_t: jax.Array,
+        *,
+        deterministic: bool = True,
+    ) -> jax.Array:
+        return self.attention(
+            x_t,
+            deterministic=deterministic,
+            decode=True,
+        )
 
 
 class _FeedForward(nnx.Module):
@@ -415,3 +449,76 @@ def _zero_masked_queries(x: jax.Array, mask: jax.Array | None) -> jax.Array:
     if mask is None:
         return x
     return jnp.where(mask[..., None], x, 0.0)
+
+
+def _attention_mask(
+    mask: jax.Array | None,
+    *,
+    batch_size: int,
+    query_len: int,
+    key_len: int,
+    is_causal: bool,
+) -> jax.Array | None:
+    attention_mask = None
+    if mask is not None:
+        attention_mask = jnp.broadcast_to(
+            mask[:, None, None, :],
+            (batch_size, 1, query_len, key_len),
+        )
+    if is_causal:
+        causal_mask = jnp.tril(jnp.ones((query_len, key_len), dtype=bool))[
+            None,
+            None,
+            :,
+            :,
+        ]
+        attention_mask = (
+            causal_mask if attention_mask is None else attention_mask & causal_mask
+        )
+    return attention_mask
+
+
+def _attention_fn(implementation: AttentionImplementation):
+    def attention(
+        query,
+        key,
+        value,
+        *,
+        bias=None,
+        mask=None,
+        dropout_rng=None,
+        dropout_rate=0.0,
+        broadcast_dropout=True,
+        deterministic=True,
+        dtype=None,
+        precision=None,
+        module=None,
+        **_kwargs,
+    ):
+        if mask is not None:
+            mask = mask.astype(bool)
+        if dropout_rate == 0.0 and module is None:
+            return jax.nn.dot_product_attention(
+                query,
+                key,
+                value,
+                bias=bias,
+                mask=mask,
+                implementation=implementation,
+            )
+        return _flax_dot_product_attention(
+            query,
+            key,
+            value,
+            bias=bias,
+            mask=mask,
+            dropout_rng=dropout_rng,
+            dropout_rate=dropout_rate,
+            broadcast_dropout=broadcast_dropout,
+            deterministic=deterministic,
+            dtype=dtype,
+            precision=precision,
+            module=module,
+        )
+
+    return attention

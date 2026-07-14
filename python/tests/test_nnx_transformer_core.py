@@ -11,6 +11,7 @@ from gristmill_symbolics.nn import (
     TransformerDecoder,
     TransformerEncoder,
 )
+from gristmill_symbolics.nn.transformer import _MultiHeadAttention
 
 
 def _source_vectors(batch: int = 2, length: int = 5, d_model: int = 8):
@@ -304,6 +305,25 @@ def test_attention_implementation_is_passed_to_jax_attention(monkeypatch):
     )
 
     assert seen == ["xla", "xla"]
+
+
+def test_attention_wrapper_supports_decode_cache_step():
+    attention = _MultiHeadAttention(
+        d_model=8,
+        num_heads=2,
+        dropout=0.0,
+        attention_implementation="xla",
+        dtype=jnp.float32,
+        param_dtype=jnp.float32,
+        rngs=nnx.Rngs(14),
+    )
+    token = jnp.ones((2, 1, 8), dtype=jnp.float32)
+
+    attention.init_decode_cache(batch_size=2, target_len=5)
+    decoded = attention.decode_step(token, deterministic=True)
+
+    assert decoded.shape == token.shape
+    assert decoded.dtype == jnp.float32
 
 
 def test_transformer_core_does_not_import_tokenizer():

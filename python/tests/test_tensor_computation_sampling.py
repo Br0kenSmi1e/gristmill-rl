@@ -3,6 +3,7 @@ import json
 import jax
 import jax.numpy as jnp
 import pytest
+from flax import nnx
 
 from gristmill_symbolics import TensorComputation
 from gristmill_symbolics.grammar import FlatDefinitionGrammar
@@ -71,21 +72,38 @@ def _generated_row(tokenizer: FlatDefinitionTokenizer, factor_tensor_offset: int
     ]
 
 
-def _scripted_model(tokenizer: FlatDefinitionTokenizer, choices: list[int]):
-    def model(source_ids, decoder_input_ids, *, deterministic=True):
+class _ScriptedCachedModel(nnx.Module):
+    def __init__(self, tokenizer: FlatDefinitionTokenizer, choices: list[int]):
+        self.vocab_size = tokenizer.vocab_size
+        self.choice_ids = nnx.data(jnp.asarray(choices, dtype=jnp.int32))
+
+    def encode(self, source_ids, *, deterministic=True):
         assert deterministic is True
-        batch_size = source_ids.shape[0]
-        target_len = decoder_input_ids.shape[1]
+        return source_ids[..., None].astype(jnp.float32), source_ids != 0
+
+    def init_decode_cache(self, *, batch_size: int, target_len: int):
+        del batch_size, target_len
+
+    def decode_step(
+        self,
+        token_ids_t,
+        memory,
+        *,
+        source_mask=None,
+        step,
+        deterministic=True,
+    ):
+        assert deterministic is True
+        del memory, source_mask
         logits = jnp.full(
-            (batch_size, target_len, tokenizer.vocab_size),
+            (token_ids_t.shape[0], self.vocab_size),
             -1000.0,
             dtype=jnp.float32,
         )
-        for position, token_id in enumerate(choices):
-            logits = logits.at[:, position, token_id].set(1000.0)
-        return logits
+        return logits.at[:, jnp.take(self.choice_ids, step)].set(1000.0)
 
-    return model
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("sample_token_ids must not call full model")
 
 
 def test_generated_ids_to_tensor_computation_reuses_source_envelope():
@@ -136,7 +154,7 @@ def test_sample_tensor_computations_wraps_token_sampler():
     source_ids = jnp.asarray([[1, 0, 0]], dtype=jnp.int32)
 
     candidates, metrics = sample_tensor_computations(
-        _scripted_model(tokenizer, choices),
+        _ScriptedCachedModel(tokenizer, choices),
         jax.random.key(0),
         _source_computation(),
         source_ids,
@@ -167,7 +185,7 @@ def test_sample_tensor_computations_counts_decode_failures_separately():
     source_ids = jnp.asarray([[1, 0, 0]], dtype=jnp.int32)
 
     candidates, metrics = sample_tensor_computations(
-        _scripted_model(tokenizer, choices),
+        _ScriptedCachedModel(tokenizer, choices),
         jax.random.key(1),
         _source_computation(),
         source_ids,
